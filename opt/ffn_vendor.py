@@ -485,7 +485,13 @@ VENDOR_SIGNS = re.compile(
     r"|u-boot-\w+_pciboot\.bin"   # Octeon boot images
     r"|vmlinux-[\d.]+-oct\d-dp"
     r"|pan-manifest/fpga-images"
-    r"|(^|/)c[ae]\d+\.bin$)")     # ce10/ce40/ca1 bitstreams, loose
+    r"|(^|/)c[ae]\d+\.bin$"      # ce10/ce40/ca1 bitstreams, loose
+    r"|usr/share/broadcom/"        # the DNX init set, in a sysroot
+    r"|(^|/)(rc|jer|bcm88375_board|gryphon_dram_tune|combo28_dram"
+    r"|runningConfig)\.soc$"       # ... and loose on a stick
+    r"|(^|/)config\.bcm$"
+    r"|(^|/)(enable_fp_ports|phy_tx_settings|gryphon_llfc"
+    r"|panEgrTcMap|dsa_tag_support)\.c$)")
 
 
 def check_clean(target):
