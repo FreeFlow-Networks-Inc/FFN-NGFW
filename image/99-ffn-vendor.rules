@@ -1,0 +1,7 @@
+# FFN: pick up vendor firmware from removable media the owner plugs in.
+# Only removable/USB partitions trigger this; internal disks are ignored so a
+# reboot never re-imports from the system drive.
+ACTION=="add", SUBSYSTEM=="block", ENV{DEVTYPE}=="partition", ENV{ID_BUS}=="usb", \
+  TAG+="systemd", ENV{SYSTEMD_WANTS}+="ffn-vendor-autoimport@%k.service"
+ACTION=="add", SUBSYSTEM=="block", ENV{DEVTYPE}=="partition", ATTR{../removable}=="1", \
+  TAG+="systemd", ENV{SYSTEMD_WANTS}+="ffn-vendor-autoimport@%k.service"

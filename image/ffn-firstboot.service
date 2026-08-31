@@ -1,0 +1,16 @@
+[Unit]
+Description=FFN NGFW first-boot provisioning (keys, secrets, NICs, disk grow)
+DefaultDependencies=no
+After=local-fs.target systemd-udev-settle.service
+Before=network-pre.target ssh.service ffn-configd.service ffn-controld.service ffn-manager-v2.service ffn-dpdk-fwd.service ffn-bmfw.service
+ConditionPathExists=!/var/lib/ffn-ngfw/.firstboot-done
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/ffn-firstboot.sh
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

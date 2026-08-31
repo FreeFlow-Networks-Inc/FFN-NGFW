@@ -1,0 +1,17 @@
+[Unit]
+Description=FFN NGFW FIPS-CC power-on self-test (crypto KAT + software integrity)
+DefaultDependencies=no
+After=local-fs.target ffn-firstboot.service
+Before=ffn-manager-v2.service ffn-configd.service ffn-controld.service ffn-dpdk-fwd.service ffn-bmfw.service
+# Only runs in FIPS-CC mode; skipped (success) otherwise.
+ConditionPathExists=/etc/ffn-ngfw/fips-cc.mode
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/ffn-ngfw-v2/venv/bin/python3 /opt/ffn-ngfw-v2/ffn_fips_selftest.py
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

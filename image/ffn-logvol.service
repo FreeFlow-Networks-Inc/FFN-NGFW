@@ -1,0 +1,15 @@
+[Unit]
+Description=FFN log volume (discover and mount the chassis log RAID)
+DefaultDependencies=no
+After=local-fs.target systemd-udev-settle.service
+Before=ffn-manager-v2.service ffn-configd.service
+Wants=systemd-udev-settle.service
+# A missing log disk must never stop the firewall coming up.
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/ffn-logvol.sh
+SuccessExitStatus=0
+TimeoutStartSec=90
+[Install]
+WantedBy=multi-user.target

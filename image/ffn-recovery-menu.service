@@ -1,0 +1,18 @@
+[Unit]
+Description=FFN NGFW Recovery / Maintenance menu (recovery partition only)
+After=multi-user.target
+Conflicts=getty@ttyS0.service
+
+[Service]
+Type=idle
+ExecStart=/usr/local/sbin/ffn-recovery-menu.sh
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/ttyS0
+TTYReset=yes
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

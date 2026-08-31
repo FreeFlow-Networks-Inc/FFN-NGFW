@@ -134,6 +134,27 @@ machine that does not come back:
 
 `ffn_cpuisol.py selftest` runs the decision table with no hardware required.
 
+## Installing on bare metal
+
+    cd image
+    ./build.sh                          # -> out/<ver>.qcow2 + rootfs/recovery tarballs
+    sudo ./install-to-disk.sh --list    # firmware, chosen scheme, candidate disks
+    sudo ./install-to-disk.sh /dev/sdX
+
+The image is **hybrid GPT** by default — a bios_grub partition *and* an ESP — so
+one image boots on UEFI and on legacy BIOS. The installer picks its layout from
+how the machine actually booted: GPT+ESP under UEFI, GPT+bios_grub or MBR under
+BIOS. `IMG_SCHEME=mbr` and `--scheme mbr` remain for firmware too old to read
+GPT.
+
+Booting installer media runs the installer menu on the console automatically,
+gated on a marker file that exists only on that media. It never chooses a disk
+for you, refuses any disk with a mounted filesystem (which is what stops you
+installing over the USB you booted from), and has a `--dry-run` that writes
+nothing.
+
+See [image/README.md](image/README.md).
+
 ## Hardware platforms
 
 Platform support lives in separate repositories, listed in
@@ -169,6 +190,7 @@ platform provides, and how to add one.
     static/            management console
     examples/          worked configuration examples
     tools/             host diagnostics
+    image/             appliance image build and the bare-metal installer
     platform/          hardware platform registry and opt-in submodules
     tests/             tests that need the app importable
     opt/               ALL the Python: management plane and host tooling

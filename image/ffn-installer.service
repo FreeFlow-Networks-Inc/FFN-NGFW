@@ -1,0 +1,35 @@
+# Runs the FFN installer menu on the console when booted from install media.
+#
+# Gated on /etc/ffn-installer-mode, which exists ONLY on installer media. An
+# installed appliance never has that file, so this unit can never activate on a
+# running firewall even if it is left enabled in the image.
+[Unit]
+Description=FFN NGFW installer (console)
+ConditionPathExists=/etc/ffn-installer-mode
+# Wait for udev so every disk is enumerated before the menu lists candidates --
+# otherwise the operator picks from an incomplete list.
+After=systemd-udev-settle.service systemd-user-sessions.service
+Wants=systemd-udev-settle.service
+Conflicts=getty@tty1.service
+
+[Service]
+Type=idle
+ExecStart=/opt/ffn-installer/ffn-installer.sh
+# The console, not a pty: appliances are installed over serial or an IPMI text
+# redirect, where there is no graphical display to fall back to.
+StandardInput=tty-force
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/console
+TTYReset=yes
+TTYVHangup=yes
+# An installer that exits should not silently leave a blank console, and should
+# not be respawned into a loop either -- drop to a getty so the operator can see
+# what happened and act.
+Restart=no
+# Never kill a copy midway through writing a disk.
+KillMode=mixed
+TimeoutStopSec=infinity
+
+[Install]
+WantedBy=multi-user.target
