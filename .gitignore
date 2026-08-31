@@ -1,0 +1,96 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Editing and rescue copies. This tree accumulated a lot of these during
+# development; none of them belong in history.
+*.bak
+*.bak-*
+*.bak2-*
+*.bak3-*
+*.bak4-*
+*.pre-*
+*.pre_*
+*.stale-*
+*.retired-*
+*.orig
+*.rej
+*~
+.#*
+
+# Build output. Everything here is reproducible from source with the Makefiles,
+# and the cross-built MIPS64 binaries are large.
+*.o
+*.a
+*.so
+*.so.*
+*.ko
+*.mod
+*.mod.c
+*.cmd
+Module.symvers
+modules.order
+octeon/dpnet/ffn_dpnetd
+octeon/dpagent/ffn_dpagent2
+build/
+dist/
+
+# Images and firmware artefacts. These are either build products or belong to
+# the appliance and are used in place, never redistributed -- see POLICY in the
+# README. Keeping them out of git is a hard rule, not a size optimisation.
+*.img
+*.squashfs
+*.cpio
+*.cpio.gz
+*.initramfs
+*.bit
+*.mcs
+*.prm
+vmlinux
+vmlinux-*
+vmlinux.*
+*.elf
+u-boot*.bin
+*.rootfs
+*.tar
+*.tar.gz
+*.tgz
+*.tar.xz
+
+# Anything lifted from an appliance or an SDK, wherever it got staged
+clones/
+sysroot/
+sysroot-*/
+dpfs/
+buildroot-*/
+
+# Secrets. Nothing of this shape should ever exist in the tree, and if one
+# appears by accident this stops it reaching a remote.
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa*
+id_ecdsa*
+id_ed25519*
+*_seed
+*.seed
+.env
+.env.*
+secrets/
+credentials
+.git-credentials
+
+# Local logs and scratch
+*.log
+logs/
+tmp/
+scratch/
+core
+core.*

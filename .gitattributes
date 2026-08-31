@@ -1,0 +1,28 @@
+# Normalise to LF in the repository AND on checkout, on every platform.
+#
+# These trees are consumed on Linux and cross-compiled for big-endian MIPS64.
+# A shell script checked out with CRLF fails with "bad interpreter: /bin/sh^M",
+# a Makefile with CRLF misbehaves in recipes, and Git for Windows defaults to
+# autocrlf=true -- so this file is what stops a Windows clone producing sources
+# that are broken on the target.
+* text=auto eol=lf
+
+# Explicit for the things that would actually break
+*.sh    text eol=lf
+*.c     text eol=lf
+*.h     text eol=lf
+*.py    text eol=lf
+*.md    text eol=lf
+Makefile text eol=lf
+
+# Never transform these
+*.png   binary
+*.jpg   binary
+*.gif   binary
+*.gz    binary
+*.xz    binary
+*.bz2   binary
+*.zip   binary
+*.bin   binary
+*.img   binary
+*.squashfs binary

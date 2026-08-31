@@ -1,0 +1,93 @@
+# /etc/systemd/system/ffn-dpdk-fwd.service
+#
+# FFN-NGFW Pass-2 data plane -- runs `ffn-dpdk-mp` as the DPDK symmetric-MP
+# ZYGOTE primary (REWORK_CONTRACT ADDENDUM §10). The zygote rte_eal_init()s as
+# primary, reserves the shared "ffn_dpmem" hugepage region (double-buffered
+# AC/DFA + ML + sig/policy banks), seeds bank 0, then fork()+execv()s one
+# --proc-type=secondary worker per rx/tx queue. Live model/sig/policy updates
+# arrive over the flatcc MP<->DP wire and flip the workers' active bank.
+#
+# Replaces the old `ffn-dpdk-runtime` unit (DPDK 21.11 single-process path).
+# This build targets DPDK 22.11 installed SIDE-BY-SIDE under /opt/dpdk-22.11
+# (not the system libs) -- hence the explicit LD_LIBRARY_PATH below.
+
+[Unit]
+Description=FFN-NGFW DPDK fast-path data plane (symmetric-MP zygote, ffn-dpdk-mp)
+Documentation=file:/opt/ffn-ngfw/dpdk/PASS2_BUILD.md
+After=network.target
+# FFN_DPDK_CORES is defined here (produced by ffn_cpu_planes.py conf).
+ConditionPathExists=/etc/ffn-ngfw/cpu-planes.conf
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ffn-ngfw/dpdk
+
+# --- environment ----------------------------------------------------------
+# FFN_DPDK_CORES : EAL core list for the data plane (e.g. "4-11"), the CPU
+#                  split emitted by ffn_cpu_planes.py into cpu-planes.conf.
+EnvironmentFile=/etc/ffn-ngfw/cpu-planes.conf
+# Optional operator overrides (absent file tolerated via the "-" prefix):
+#   FFN_DPDK_TABLES, FFN_DPDK_FILE_PREFIX, FFN_DPDK_HUGEPAGES, FFN_DPDK_EAL_EXTRA,
+#   FFN_DPDK_APP_EXTRA
+EnvironmentFile=-/etc/ffn-ngfw/dpdk.conf
+Environment=FFN_DPDK_TABLES=/var/lib/ffn-ngfw/fastpath
+Environment=FFN_DPDK_FILE_PREFIX=ffn
+Environment=FFN_DPDK_HUGEPAGES=1024
+# DPDK 22.11 lives beside the system libs under /opt -- put its shared objects
+# (and thus the auto-loaded PMDs) on the loader path.
+Environment=LD_LIBRARY_PATH=/opt/dpdk-22.11/lib/x86_64-linux-gnu
+
+# --- preconditions --------------------------------------------------------
+# 1) FFN_DPDK_CORES must be set (fail loudly rather than grabbing core 0).
+ExecStartPre=/bin/sh -c 'test -n "$FFN_DPDK_CORES" || { echo "FFN_DPDK_CORES unset in cpu-planes.conf"; exit 1; }'
+
+# 2) Hugepages: reserve FFN_DPDK_HUGEPAGES 2 MiB pages and mount hugetlbfs at
+#    /mnt/huge (DPDK autodetects the mount; we also pass --huge-dir below).
+ExecStartPre=/bin/sh -c 'echo "$FFN_DPDK_HUGEPAGES" > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages'
+ExecStartPre=/bin/sh -c 'mkdir -p /mnt/huge; mountpoint -q /mnt/huge || mount -t hugetlbfs -o pagesize=2M nodev /mnt/huge'
+ExecStartPre=/bin/sh -c 'test "$(cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages)" -gt 0 || { echo "no hugepages reserved"; exit 1; }'
+
+# 3) ASLR OFF -- REQUIRED by the zygote shared-model invariant.
+#    The primary seeds the AC/DFA tables, ML trees, and the sig/policy
+#    double-buffer into a SHARED hugepage memzone, then forks per-queue workers
+#    that walk those structures. A serialized model (and DPDK's own internal
+#    shared config) can embed absolute pointers; a forked/exec'd worker only
+#    keeps them valid if the shared region maps at the SAME virtual address in
+#    every process, i.e. the address layout must be deterministic. With ASLR on
+#    each worker randomizes its mmap base and those pointers dangle -> silent
+#    corruption. randomize_va_space=0 pins one layout across primary + workers.
+#    (ffn-dpdk-mp ALSO self-enforces this via personality(ADDR_NO_RANDOMIZE) +
+#    re-exec; this sysctl is the box-wide guarantee.)
+ExecStartPre=/sbin/sysctl -w kernel.randomize_va_space=0
+
+# --- the zygote primary ---------------------------------------------------
+# -l <cores>          EAL core list (the data plane from cpu_planes)
+# --proc-type=primary this process owns/initialises the shared memory
+# --file-prefix=<p>   private hugepage region tag (multi-instance safe)
+# --huge-dir /mnt/huge use the mount we reserved above
+# -- --tables <dir>   app args: compiled fast-path tables + seeded models
+ExecStart=/opt/ffn-ngfw/dpdk/ffn-dpdk-mp \
+    -l ${FFN_DPDK_CORES} \
+    --proc-type=primary \
+    --file-prefix=${FFN_DPDK_FILE_PREFIX} \
+    --huge-dir /mnt/huge \
+    ${FFN_DPDK_EAL_EXTRA} \
+    -- \
+    --tables ${FFN_DPDK_TABLES} \
+    ${FFN_DPDK_APP_EXTRA}
+
+# Restore ASLR on stop so the rest of the box is not left unprotected.
+ExecStopPost=/sbin/sysctl -w kernel.randomize_va_space=2
+
+Restart=on-failure
+RestartSec=2
+# DPDK + hugepages + vfio + mlock need privilege.
+User=root
+LimitMEMLOCK=infinity
+# The zygote forks workers; keep them all inside the unit's cgroup.
+KillMode=control-group
+TimeoutStopSec=15
+OOMScoreAdjust=-900
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,166 @@
+// ffn_mpdp.fbs -- FFN-NGFW Management-Plane <-> Data-Plane wire ABI.
+//
+// FlatBuffers schema (the ABI) for the MP<->DP channel (REWORK_CONTRACT §9).
+// The .fbs is the contract of record: `flatcc` generates the C reader/builder
+// for the DPDK data plane (Pass 2); `ffn_mpdp_wire.py` is the Python MP
+// producer/consumer (uses the `flatbuffers` runtime when present, else a
+// schema-faithful fallback codec that mirrors the field order + union tag
+// declared here).
+//
+// Style rules (keep flatcc happy + C-friendly):
+//   * fixed-width scalar types only (no `int`/`long` aliases)
+//   * enums have an explicit underlying type
+//   * every message table is a member of the MpDpBody union
+//   * one root: MpDpMessage
+//
+// DO NOT reorder existing fields or renumber enum values -- that breaks the ABI.
+// Only append new fields at the end of a table (FlatBuffers forward-compat) and
+// bump MpDpMessage.ver.
+
+namespace ffn.mpdp;
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+/// Direction of travel on the wire.
+enum Dir : byte {
+  MP2DP = 0,   // management plane -> data plane (config / model / policy push)
+  DP2MP = 1    // data plane -> management plane (telemetry / flow events)
+}
+
+/// Verdict scale shared with the AV / ML / inline detectors.
+enum Verdict : byte {
+  BENIGN   = 0,
+  GRAYWARE = 1,
+  MALWARE  = 2
+}
+
+/// Which inline ML model a MlModelUpdate carries.
+enum MlKind : byte {
+  XGBOOST = 0,   // gradient-boosted flat tree table
+  NGRAM   = 1    // byte n-gram feature-hash scorer
+}
+
+// ---------------------------------------------------------------------------
+// Leaf tables (referenced by the message tables below)
+// ---------------------------------------------------------------------------
+
+/// One content/AV/pattern signature (mirrors ffn_sigdb rows).
+table Signature {
+  sid:uint;              // stable signature id
+  name:string;           // human name
+  sig_type:string;       // "hash" | "pattern" | "yara"
+  hash_type:string;      // "md5" | "sha1" | "sha256" (for sig_type=hash)
+  digest:[ubyte];        // raw hash bytes (for sig_type=hash)
+  hex_pattern:string;    // offset-anchored body / compiled pcre (for pattern)
+  severity:ubyte;        // 0=info .. 5=critical
+  verdict:Verdict;       // classification if this sig fires
+  family:string;         // malware family / tag
+}
+
+/// Indicator of compromise (domain / ip / url / hash).
+table Ioc {
+  kind:string;           // "domain" | "ip" | "url" | "sha256" | ...
+  value:string;
+  verdict:Verdict;
+}
+
+/// One compiled policy row (mirrors fp_policy_ent).
+table PolicyRow {
+  vsys:ubyte;            // vsys_id (0 = any)
+  proto:ubyte;          // IP protocol number (0 = any)
+  src_ip:string;        // CIDR or "any"
+  src_port:ushort;
+  dst_ip:string;        // CIDR or "any"
+  dst_port:ushort;
+  action:ubyte;         // action code (allow/deny/inspect/...)
+  name:string;
+}
+
+/// Data-plane 6-tuple flow key: (vsys, proto, sip, sport, dip, dport).
+/// IPs are IPv4 in host order for the fast path; v6 rides as an IOC/event.
+table FlowKey {
+  vsys:ubyte;
+  proto:ubyte;
+  src_ip:uint;
+  src_port:ushort;
+  dst_ip:uint;
+  dst_port:ushort;
+}
+
+// ---------------------------------------------------------------------------
+// Message tables (union members) -- exactly as REWORK_CONTRACT §9 lists
+// ---------------------------------------------------------------------------
+
+/// MP -> DP: incremental threat-intel push.
+table ThreatIntelUpdate {
+  seq:uint;
+  adds:[Signature];
+  removes:[uint];        // signature ids to drop
+  iocs:[Ioc];
+}
+
+/// MP -> DP: hot-swappable inline ML model.
+table MlModelUpdate {
+  version:uint;
+  kind:MlKind;
+  tree_blob:[ubyte];         // portable flat tree table (XGBoost) or scorer blob
+  ngram_params:[ubyte];      // n-gram hashing params (n, width, weights)
+  features_version:uint;
+}
+
+/// MP -> DP: realtime single-sample verdict.
+table SignatureVerdict {
+  sid:uint;
+  sha256:[ubyte];
+  verdict:Verdict;
+  ts:ulong;                  // epoch millis
+}
+
+/// MP -> DP: per-vsys policy rulebase push.
+table PolicyUpdate {
+  vsys:uint;
+  rows:[PolicyRow];
+}
+
+/// DP -> MP: per-engine counters.
+table EngineTelemetry {
+  engine:string;
+  packets:ulong;
+  matches:ulong;
+  drops:ulong;
+  mode:string;               // "hardware" | "emulated" | "host"
+}
+
+/// DP -> MP: notable flow verdict event.
+table FlowEvent {
+  vsys:uint;
+  key:FlowKey;
+  verdict:Verdict;
+  bytes:ulong;
+}
+
+// ---------------------------------------------------------------------------
+// Envelope
+// ---------------------------------------------------------------------------
+
+/// Discriminated body -- the tag order here IS the union tag numbering used by
+/// the fallback codec (member N => tag N, 1-based; NONE = 0).
+union MpDpBody {
+  ThreatIntelUpdate,
+  MlModelUpdate,
+  SignatureVerdict,
+  PolicyUpdate,
+  EngineTelemetry,
+  FlowEvent
+}
+
+/// Root envelope for every MP<->DP frame.
+table MpDpMessage {
+  ver:uint;      // wire/schema version (forward-compat)
+  dir:Dir;
+  body:MpDpBody;
+}
+
+root_type MpDpMessage;

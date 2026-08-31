@@ -1,0 +1,140 @@
+THIRD-PARTY NOTICES
+===================
+
+FFN's own code in this repository is licensed GPL-2.0-or-later; see COPYING.
+The components below are third-party work whose licences require the notices
+reproduced here. Nothing in this file grants rights to FFN's own code, and
+nothing in COPYING removes the obligations below.
+
+Trademarks named in this repository -- Palo Alto Networks, PAN-OS, and product
+names of that vendor -- belong to their owner and are used only to identify the
+hardware this software runs on and the interfaces it interoperates with. This
+project is not affiliated with, endorsed by, or derived from that vendor's
+software.
+
+
+-------------------------------------------------------------------------------
+1. Cavium / Marvell OCTEON SDK -- BSD-3-Clause
+-------------------------------------------------------------------------------
+
+Portions of the OCTEON support are ports of, or written against, the BSD-licensed
+executive layer of the OCTEON SDK (`executive/cvmx-pcie.c`,
+`executive/cvmx-dma-engine.c` and their headers).
+
+    Copyright (c) 2003-2015 Cavium, Inc.
+    All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions are met:
+
+      1. Redistributions of source code must retain the above copyright notice,
+         this list of conditions and the following disclaimer.
+
+      2. Redistributions in binary form must reproduce the above copyright
+         notice, this list of conditions and the following disclaimer in the
+         documentation and/or other materials provided with the distribution.
+
+      3. Neither the name of Cavium, Inc. nor the names of its contributors may
+         be used to endorse or promote products derived from this software
+         without specific prior written permission.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+    AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+    IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+    ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+    LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+    CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+    SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+    INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+    CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+    ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+    POSSIBILITY OF SUCH DAMAGE.
+
+Clause 1 is why this notice exists: the attribution in the source files was
+already correct and honest, but the conditions text has to travel with any
+redistribution.
+
+
+-------------------------------------------------------------------------------
+2. Chart.js -- MIT
+-------------------------------------------------------------------------------
+
+The management console uses Chart.js. The MIT notice is reproduced here
+because the console ships it to the browser.
+
+    Copyright (c) Chart.js Contributors
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in
+    all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+
+RECOMMENDED FOLLOW-UP, not yet done: `static/index.html` currently loads it
+from a public CDN with no subresource integrity. That means an unauthenticated
+remote script running inside a firewall's management interface, and a console
+that breaks entirely on an air-gapped appliance. Self-hosting it under
+`static/vendor/` fixes both; this notice is already written for that.
+
+
+-------------------------------------------------------------------------------
+3. RFC 8032 reference implementation -- public domain
+-------------------------------------------------------------------------------
+
+`ffn_ed25519.py` is derived from the Ed25519 reference implementation published
+in RFC 8032 section 7, which is placed in the public domain. The known-answer
+test vectors in that module and in `ffn_fips_selftest.py` are the published
+NIST and RFC test vectors; they are standards material and carry no secret.
+
+(If a secret scanner flags those vectors, that is a false positive. See
+`.gitleaks.toml`.)
+
+
+-------------------------------------------------------------------------------
+4. Python dependencies
+-------------------------------------------------------------------------------
+
+Declared in `requirements.txt` and installed rather than vendored, so their
+licences are not reproduced here. All are permissive (MIT / BSD / Apache-2.0)
+with one exception worth stating explicitly:
+
+  * `pyroute2` is offered under a choice of GPL-2.0-or-later or Apache-2.0.
+    This project elects the **GPL-2.0-or-later** branch, which matches the
+    licence of FFN's own code and avoids a mixed-licence combination question.
+
+
+-------------------------------------------------------------------------------
+5. Linux kernel patches
+-------------------------------------------------------------------------------
+
+Kernel patches shipped under the platform submodule apply to Linux 4.9.57 as
+distributed in the OCTEON SDK, which is GPL-2.0. The unmodified upstream code
+remains under its own licence; the hunks FFN adds are FFN's own work under
+GPL-2.0-or-later. Each patch carries a header naming the upstream file it
+applies to.
+
+
+-------------------------------------------------------------------------------
+6. What is deliberately absent
+-------------------------------------------------------------------------------
+
+No vendor firmware, kernel image, kernel module, bootloader, root filesystem,
+FPGA bitstream, configuration file, or source code is redistributed by this
+project, in this repository or any other. Where vendor firmware is required to
+bring a board up, it is used in place on the appliance the operator already
+owns.
+
+That is enforced, not merely promised: `ffn_vendor.py` has a `check-clean` mode
+whose job is to prove no vendor-supplied content has entered a build.

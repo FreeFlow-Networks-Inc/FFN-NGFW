@@ -1,0 +1,44 @@
+{
+  "table": "ffn_ngfw",
+  "mgmt_ifaces": ["eno1"],
+  "mgmt_tcp_ports": [22, 443],
+  "nfqueue_base": 0,
+  "data_frac": 0.5,
+  "realtime": true,
+  "vsys": [
+    {
+      "name": "vsys1",
+      "display_name": "tenant-a",
+      "zones": [
+        {"name": "lan", "interfaces": ["ens1f0"], "kind": "trust"},
+        {"name": "wan", "interfaces": ["ens1f1"], "kind": "untrust"}
+      ],
+      "rules": [
+        {"name": "web", "from_zone": "lan", "to_zone": "wan", "proto": "tcp",
+         "dports": [80, 443], "action": "allow", "inspect": true, "log": true},
+        {"name": "dns", "from_zone": "lan", "to_zone": "wan", "proto": "udp",
+         "dports": [53], "action": "allow", "inspect": true},
+        {"name": "any-out", "from_zone": "lan", "to_zone": "wan",
+         "action": "allow", "inspect": true},
+        {"name": "block-inbound", "from_zone": "wan", "to_zone": "lan",
+         "action": "deny", "log": true}
+      ],
+      "nat": [{"name": "egress", "to_zone": "wan", "kind": "masquerade"}]
+    },
+    {
+      "name": "vsys2",
+      "display_name": "tenant-b",
+      "zones": [
+        {"name": "lan", "interfaces": ["ens2f0"], "kind": "trust"},
+        {"name": "wan", "interfaces": ["ens2f1"], "kind": "untrust"}
+      ],
+      "rules": [
+        {"name": "web", "from_zone": "lan", "to_zone": "wan", "proto": "tcp",
+         "dports": [80, 443, 8080], "action": "allow", "inspect": true},
+        {"name": "block-inbound", "from_zone": "wan", "to_zone": "lan",
+         "action": "reject", "log": true}
+      ],
+      "nat": [{"name": "egress", "to_zone": "wan", "kind": "masquerade"}]
+    }
+  ]
+}

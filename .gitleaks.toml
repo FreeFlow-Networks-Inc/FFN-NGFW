@@ -1,0 +1,23 @@
+# gitleaks configuration.
+#
+# Two files contain byte strings that look exactly like key material and are not:
+# they are the published known-answer test vectors from RFC 8032 and from NIST.
+# A scanner that flags them is correct about the shape and wrong about the
+# meaning, and the first push will fail on them unless they are allowlisted.
+#
+# This file is deliberately narrow. It allowlists two known files for one known
+# reason -- it does not disable any rule globally, because the next real secret
+# should still be caught.
+title = "FFN-NGFW"
+
+[extend]
+useDefault = true
+
+[[rules]]
+  id = "generic-api-key"
+  [rules.allowlist]
+    description = "Published standards test vectors, not secrets. RFC 8032 s7.1 Ed25519 seeds and NIST known-answer vectors."
+    paths = [
+      '''ffn_ed25519\.py''',
+      '''ffn_fips_selftest\.py''',
+    ]
