@@ -40,6 +40,7 @@ from fastapi import (
     Header,
     HTTPException,
     Query,
+    Request,
     UploadFile,
     WebSocket,
     WebSocketDisconnect,
@@ -2194,12 +2195,33 @@ async def init_db():
         cursor = await db.execute("SELECT COUNT(*) FROM users")
         row = await cursor.fetchone()
         if row[0] == 0:
-            hashed = pwd_context.hash("admin")
+            # NEVER a fixed password. This used to seed "admin"/"admin" and log
+            # the pair; with the source published that is a known credential on
+            # every deployment that has not changed it yet.
+            from_env = os.getenv("FFN_ADMIN_INITIAL_PASSWORD")
+            initial = from_env or secrets.token_urlsafe(15)
             await db.execute(
                 "INSERT INTO users (username, password_hash, role, must_change_pw) VALUES (?, ?, ?, ?)",
-                ("admin", hashed, "admin", 1),
+                ("admin", pwd_context.hash(initial), "admin", 1),
             )
-            logger.info("Created default admin user (admin/admin)")
+            if from_env:
+                logger.warning(
+                    "Created initial admin account from "
+                    "FFN_ADMIN_INITIAL_PASSWORD. It must be changed at first "
+                    "login.")
+            else:
+                # Shown once, at creation, because there is no other way for the
+                # operator to learn it. To stderr as well as the log, so it is
+                # visible on a console-only first boot. Never logged again.
+                logger.warning("Created initial admin account with a generated "
+                               "password (printed to the console once).")
+                bar = "=" * 68
+                print("\n%s\nFFN-NGFW initial admin credentials\n"
+                      "  username : admin\n"
+                      "  password : %s\n"
+                      "This is shown ONCE. It must be changed at first login.\n"
+                      "%s\n" % (bar, initial, bar),
+                      file=sys.stderr, flush=True)
 
         # Seed engine states
         cursor = await db.execute("SELECT COUNT(*) FROM engine_state")
@@ -2336,16 +2358,28 @@ async def audit(db, username: str, action: str, detail: str = ""):
 # ---------------------------------------------------------------------------
 
 
-def create_token(username: str, role: str) -> str:
+def create_token(username: str, role: str, pw_change_only: bool = False) -> str:
     expire = datetime.utcnow() + timedelta(minutes=JWT_EXPIRE_MINUTES)
-    return jwt.encode(
-        {"sub": username, "role": role, "exp": expire},
-        JWT_SECRET,
-        algorithm=JWT_ALGORITHM,
-    )
+    claims = {"sub": username, "role": role, "exp": expire}
+    if pw_change_only:
+        # Scoped token. The previous behaviour was to issue a FULL token and
+        # report must_change_pw in the response body, leaving enforcement to
+        # the client -- which trusts whoever holds the token to volunteer for a
+        # restriction. An attacker will not volunteer.
+        claims["pwc"] = True
+    return jwt.encode(claims, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+# The only endpoints a password-change-only token may reach: changing the
+# password, and reading who you are so the UI can render the form.
+PW_CHANGE_ALLOWED_PATHS = frozenset({
+    "/api/auth/change-password",
+    "/api/auth/me",
+})
 
 
 async def get_current_user(
+    request: Request,
     authorization: Optional[str] = Header(None),
 ):
     """Extract and validate JWT from Authorization header."""
@@ -2359,7 +2393,12 @@ async def get_current_user(
         role = payload.get("role", "viewer")
         if username is None:
             raise HTTPException(status_code=401, detail="Invalid token")
-        return {"username": username, "role": role}
+        if payload.get("pwc") and request.url.path not in PW_CHANGE_ALLOWED_PATHS:
+            raise HTTPException(
+                status_code=403,
+                detail="Password change required before using this API")
+        return {"username": username, "role": role,
+                "pw_change_required": bool(payload.get("pwc"))}
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
@@ -3200,7 +3239,8 @@ async def login(req: LoginRequest):
             (user["id"],),
         )
         await audit(db, req.username, "login")
-        token = create_token(user["username"], user["role"])
+        token = create_token(user["username"], user["role"],
+                             pw_change_only=bool(user["must_change_pw"]))
         return {
             "access_token": token,
             "token_type": "bearer",
@@ -3231,7 +3271,11 @@ async def change_password(req: ChangePassword, user: dict = Depends(get_current_
             (new_hash, user["username"]),
         )
         await audit(db, user["username"], "change_password")
-        return {"status": "ok"}
+        # The caller's token still carries the pwc scope, so issue a full one
+        # rather than leaving them locked out of everything they just unlocked.
+        return {"status": "ok",
+                "access_token": create_token(user["username"], user["role"]),
+                "token_type": "bearer"}
 
 
 # ==========================================================================
