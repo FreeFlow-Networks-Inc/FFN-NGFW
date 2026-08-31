@@ -13,7 +13,7 @@ deliberately skips them.
 
 Machine-readable: [`platforms.json`](platforms.json). Browsable:
 
-    ./ffn_platform.py list
+    ./opt/ffn_platform.py list
 
 | platform | hardware | datapath | CPU isolation | status | git |
 |---|---|---|---|---|---|
@@ -34,9 +34,9 @@ constrained by it, since the management plane reaches the accelerator through
 
 ## Selecting one
 
-    ./ffn_platform.py select pa5200
-    ./ffn_platform.py current
-    ./ffn_platform.py deselect pa5200
+    ./opt/ffn_platform.py select pa5200
+    ./opt/ffn_platform.py current
+    ./opt/ffn_platform.py deselect pa5200
 
 Or with git directly:
 
@@ -45,7 +45,7 @@ Or with git directly:
 **`--checkout` is not optional.** It is what overrides `update = none`; without
 it git reports that it is skipping the submodule and leaves an empty directory —
 a failure that reads as a broken repository rather than a missing flag. That
-sharp edge is why `ffn_platform.py` exists.
+sharp edge is why `opt/ffn_platform.py` exists.
 
 One host is one platform. `ffn_platform.py select` refuses to add a second while
 one is checked out, because two declarations cannot both describe how one host's
@@ -79,7 +79,7 @@ throughput gain and makes the management plane less responsive during a traffic
 event — precisely when an operator needs it. Declaring `none` is how a platform
 says "do not tune this host as if it were a software forwarder."
 
-`ffn_cpuisol.py` reads this declaration, not the registry table above. The
+`opt/ffn_cpuisol.py` reads this declaration, not the registry table above. The
 registry duplicates the values so you can see them before cloning, and
 `ffn_platform.py verify` checks the two still agree — so drift is reported
 rather than quietly changing how a host is tuned.
@@ -137,4 +137,4 @@ repository, never in the firewall.
    above.
 5. Check your work:
 
-       ./ffn_platform.py verify
+       ./opt/ffn_platform.py verify

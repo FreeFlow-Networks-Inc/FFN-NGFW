@@ -34,6 +34,26 @@ import sys
 from typing import Dict, List, Optional, Tuple
 
 REGISTRY = os.path.join("platform", "platforms.json")
+
+def _repo_root() -> str:
+    """The repository root, found from this script's location.
+
+    Walks up looking for platform/platforms.json. Deriving it from __file__
+    rather than defaulting to os.getcwd() means the tool works from any working
+    directory -- and it has to, now that these scripts live in opt/ rather than
+    at the root they describe.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    d = here
+    for _ in range(4):
+        if os.path.isfile(os.path.join(d, "platform", "platforms.json")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return os.getcwd()          # last resort: behave as before
+
 GITMODULES = ".gitmodules"
 DECL = "platform.json"
 
@@ -359,9 +379,11 @@ def main(argv=None) -> int:
     ap.add_argument("cmd", choices=["list", "current", "select", "deselect",
                                     "verify", "selftest"])
     ap.add_argument("name", nargs="?")
-    ap.add_argument("--root", default=".")
+    ap.add_argument("--root", default=None)
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
+    if a.root is None:
+        a.root = _repo_root()
 
     if a.cmd == "selftest":
         return selftest()

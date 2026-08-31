@@ -13,9 +13,9 @@ of hardware that does not need tuning.
     git clone https://github.com/FreeFlow-Networks-Inc/FFN-NGFW
     cd FFN-NGFW
     pip install -r requirements.txt
-    ./ffn_hwdetect.py --brief          # what am I running on
-    ./ffn_cpuisol.py show              # what FFN would tune, and why
-    ./ffn_platform.py list             # hardware platforms available
+    ./opt/ffn_hwdetect.py --brief          # what am I running on
+    ./opt/ffn_cpuisol.py show              # what FFN would tune, and why
+    ./opt/ffn_platform.py list             # hardware platforms available
 
 Verified on a plain x86-64 host with no accelerator, no FPGA and no
 co-processor, from a clean clone:
@@ -63,8 +63,8 @@ Run end to end, from a clean clone:
 
 ### Recognised by autodetection
 
-`ffn_hwdetect.py` identifies and classifies these specifically, which is what
-lets `ffn_cpuisol.py` make sensible tuning decisions. **Recognised is not the
+`opt/ffn_hwdetect.py` identifies and classifies these specifically, which is what
+lets `opt/ffn_cpuisol.py` make sensible tuning decisions. **Recognised is not the
 same as tested** — it means FFN knows what the device is, reads its NUMA node
 and link speed, and will not mistake it for something else.
 
@@ -104,11 +104,11 @@ node, plus CPU topology and accelerators.
 FFN detects CPUs, NUMA topology, NICs and accelerators, decides what the host
 needs, and can write it to the kernel command line:
 
-    ./ffn_cpuisol.py show          # the decision and the reasoning
-    ./ffn_cpuisol.py diff          # exactly what applying would change
-    sudo ./ffn_cpuisol.py apply --yes
-    ./ffn_cpuisol.py verify        # running kernel vs. the plan
-    sudo ./ffn_cpuisol.py revert --yes
+    ./opt/ffn_cpuisol.py show          # the decision and the reasoning
+    ./opt/ffn_cpuisol.py diff          # exactly what applying would change
+    sudo ./opt/ffn_cpuisol.py apply --yes
+    ./opt/ffn_cpuisol.py verify        # running kernel vs. the plan
+    sudo ./opt/ffn_cpuisol.py revert --yes
 
 On generic hardware with a DPDK datapath it isolates the poll-mode cores from
 the scheduler (`isolcpus`), the timer tick (`nohz_full`) and RCU callbacks
@@ -139,9 +139,9 @@ machine that does not come back:
 Platform support lives in separate repositories, listed in
 [platform/platforms.json](platform/platforms.json) and browsable with:
 
-    ./ffn_platform.py list
-    ./ffn_platform.py select <name>
-    ./ffn_platform.py current
+    ./opt/ffn_platform.py list
+    ./opt/ffn_platform.py select <name>
+    ./opt/ffn_platform.py current
 
 Platforms are **opt-in**. They are registered in `.gitmodules` with
 `update = none`, so `git clone` — *including* `git clone --recursive` — skips
@@ -170,20 +170,29 @@ platform provides, and how to add one.
     examples/          worked configuration examples
     tools/             host diagnostics
     platform/          hardware platform registry and opt-in submodules
-    ffn_hwdetect.py    hardware, CPU, NUMA, NIC and accelerator autodetection
-    ffn_cpuisol.py     CPU isolation decision and kernel command line
-    ffn_cpu_planes.py  management / control / data plane core partitioning
-    ffn_platform.py    list and select hardware platforms
-    *.py               management plane: policy compiler, signature and threat
-                       databases, detection engines, updater, sysd
+    tests/             tests that need the app importable
+    opt/               ALL the Python: management plane and host tooling
+      ffn_manager.py     the API server and management plane
+      ffn_hwdetect.py    hardware, CPU, NUMA, NIC and accelerator autodetection
+      ffn_cpuisol.py     CPU isolation decision and kernel command line
+      ffn_cpu_planes.py  management / control / data plane core partitioning
+      ffn_platform.py    list and select hardware platforms
+      ...                policy compiler, signature and threat databases,
+                         detection engines, updater, sysd
 
 ## Building
 
 The portable parts need only a C compiler and Python 3:
 
-    cd dataplanes && make && make test      # dataplane and its test suite
-    cd dpdk && make                        # needs DPDK headers
-    pip install -r requirements.txt         # management plane
+    make                                   # the dataplane
+    make test                              # and its test suite
+    make dpdk                              # needs DPDK headers
+    pip install -r requirements.txt        # management plane (in opt/)
+
+The Python lives in `opt/` as a flat directory rather than a package, so the
+existing flat imports (`import ffn_sigdb`) keep working: running
+`python opt/ffn_manager.py` puts `opt/` on `sys.path` automatically. That is why
+the move needed no import changes.
 
 Platform components cross-compile to their own targets and document that
 themselves.
@@ -200,7 +209,7 @@ openly licensed.** No vendor code, binaries, firmware, or configuration is
 redistributed. Where vendor firmware is needed to bring a board up, it is used
 in place on the appliance the operator already owns and is never packaged.
 
-The rule has teeth: `ffn_vendor.py` has a `check-clean` mode whose job is to
+The rule has teeth: `opt/ffn_vendor.py` has a `check-clean` mode whose job is to
 prove no vendor-supplied content has entered a build. Anything learned by
 analysing a particular appliance is reference material about that hardware and
 lives with its platform, never here.
@@ -224,5 +233,5 @@ Where `pyroute2` offers a choice of GPL-2.0-or-later or Apache-2.0, this project
 elects the GPL branch.
 
 Third-party obligations are in [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES). Note
-that `ffn_license.py` is FFN's entitlement module and has nothing to do with
+that `opt/ffn_license.py` is FFN's entitlement module and has nothing to do with
 copyright licensing.

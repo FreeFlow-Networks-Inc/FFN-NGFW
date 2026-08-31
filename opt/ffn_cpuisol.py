@@ -80,6 +80,26 @@ DROPIN_DIR = "/etc/default/grub.d"
 DROPIN = os.path.join(DROPIN_DIR, "99-ffn-cpuisol.cfg")
 GRUB_DEFAULT = "/etc/default/grub"
 PLATFORM_DIR = "platform"
+
+def _repo_root() -> str:
+    """The repository root, found from this script's location.
+
+    Walks up looking for platform/platforms.json. Deriving it from __file__
+    rather than defaulting to os.getcwd() means the tool works from any working
+    directory -- and it has to, now that these scripts live in opt/ rather than
+    at the root they describe.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    d = here
+    for _ in range(4):
+        if os.path.isfile(os.path.join(d, "platform", "platforms.json")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return os.getcwd()          # last resort: behave as before
+
 PLATFORM_DECL = "platform.json"
 
 # Tokens this module owns. Anything matching these is removed before ours are
@@ -788,12 +808,14 @@ def main(argv=None) -> int:
         description="hardware-driven CPU isolation and kernel command line")
     ap.add_argument("cmd", choices=["show", "plan", "cmdline", "diff", "apply",
                                     "revert", "verify", "selftest"])
-    ap.add_argument("--root", default=".",
+    ap.add_argument("--root", default=None,
                     help="repository root, for finding platform/*/platform.json")
     ap.add_argument("--yes", action="store_true", help="required by apply/revert")
     ap.add_argument("--no-regen", action="store_true",
                     help="do not run update-grub after writing")
     a = ap.parse_args(argv)
+    if a.root is None:
+        a.root = _repo_root()
 
     if a.cmd == "selftest":
         return selftest()
