@@ -1,113 +1,135 @@
 # FFN-NGFW
 
-A next-generation firewall built to run on **end-of-life Palo Alto Networks
-PA-5200-series appliances**, using FFN's own code.
+A next-generation firewall that runs on **ordinary Linux**, with optional
+hardware platform support you select at clone time.
 
-These appliances are capable machines — multiple OCTEON co-processors, an FPGA,
-a Broadcom switch fabric, 100G optics — that become e-waste the day their
-support contract ends, because the software that drives them stops being
-available. This project is the software: enough of it, written from scratch, to
-make the hardware useful again.
+Nothing here requires special hardware. The dataplane, policy engine, signature
+engines, management plane and console all build and run on a commodity x86 box.
+Accelerators and specific appliances are handled by **platform submodules**,
+which are opt-in — a platform is only useful on the hardware it describes, so it
+is never pulled in by default.
 
-## Why the code is written the way it is
+## It really does run anywhere
 
-**Everything shipped is FFN's own code or openly licensed.** No vendor code,
-binaries, firmware, or configuration is redistributed. Where vendor firmware is
-needed to bring a board up, it is used **in place on the appliance the owner
-already has** and is never packaged into anything this project distributes.
+Verified on a plain x86 Linux host with no accelerator, no FPGA and no
+co-processor, from a clean clone of this repository:
 
-That rule shapes real engineering decisions rather than sitting in a README. It
-is why the PCIe transports here are FFN's own protocol instead of a
-reimplementation of the vendor's; why the OCTEON support is built against the
-BSD-licensed parts of the vendor SDK; and why anything learned by analysing the
-appliance lives in a separate reference repository rather than in this one.
+    git clone https://github.com/FreeFlow-Networks-Inc/FFN-NGFW
+    cd FFN-NGFW/octeon-dp
+    make && make test
+    ...
+    ==== ffn_dp_oct test: 0 failed ====
 
-## Repository layout
+That suite exercises the real code paths — policy classification, the flow
+cache, cache invalidation on policy reload, fail-closed defaults, and packet I/O
+through the backend — not stubs.
 
-    octeon/            OCTEON co-processor bring-up and transports
-      dpnet/           CP <-> DP virtual Ethernet over PCIe (FFN's own protocol)
-      dpagent/         DP-side control/shell agent
-      dpboot/          DP boot and DRAM tooling
-      dproot/          DP root filesystem staging
-      pcnet/           MP <-> CP virtual Ethernet over PCIe
-      transport/       shared transport definitions
-      patches/         kernel patches against the OCTEON SDK tree
-    host-transport/    management-plane side of the PCIe transports
-    tools/             operator tooling
-    hw/                hardware reference material (git submodules, see below)
+The dataplane has two portable backends and no hard dependency on either:
 
-## Submodules: hardware reference material
+  * **AF_PACKET** (`octeon-dp/`) — the reference backend. Works on any Linux
+    interface, including a `veth` pair (`make veth-test`), which makes the whole
+    forwarding path testable on a laptop.
+  * **DPDK** (`dpdk/`) — the userspace fast path, on any DPDK-capable NIC.
 
-Talking to this hardware means knowing things about it that are not publicly
-documented. Those findings are **not** in this repository. They live in
-hardware-specific reference repositories, wired in as submodules:
+Co-processor support is compiled in only when asked for (`-DFFN_HAVE_CVMX`), and
+the management plane degrades cleanly when no accelerator device is present
+rather than refusing to start.
 
-    hw/pa5220     PA-5220 (Gryphon): OCTEON CN73XX/CN78XX, FE100 FPGA, BCM88375
+## Selecting a hardware platform
 
-The split is deliberate and load-bearing:
+A plain clone gives you the portable firewall. Platform support is registered in
+`.gitmodules` but marked `update = none`, so **even `git clone --recursive` skips
+it** — you choose:
 
-- this repository stays what it claims to be — FFN's own code, under an
-  open-source licence;
-- reference material about a third party's hardware is a different kind of
-  artifact, with different licensing and different distribution questions, and
-  is versioned separately;
-- someone reading the code can see the protocol FFN implements without wading
-  through the archaeology that informed it, and vice versa.
+    git submodule update --init --checkout platform/pa5200
 
-Clone with submodules:
+| platform | hardware | repository |
+|---|---|---|
+| `platform/pa5200` | Palo Alto PA-5200-series appliances (OCTEON CN73XX/CN78XX, FE100 FPGA, BCM88375) | [ffn-platform-pa5200](https://github.com/FreeFlow-Networks-Inc/ffn-platform-pa5200) |
 
-    git clone --recursive https://github.com/FreeFlow-Networks-Inc/FFN-NGFW
+See [platform/README.md](platform/README.md) for what a platform provides and
+how to add one.
 
-Submodules may be private. If you do not have access, the clone still succeeds
-for the code — you will simply have an empty `hw/` directory, and anything that
-needs a register offset will tell you which submodule it came from.
+### Why opt-in rather than automatic
 
-## Status
+A PA-5200 platform checkout on a device that is not a PA-5200 is not merely
+unnecessary, it is misleading: it ships boot orchestration, chassis models and
+register maps for hardware that is not there. Making platforms explicit keeps
+this repository honest about what it is — a firewall — and keeps the hardware
+archaeology of any particular chassis out of it.
 
-Working, on live hardware:
+It also means `git clone` stays fast and self-contained, and a missing or
+inaccessible platform repository can never break a clone of the firewall.
 
-- **MP <-> CP transport** — virtual Ethernet over PCIe, rings in CP DRAM
-  reached through the BAR1 window. Carries the CP's NFS root.
-- **CP <-> DP transport** (`octeon/dpnet`) — the same idea one level down, rings
-  in DP DRAM. 128 Mbit/s TCP, zero CRC failures and zero drops under load.
-  See `octeon/dpnet/DPNET.md`.
-- **DP bring-up** — 40 cores up under an FFN-built kernel, a control channel
-  over PCIe, and a root filesystem staged across the same link.
+## Layout
 
-Not yet done: the FE100 FPGA and BCM88375 switch fabric bring-up, which is what
-turns this from a pair of reachable co-processors into a forwarding plane. The
-transports above are management paths; they are not the data path.
-
-This is an active project on unusual hardware. Expect sharp edges, and expect
-the documentation to admit where something was wrong the first time — those
-notes are usually the useful ones.
+    octeon-dp/         portable dataplane: policy engine, flow cache,
+                       AF_PACKET backend, optional co-processor backends
+    dpdk/              userspace fast path and its multi-process plumbing
+    src/  libngfw/     accelerator device interface (optional at runtime)
+    static/            management console
+    examples/          worked configuration examples
+    tools/             host diagnostics
+    platform/          hardware platforms (opt-in submodules)
+    *.py               management plane: policy compiler, signature and
+                       threat databases, detection engines, updater, sysd
 
 ## Building
 
-The OCTEON components cross-compile to **big-endian MIPS64**
-(`mips64-linux-gnuabi64-gcc`). Each has a `Makefile` with a `check` target that
-refuses a binary which is not big-endian, static and 64-bit — a silently
-little-endian build reads every shared control field byte-reversed and presents
-as flaky hardware, so it is worth failing loudly.
+The portable parts need only a C compiler and Python 3:
 
-The management-plane components are Python 3. Note that the CP's userland runs
-Python 2.7, so tooling that must run there is written for both.
+    cd octeon-dp && make && make test      # dataplane + its test suite
+    cd dpdk && make                        # needs DPDK headers
+    pip install -r requirements.txt        # management plane
+
+Platform components cross-compile to their own targets and document that
+themselves; the PA-5200 platform builds big-endian MIPS64 and its `Makefile`s
+have a `check` target that refuses a binary of the wrong endianness, linkage or
+word size. A silently little-endian build there reads every shared control field
+byte-reversed and presents as flaky hardware, so failing loudly is worth it.
+
+## Where this came from
+
+The first platform exists because PA-5200-series appliances are capable machines
+— multiple co-processors, an FPGA, a switch fabric, 100G optics — that become
+e-waste the day their support contract ends, purely because the software that
+drove them stops being available. Writing the software from scratch makes the
+hardware useful again.
+
+That motivation shaped a rule the whole project follows: **everything shipped is
+FFN's own code or openly licensed.** No vendor code, binaries, firmware, or
+configuration is redistributed. Where vendor firmware is needed to bring a board
+up, it is used in place on the appliance the operator already owns and is never
+packaged.
+
+The rule has teeth: `ffn_vendor.py` has a `check-clean` mode whose job is to
+prove no vendor-supplied content has entered a build. Anything learned by
+analysing an appliance is reference material about that hardware, and lives with
+that platform rather than here.
+
+## Status
+
+Working: management plane, policy and signature engines, the portable dataplane
+with its test suite, the DPDK forwarder, and the console.
+
+The PA-5200 platform boots both co-processors under FFN-built kernels and
+carries its own PCIe transports (128 Mbit/s, zero CRC failures under load). Its
+switch-fabric bring-up is not done, so on that platform the transports are
+management paths rather than the forwarding path.
+
+Active project on unusual hardware. Expect sharp edges, and expect the
+documentation to say where something was wrong the first time — those notes are
+usually the useful ones.
 
 ## Licence
 
-**GPL-2.0-or-later** ([COPYING](COPYING)) for FFN's own code in this repository.
+**GPL-2.0-or-later** ([COPYING](COPYING)) for FFN's own code.
 
-Not an arbitrary pick: 28 files in this tree already asserted
-`SPDX-License-Identifier: GPL-2.0-or-later` before publication, including every
-file under `octeon-dp/`, so this is the licence the code was written under. The
-one dissenting file (`src/ngfwd.c`, previously Apache-2.0) is relicensed to match
-rather than leaving a mixed-licence program for someone else to reason about.
+28 files asserted this before publication, including all of `octeon-dp/`, so it
+is the licence the code was written under rather than one chosen afterwards.
 Where `pyroute2` offers a choice of GPL-2.0-or-later or Apache-2.0, this project
 elects the GPL branch.
 
-Third-party components retain their own licences; see
-[THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES). Note that `ffn_license.py` is FFN's
-entitlement module and has nothing to do with copyright licensing.
-
-Hardware reference material in submodules documents third-party interfaces and
-is not covered by this grant — see each submodule's own README.
+Third-party obligations are in [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES).
+Note that `ffn_license.py` is FFN's entitlement module and has nothing to do
+with copyright licensing.

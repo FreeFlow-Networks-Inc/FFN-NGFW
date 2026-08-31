@@ -1,3 +1,4 @@
 [submodule "platform/pa5200"]
 	path = platform/pa5200
 	url = https://github.com/FreeFlow-Networks-Inc/ffn-platform-pa5200.git
+	update = none
