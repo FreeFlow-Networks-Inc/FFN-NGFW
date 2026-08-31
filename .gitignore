@@ -34,8 +34,13 @@ __pycache__/
 *.cmd
 Module.symvers
 modules.order
-octeon/dpnet/ffn_dpnetd
-octeon/dpagent/ffn_dpagent2
+dataplanes/ffn_dp_afpacket
+dataplanes/ffn_dp_oct_test
+dataplanes/ffn_dp_oct_io_test
+dataplanes/ffn_dp_oct3_io_test
+dpdk/ffn-dpdk-mp
+dpdk/ffn-fastpath-fwd
+dpdk/ffn_hs_build
 build/
 dist/
 

@@ -20,7 +20,7 @@ of hardware that does not need tuning.
 Verified on a plain x86-64 host with no accelerator, no FPGA and no
 co-processor, from a clean clone:
 
-    cd octeon-dp && make && make test
+    cd dataplanes && make && make test
     ...
     ==== ffn_dp_oct test: 0 failed ====
 
@@ -39,11 +39,64 @@ Two portable backends, no hard dependency on either:
 | backend | where | use |
 |---|---|---|
 | **DPDK** (`dpdk/`) | any DPDK-capable NIC | the default fast path |
-| **AF_PACKET** (`octeon-dp/`) | any Linux interface, including a `veth` pair | reference and development; `make veth-test` |
+| **AF_PACKET** (`dataplanes/`) | any Linux interface, including a `veth` pair | reference and development; `make veth-test` |
 
 Co-processor backends compile in only when asked for (`-DFFN_HAVE_CVMX`), and the
 management plane degrades cleanly when no accelerator device is present rather
 than refusing to start.
+
+## Supported hardware
+
+Three tiers, kept separate on purpose because they mean different things. The
+first is "we have run it", the second is "FFN knows what this is", and the third
+is "nothing here should care".
+
+### Verified
+
+Run end to end, from a clean clone:
+
+| hardware | what was verified |
+|---|---|
+| generic x86-64 Linux, no accelerator | `dataplanes` builds and its test suite passes (`make test` → 0 failed): policy classification, flow cache, invalidation on policy reload, fail-closed defaults, packet I/O |
+| PA-5200-series appliances | via the `pa5200` platform — see [platform/README.md](platform/README.md) |
+
+### Recognised by autodetection
+
+`ffn_hwdetect.py` identifies and classifies these specifically, which is what
+lets `ffn_cpuisol.py` make sensible tuning decisions. **Recognised is not the
+same as tested** — it means FFN knows what the device is, reads its NUMA node
+and link speed, and will not mistake it for something else.
+
+| class | vendor | detected via |
+|---|---|---|
+| 1/10/25/40 GbE NICs | Intel | `igb` (i210/i350), `ixgbe` (82599/X520/X540), `i40e` (X710/XL710), `ice` (E810) |
+| 25/100 GbE NICs, SmartNICs | NVIDIA / Mellanox | `mlx5_core`, PCI vendor `15b3` (ConnectX family) |
+| DPU | NVIDIA BlueField | PCI `15b3` + `/dev/rshim*`, `/dev/mst/*`, `tmfifo_net*`; firmware via `mlxfwmanager` |
+| FPGA accelerators | Xilinx | PCI vendor `10ee` |
+| FPGA accelerators | Intel / Altera | PCI vendor `1172` |
+| Crypto offload | Intel QuickAssist (QAT) | PCI class `0b40` / device name |
+| CPU crypto | Intel, AMD | CPUID flags: AES-NI, VAES, SHA-NI, PCLMULQDQ, AVX2, AVX-512 |
+| Virtualisation | Intel, AMD | VT-x, AMD-V |
+
+Onboard ASPEED and Matrox display controllers are deliberately classified as
+BMC/VGA rather than as GPU accelerators — on a server they are the management
+console's display, not something to schedule work on.
+
+### Should work, not specifically enumerated
+
+**Any NIC DPDK can bind.** FFN uses DPDK's own device layer rather than
+maintaining a driver list, so a NIC bound through `vfio-pci`, `igb_uio` or
+`uio_pci_generic` is surfaced as a DPDK-bound device and used, whether or not
+FFN recognises the model. Devices bound to DPDK disappear from
+`/sys/class/net`, so they are enumerated from PCI instead.
+
+Likewise **any Linux interface** works with the AF_PACKET dataplane, including
+`veth` pairs, VLANs, bonds and overlay interfaces — which is what makes the
+forwarding path testable on a laptop.
+
+If you run FFN on hardware not listed above, `ffn_hwdetect.py --json` is the
+thing to send: it reports every NIC with its driver, PCI ID, link speed and NUMA
+node, plus CPU topology and accelerators.
 
 ## Hardware autotuning
 
@@ -101,7 +154,7 @@ platform provides, and how to add one.
 
 ## Layout
 
-    octeon-dp/         portable dataplane: policy engine, flow cache,
+    dataplanes/        portable dataplanes: policy engine, flow cache,
                        AF_PACKET backend, optional co-processor backends
     dpdk/              DPDK fast path and its multi-process plumbing
     src/  libngfw/     accelerator device interface (optional at runtime)
@@ -120,7 +173,7 @@ platform provides, and how to add one.
 
 The portable parts need only a C compiler and Python 3:
 
-    cd octeon-dp && make && make test      # dataplane and its test suite
+    cd dataplanes && make && make test      # dataplane and its test suite
     cd dpdk && make                        # needs DPDK headers
     pip install -r requirements.txt         # management plane
 
@@ -157,7 +210,7 @@ something was wrong the first time — those notes are usually the useful ones.
 
 **GPL-2.0-or-later** ([COPYING](COPYING)) for FFN's own code.
 
-28 files asserted this before publication, including all of `octeon-dp/`, so it
+28 files asserted this before publication, including all of `dataplanes/`, so it
 is the licence the code was written under rather than one chosen afterwards.
 Where `pyroute2` offers a choice of GPL-2.0-or-later or Apache-2.0, this project
 elects the GPL branch.
