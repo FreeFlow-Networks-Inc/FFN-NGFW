@@ -15,7 +15,7 @@
 #                      (ffn_dpdk_mp.c + ffn_fastpath_fwd.c worker + ffn_mpdp_consumer.c, -pthread)
 #   ffn_hs_build     : the one libhs-gated Hyperscan DB serializer (unchanged)
 #
-# Flatcc codegen turns ../ngfwd/ffn_mpdp.fbs into the C reader/builder/verifier
+# Flatcc codegen turns ../ffn_mpdp.fbs into the C reader/builder/verifier
 # headers that ffn_mpdp_consumer.c #includes.
 #
 #   verify deps:   make check
@@ -77,8 +77,8 @@ CFLAGS  += -std=gnu11 -O2 -g -Wall -Wextra \
 # Objects first, then the flatcc static runtime, then DPDK + Hyperscan libs.
 LDLIBS  += $(DPDK_LIBS) $(HS_LIBS)
 
-# ---- flatcc codegen (../ngfwd/ffn_mpdp.fbs -> reader/builder/verifier) ------
-FBS        := ../ngfwd/ffn_mpdp.fbs
+# ---- flatcc codegen (../ffn_mpdp.fbs -> reader/builder/verifier) ------
+FBS        := ../ffn_mpdp.fbs
 # `flatcc -a` (== reader+builder+verifier+json) emits, for schema ffn_mpdp.fbs
 # (flatcc 0.6.x canonical names -- the reader is ffn_mpdp_reader.h, NOT
 # ffn_mpdp.h; the builder/verifier #include the reader). These match the

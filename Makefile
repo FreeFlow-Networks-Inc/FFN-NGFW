@@ -1,34 +1,24 @@
-# FFN-NGFW-FPGA Control Plane Software
-# Build: make
-# Install: sudo make install
+# FFN-NGFW -- top-level build.
+#
+# Builds the portable parts. The FPGA control-plane build (ngfwctl, ngfwd,
+# libngfw) is not here: it lives in the FFN-NGFW-FPGA platform submodule
+# alongside the proprietary library it links against.
 
-CC      = gcc
-CFLAGS  = -O2 -Wall -Wextra -std=c11
-LDFLAGS =
+.PHONY: all dataplanes dpdk test clean
 
-PREFIX  = /usr/local
-BINDIR  = $(PREFIX)/bin
-CONFDIR = /etc/ngfw
+# Plain `make` builds what works on any host, so it does not fail on a box
+# without DPDK headers.
+all: dataplanes
 
-.PHONY: all clean install
+dataplanes:
+	$(MAKE) -C dataplanes
 
-all: ngfwctl
+dpdk:
+	$(MAKE) -C dpdk
 
-ngfwctl: ngfwctl.c ngfw_regs.h
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+test:
+	$(MAKE) -C dataplanes test
 
 clean:
-	rm -f ngfwctl
-
-install: ngfwctl
-	install -d $(DESTDIR)$(BINDIR)
-	install -d $(DESTDIR)$(CONFDIR)
-	install -m 755 ngfwctl $(DESTDIR)$(BINDIR)/
-	@echo "Installed ngfwctl to $(BINDIR)"
-	@echo "Config dir: $(CONFDIR)"
-	@echo ""
-	@echo "Quick start:"
-	@echo "  ngfwctl status              # check FPGA status"
-	@echo "  ngfwctl engine list         # show engine enable state"
-	@echo "  ngfwctl port enable 0 1 2 3 # enable all ports"
-	@echo "  ngfwctl db load appid /etc/ngfw/appid.db"
+	$(MAKE) -C dataplanes clean
+	-$(MAKE) -C dpdk clean

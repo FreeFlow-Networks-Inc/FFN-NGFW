@@ -16,7 +16,6 @@
     "means the URL is reserved but not yet published -- listed so the intent is",
     "visible, and marked so nobody wastes time cloning a 404."
   ],
-
   "platforms": [
     {
       "name": "pa5200",
@@ -33,12 +32,13 @@
       "name": "vu9p",
       "path": "platform/vu9p",
       "url": "https://github.com/FreeFlow-Networks-Inc/FFN-NGFW-FPGA.git",
-      "status": "planned",
-      "hardware": "In-house VU9P FPGA accelerator card",
+      "status": "supported",
+      "hardware": "FFN VU9P FPGA accelerator card",
       "silicon": "Xilinx UltraScale+ VU9P",
       "datapath": "offload",
       "cpu_isolation": "none",
-      "notes": "Gateware and host driver. Not yet published; the repository needs its build artefacts removed from history first."
+      "notes": "PRIVATE and proprietary: FFN's own gateware interface and bitstream data, so it carries no open-source grant. Opt-in like every platform, which is what keeps a public clone of FFN-NGFW working without access to it.",
+      "visibility": "private"
     },
     {
       "name": "generic",

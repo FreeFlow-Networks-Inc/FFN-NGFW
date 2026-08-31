@@ -19,11 +19,18 @@ Machine-readable: [`platforms.json`](platforms.json). Browsable:
 |---|---|---|---|---|---|
 | `generic` | any x86-64 Linux host, DPDK-capable or AF_PACKET NIC | dpdk | auto | builtin | — (no submodule) |
 | `pa5200` | Palo Alto Networks PA-5200-series appliances | offload | none | supported | `https://github.com/FreeFlow-Networks-Inc/ffn-platform-pa5200.git` |
-| `vu9p` | in-house VU9P FPGA accelerator card | offload | none | **planned** | `https://github.com/FreeFlow-Networks-Inc/FFN-NGFW-FPGA.git` |
+| `vu9p` | FFN VU9P FPGA accelerator card | offload | none | supported, **private** | `https://github.com/FreeFlow-Networks-Inc/FFN-NGFW-FPGA.git` |
 
-`generic` is not a submodule — it is what FFN does with no platform selected.
-`planned` means the URL is reserved but the repository is not published yet;
+`generic` is not a submodule — it is what FFN does with no platform selected. A
+`planned` status (none at present) means a URL is reserved but not published yet;
 `ffn_platform.py select` refuses those rather than letting you clone a 404.
+
+`vu9p` is **private and proprietary**: FFN's own gateware interface and bitstream
+data, carrying no open-source grant. Selecting it needs access to that
+repository. Because platforms are opt-in, its being private costs a public
+cloner nothing — and FFN-NGFW's GPL licence neither extends to it nor is
+constrained by it, since the management plane reaches the accelerator through
+`/dev/ngfw0` ioctls rather than by linking its library.
 
 ## Selecting one
 
@@ -99,15 +106,27 @@ mix of:
   * transports: how the management plane reaches other processors on the board
   * host tooling: diagnostics and operator commands for that board
 
-A platform follows the same rule as the rest of the project: everything it ships
-is FFN's own code or openly licensed, and no vendor firmware, binaries or
-configuration is redistributed. Material recovered by analysing a vendor's
-hardware is reference material about that hardware — it belongs with the
-platform, or in a separate reference repository, never in the firewall.
+A platform follows the same rule as the rest of the project: **everything it
+ships is FFN's own code or openly licensed, and no vendor firmware, binaries or
+configuration is redistributed.**
+
+Note what that rule does and does not say. It constrains whose code may be
+shipped, not how FFN licenses its own — `vu9p` is proprietary FFN code and
+satisfies the rule completely, because the thing being prohibited is
+redistributing someone else's firmware, not publishing your own work under a
+licence of your choosing.
+
+Material recovered by analysing a vendor's hardware is reference material about
+that hardware — it belongs with the platform, or in a separate reference
+repository, never in the firewall.
 
 ## Adding a platform
 
-1. Create a repository, licensed compatibly (GPL-2.0-or-later matches the rest).
+1. Create a repository. GPL-2.0-or-later matches the rest of the project and is
+   the easy choice; FFN's own platform code may equally be proprietary, as
+   `vu9p` is. What matters is that nothing in it obliges FFN-NGFW, and that a
+   platform is never *linked* into the GPL side — platforms talk to the firewall
+   through device interfaces and `platform.json`, not by being linked against it.
 2. Give it a `platform.json` at its root.
 3. Register it opt-in:
 

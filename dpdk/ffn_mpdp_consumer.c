@@ -7,7 +7,7 @@
  *
  * flatcc code generation (Makefile owner adds the rule; run on the box):
  *
- *     flatcc -a -o . ../ngfwd/ffn_mpdp.fbs
+ *     flatcc -a -o . ../ffn_mpdp.fbs
  *
  *   -a  == reader + builder + verifier + json parser/printer.  Produces
  *          ffn_mpdp_reader.h, ffn_mpdp_builder.h, ffn_mpdp_verifier.h, ...

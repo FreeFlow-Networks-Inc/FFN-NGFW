@@ -43,7 +43,8 @@ BIN_MAGIC = b"FFND"
 BIN_VERSION = 2
 BIN_HEADER_SIZE = 32
 
-# ioctl constants -- these match the kernel driver definitions in ngfw_regs.h
+# ioctl constants -- these match the kernel driver definitions in
+# ngfw_regs.h, which lives in platform/vu9p (FFN-NGFW-FPGA submodule).
 # _IOW('N', 0x03, struct ngfw_tbl_write)   -> 16 bytes payload
 # _IOW('N', 0x09, struct ngfw_ddr_xfer)    -> 32 bytes payload
 # _IOW('N', 0x10, struct ngfw_ip_cfg_write) -> 16 bytes payload
@@ -69,7 +70,7 @@ NGFW_IOC_IP_CFG_WRITE = _iow(0x10, SIZEOF_IP_CFG_WRITE)
 SIZEOF_DDR_XFER = 32
 NGFW_IOC_DDR_WRITE = _iow(0x09, SIZEOF_DDR_XFER)
 
-# FPGA table IDs from ngfw_regs.h
+# FPGA table IDs from ngfw_regs.h in platform/vu9p (FFN-NGFW-FPGA submodule)
 NGFW_TBL_DDOS_ZONE_MAP   = 0x00
 NGFW_TBL_DDOS_THRESHOLDS = 0x01
 NGFW_TBL_DDOS_IP_BLOCKLIST = 0x02

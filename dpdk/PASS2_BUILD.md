@@ -60,7 +60,7 @@ that tree. The systemd unit sets this for you; a hand-run shell must export it.
 ```sh
 cd sw/salvage/dpdk
 
-make codegen     # /opt/flatcc/bin/flatcc -a -o . ../ngfwd/ffn_mpdp.fbs
+make codegen     # /opt/flatcc/bin/flatcc -a -o . ../ffn_mpdp.fbs
                  #   -> ffn_mpdp_reader.h  ffn_mpdp_builder.h  ffn_mpdp_verifier.h
                  #      ffn_mpdp_json_parser.h  ffn_mpdp_json_printer.h
                  #      flatbuffers_common_reader.h  flatbuffers_common_builder.h
@@ -98,7 +98,7 @@ deserializes `ffn_fastpath.block.hsdb` from `--tables <dir>`. Build them from th
 MP-side compiler, then serialize the Hyperscan DB (this is what carries EICAR):
 
 ```sh
-python3 ../ngfwd/ffn_fastpath_compile.py build --out /var/lib/ffn-ngfw/fastpath --seed
+python3 ../ffn_fastpath_compile.py build --out /var/lib/ffn-ngfw/fastpath --seed
 
 # ffn_hs_build takes the fastpath DIR and writes ffn_fastpath.block.hsdb +
 # ffn_fastpath.stream.hsdb into it (reads ffn_fastpath.hspat + .patmeta.bin):

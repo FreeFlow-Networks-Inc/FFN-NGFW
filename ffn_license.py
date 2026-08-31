@@ -29,7 +29,8 @@ path in `ffn_manager/fpga.py`.  It implements REWORK_CONTRACT §4:
     ``status()`` / ``host_dna_info()`` / ``reload()``.
 
 The ABI (FFN-LIC1 84-byte layout, feature IDs, sig algs) is FROZEN — see
-``libngfw/include/ngfw/ngfw_regs.h``.  Nothing here renumbers it.
+``libngfw/include/ngfw/ngfw_regs.h`` in platform/vu9p (FFN-NGFW-FPGA submodule).
+Nothing here renumbers it.
 
 Pass 1: pure Python, locally testable via ``python ffn_license.py selftest``.
 """
@@ -65,7 +66,8 @@ except Exception as _exc:  # pragma: no cover - environment dependent
 
 
 # ---------------------------------------------------------------------------
-# Frozen ABI constants (mirror ngfw_regs.h — do NOT renumber)
+# Frozen ABI constants (mirror ngfw_regs.h in platform/vu9p (FFN-NGFW-FPGA submodule) —
+# do NOT renumber)
 # ---------------------------------------------------------------------------
 NGFW_LIC_MAGIC = b"FFN-LIC1"
 NGFW_LIC_VERSION = 1

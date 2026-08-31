@@ -59,6 +59,7 @@ Run end to end, from a clean clone:
 |---|---|
 | generic x86-64 Linux, no accelerator | `dataplanes` builds and its test suite passes (`make test` → 0 failed): policy classification, flow cache, invalidation on policy reload, fail-closed defaults, packet I/O |
 | PA-5200-series appliances | via the `pa5200` platform — see [platform/README.md](platform/README.md) |
+| FFN VU9P FPGA accelerator card | via the `vu9p` platform (private; FFN's own gateware) |
 
 ### Recognised by autodetection
 
@@ -149,6 +150,14 @@ anything else it is bring-up code and register maps for absent hardware, which i
 misleading rather than merely redundant. It also means a clone of the firewall can
 never be broken by a platform repository being missing, renamed or inaccessible.
 
+One platform is private: `vu9p` holds FFN's own FPGA gateware interface and
+bitstream data, which is proprietary and carries no open-source grant. That is
+precisely why platforms are opt-in — a public clone of this repository works
+whether or not you can reach it, and this repository's GPL licence neither
+extends to it nor is constrained by it. The management plane reaches the
+accelerator through `/dev/ngfw0` ioctls rather than by linking its library, so
+the two remain separate programs.
+
 See [platform/README.md](platform/README.md) for the current list, what a
 platform provides, and how to add one.
 
@@ -157,7 +166,6 @@ platform provides, and how to add one.
     dataplanes/        portable dataplanes: policy engine, flow cache,
                        AF_PACKET backend, optional co-processor backends
     dpdk/              DPDK fast path and its multi-process plumbing
-    src/  libngfw/     accelerator device interface (optional at runtime)
     static/            management console
     examples/          worked configuration examples
     tools/             host diagnostics

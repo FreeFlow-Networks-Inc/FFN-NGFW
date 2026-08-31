@@ -2,3 +2,7 @@
 	path = platform/pa5200
 	url = https://github.com/FreeFlow-Networks-Inc/ffn-platform-pa5200.git
 	update = none
+[submodule "platform/vu9p"]
+	path = platform/vu9p
+	url = https://github.com/FreeFlow-Networks-Inc/FFN-NGFW-FPGA.git
+	update = none

@@ -335,7 +335,8 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 class FPGADevice:
     """Interface to the FPGA via /dev/ngfw0 ioctls and mapped memory."""
 
-    # Must match kernel driver's _IO* encoding — see ngfw_regs.h.
+    # Must match kernel driver's _IO* encoding — see ngfw_regs.h in
+    # platform/vu9p (FFN-NGFW-FPGA submodule).
     #   _IOWR('N', 0x01, struct ngfw_reg_rw)  — REG_READ  (size=8)
     #   _IOW ('N', 0x02, struct ngfw_reg_rw)  — REG_WRITE (size=8)
     #   _IOWR('N', 0x04, struct ngfw_stats_read) — STATS_READ (size=16)
@@ -351,7 +352,8 @@ class FPGADevice:
     IOCTL_DNA_READ   = (2 << 30) | (12 << 16) | (0x4E << 8) | 0x32  # 0x800C4E32
 
     # License payload layout (matches struct ngfw_lic_payload, 84 bytes) — the
-    # FPGA-DNA (accelerator) path; FROZEN, mirrors ngfw_regs.h.
+    # FPGA-DNA (accelerator) path; FROZEN, mirrors ngfw_regs.h in
+    # platform/vu9p (FFN-NGFW-FPGA submodule).
     NGFW_LIC_PAYLOAD_BYTES = 84
     NGFW_DEVICE_DNA_BYTES  = 12
     NGFW_SIG_ALG_ECDSA_P384 = 4
