@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "_comment": [
+    "Registry of hardware platform submodules. This is the list you choose from",
+    "BEFORE cloning a platform, so it carries enough to decide with: the git URL,",
+    "what hardware it is for, and how that hardware handles the datapath.",
+    "",
+    "AUTHORITY: the 'datapath' and 'cpu_isolation' fields here are informational,",
+    "for selection. The authoritative values live in each platform's own",
+    "platform/<name>/platform.json, which is what ffn_cpuisol.py reads. They are",
+    "duplicated here deliberately and `ffn_platform.py verify` checks that they",
+    "still agree, so drift becomes a reported error rather than a silent",
+    "disagreement about how a host should be tuned.",
+    "",
+    "STATUS: 'supported' means the repository exists and is usable. 'planned'",
+    "means the URL is reserved but not yet published -- listed so the intent is",
+    "visible, and marked so nobody wastes time cloning a 404."
+  ],
+
+  "platforms": [
+    {
+      "name": "pa5200",
+      "path": "platform/pa5200",
+      "url": "https://github.com/FreeFlow-Networks-Inc/ffn-platform-pa5200.git",
+      "status": "supported",
+      "hardware": "Palo Alto Networks PA-5200-series appliances",
+      "silicon": "Cavium OCTEON CN73XX (control plane) + CN78XX (data plane), Broadcom BCM88375 switch fabric, FE100 FPGA",
+      "datapath": "offload",
+      "cpu_isolation": "none",
+      "notes": "Forwarding runs on the co-processors, so host CPU isolation is not applied."
+    },
+    {
+      "name": "vu9p",
+      "path": "platform/vu9p",
+      "url": "https://github.com/FreeFlow-Networks-Inc/FFN-NGFW-FPGA.git",
+      "status": "planned",
+      "hardware": "In-house VU9P FPGA accelerator card",
+      "silicon": "Xilinx UltraScale+ VU9P",
+      "datapath": "offload",
+      "cpu_isolation": "none",
+      "notes": "Gateware and host driver. Not yet published; the repository needs its build artefacts removed from history first."
+    },
+    {
+      "name": "generic",
+      "path": null,
+      "url": null,
+      "status": "builtin",
+      "hardware": "Any x86-64 Linux host with a DPDK-capable or AF_PACKET NIC",
+      "silicon": "commodity",
+      "datapath": "dpdk",
+      "cpu_isolation": "auto",
+      "notes": "Not a submodule. This is what FFN-NGFW does with no platform selected: DPDK datapath, poll-mode cores isolated from the scheduler."
+    }
+  ]
+}
