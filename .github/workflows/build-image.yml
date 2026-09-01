@@ -1,0 +1,208 @@
+name: build image (unsigned)
+
+# Builds the x86 management-plane appliance image on a GitHub-hosted runner.
+#
+# WHAT THIS DOES NOT DO, on purpose: it does not sign anything, and it must not be
+# given the release signing key. FFN signs the update MANIFEST, not the image, so
+# signing is a cheap offline step over finished bytes -- the maintainer fetches this
+# artifact, runs verify-image.sh, then ffn_payload.py publish on the build server, and
+# the released bytes are bit-identical to what CI tested. Putting
+# /etc/ffn-ngfw/update-sign.key in Actions secrets would trade a NON-REVOCABLE trust
+# anchor for that convenience: there is no revocation, no expiry and no keyring in the
+# codebase, so a leaked seed lets anyone mint updates for every deployed appliance
+# forever, and the only remedy is hand-installing a new image on each one.
+#
+# The artifacts here are installable as-is: install-to-disk.sh performs no signature
+# check and the qcow2 boots directly. Only the A/B self-update path requires a
+# signature, and it fails closed.
+#
+# TREAT THE ARTIFACTS AS SENSITIVE. The image contains /etc/shadow with the hash of
+# the shipped setup password, so these are short-retention build artifacts, never a
+# public release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "profile basename under image/profiles (without .conf)"
+        default: pa-5220
+        type: string
+      keep_qcow2:
+        description: "also upload the qcow2 (2-3 GB)"
+        default: false
+        type: boolean
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: image build + verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      FFN_PRESEED: "1"
+      # The workspace volume has ~14 GB free; a full build peaks near 18 GB because
+      # the sparse 32 GiB RAW and the converted qcow2 coexist before the RAW is
+      # deleted. /mnt is the runner's large ephemeral disk.
+      BUILD_ROOT: /mnt/ffn-build
+      PROFILE_NAME: ${{ inputs.profile || 'pa-5220' }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - name: runner capacity
+        run: |
+          df -h / /mnt | sed 's/^/  /'
+          nproc | sed 's/^/  cpus: /'
+
+      - name: host build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            debootstrap qemu-utils grub-pc-bin grub-efi-amd64-bin grub2-common \
+            parted dosfstools e2fsprogs xz-utils zstd wget ca-certificates \
+            rsync git cloud-guest-utils gnupg
+
+      # ------------------------------------------------------------------------
+      # Assemble the PRESEED payload from the checkout.
+      #
+      # build.sh's default path harvests the BUILD HOST's own /opt, /etc and
+      # /var/lib, which is precisely how a shipped image came to carry the
+      # builder's hostname and IP addresses as its factory defaults. FFN_PRESEED=1
+      # takes a pre-staged payload instead, so CI never harvests a machine.
+      # ------------------------------------------------------------------------
+      - name: assemble payload from the repository
+        run: |
+          set -euo pipefail
+          mkdir -p "$BUILD_ROOT/payload/units"
+          P="$BUILD_ROOT/payload"
+
+          # provision.sh untars this with -C /opt, so the member prefix must be
+          # the installed directory name.
+          tar czf "$P/opt-ffn-ngfw-v2.tgz" \
+            --exclude=__pycache__ --exclude='*.pyc' --exclude=venv \
+            --transform 's,^opt,ffn-ngfw-v2,' opt
+          cp image/*.service "$P/units/" 2>/dev/null || true
+
+          # The updater's PUBLIC verification key. Not a secret -- it is 32 bytes of
+          # hex that every appliance carries so it can check signatures. Supplied as
+          # a repository variable so the image is not tied to one build host.
+          # verify-image.sh fails an image that has no update.pub, because such an
+          # appliance can never accept an update.
+          if [ -n "${FFN_UPDATE_PUB:-}" ]; then
+            printf '%s' "$FFN_UPDATE_PUB" | tr -d '[:space:]' > "$P/update.pub"
+            echo "  update.pub staged from repository variable"
+          fi
+
+          # Optional: a pre-staged payload bundle for the members this repository
+          # does not publish (see the preflight step below for the list). Must be a
+          # plain URL to a tarball of payload/ contents -- no credentials.
+          if [ -n "${FFN_PAYLOAD_URL:-}" ]; then
+            echo "  fetching supplementary payload"
+            curl -fsSL "$FFN_PAYLOAD_URL" -o /tmp/payload.tgz
+            tar xzf /tmp/payload.tgz -C "$P"
+          fi
+          ls -la "$P" | sed 's/^/    /'
+        env:
+          FFN_UPDATE_PUB: ${{ vars.FFN_UPDATE_PUB }}
+          FFN_PAYLOAD_URL: ${{ vars.FFN_PAYLOAD_URL }}
+
+      # ------------------------------------------------------------------------
+      # Fail with the exact list rather than letting build.sh abort with less
+      # context. As of this commit the public tree can produce
+      # opt-ffn-ngfw-v2.tgz and units/, but NOT ffn-cli, the v1 tree, the
+      # /etc/ffn-ngfw defaults, or a clean varlib seed -- so this step is expected
+      # to fail until those are published in sanitized form. That is a statement
+      # of the remaining work, not a bug in this workflow.
+      # ------------------------------------------------------------------------
+      - name: preflight the PRESEED payload
+        run: |
+          set -uo pipefail
+          P="$BUILD_ROOT/payload"
+          miss=0
+          for f in opt-ffn-ngfw-v2.tgz opt-ffn-ngfw-v1.tgz etc-ffn-ngfw.tgz varlib-seed.tgz ffn-cli update.pub; do
+            if [ -s "$P/$f" ]; then
+              printf '  ok      %s\n' "$f"
+            else
+              printf '  MISSING %s\n' "$f"; miss=1
+            fi
+          done
+          if [ -z "$(ls -A "$P/units" 2>/dev/null)" ]; then
+            echo "  MISSING units/*.service"; miss=1
+          else
+            printf '  ok      units/ (%s units)\n' "$(ls -1 "$P/units" | wc -l)"
+          fi
+          if [ "$miss" = 1 ]; then
+            cat <<'EOF'
+
+          PRESEED payload incomplete.
+
+          These members are not published in this repository yet. To enable this
+          workflow, publish them in sanitized form (no build-host hostname, no lab
+          addresses, no NIC names, no credentials -- image/ffn-publish-check.py
+          gates exactly that), or point the FFN_PAYLOAD_URL repository variable at
+          a tarball that supplies them.
+
+          Note varlib-seed.tgz must be a CLEAN factory seed, not a harvest of a
+          running box: harvesting /var/lib/ffn-ngfw/config/*.xml is the original
+          cause of the identity leak this workflow exists to avoid.
+          EOF
+            exit 1
+          fi
+
+      - name: build
+        run: |
+          set -euo pipefail
+          cd image
+          sudo -E ./build.sh
+        env:
+          FFN_PROFILE: ${{ github.workspace }}/image/profiles/${{ inputs.profile || 'pa-5220' }}.conf
+          # Shipped SETUP credential. provision.sh expires it with `chage -d 0`, so
+          # it permits the first console login and nothing after that. Without one of
+          # these two, verify-image.sh fails the image as impossible to log into.
+          FFN_ROOT_PW: ${{ secrets.FFN_ROOT_PW }}
+          FFN_SSH_PUBKEY: ${{ secrets.FFN_SSH_PUBKEY }}
+          FFN_UPDATE_URL: ${{ vars.FFN_UPDATE_URL }}
+          FFN_CPLD_WDT: "no"
+
+      # build.sh does not call verify-image.sh -- only ffn-pipeline.sh does -- so CI
+      # has to invoke it explicitly. This is the gate that refuses private key
+      # material, a missing or malformed update.pub, vendor firmware, config-v2.db,
+      # security.db and baked SSH host keys.
+      - name: verify the artifact
+        run: |
+          set -euo pipefail
+          art="$(ls -1t "$BUILD_ROOT"/out/*-rootfs.tar.zst | head -1)"
+          echo "verifying $art"
+          sudo -E ./image/verify-image.sh "$art" "image/profiles/${PROFILE_NAME}.conf"
+
+      - name: collect artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "$BUILD_ROOT"/out/*-rootfs.tar.zst "$BUILD_ROOT"/out/*-recovery.tar.zst dist/
+          cp "$BUILD_ROOT"/out/SHA256SUMS.txt "$BUILD_ROOT"/out/VERSION dist/ 2>/dev/null || true
+          cp "$BUILD_ROOT"/out/install-to-disk.sh dist/ 2>/dev/null || true
+          if [ "${KEEP_QCOW2}" = "true" ]; then
+            cp "$BUILD_ROOT"/out/*.qcow2 dist/ 2>/dev/null || true
+          fi
+          ls -lh dist | sed 's/^/  /'
+        env:
+          KEEP_QCOW2: ${{ inputs.keep_qcow2 }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffn-ngfw-${{ env.PROFILE_NAME }}-UNSIGNED-${{ github.sha }}
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error

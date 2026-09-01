@@ -1,0 +1,119 @@
+name: CI
+
+# Fast gates that need no secrets and no privileges, so they can run on every push
+# and on pull requests from forks. Anything needing a credential or root lives in
+# build-image.yml instead.
+#
+# Submodules are deliberately NOT checked out: platform/vu9p (FFN-NGFW-FPGA) is a
+# private repository, so an anonymous or fork-triggered clone cannot fetch it. Both
+# submodules are declared `update = none` in .gitmodules for the same reason.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publication-policy:
+    name: publication policy (no secrets or lab identity)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+          persist-credentials: false
+
+      # Prove the checker still detects what it claims to before trusting a PASS.
+      # A scanner whose rules have silently stopped matching reports success.
+      - name: scanner selftest
+        run: python3 image/ffn-publish-check.py --selftest
+
+      - name: scan the tree against image/PUBLISH-POLICY
+        run: python3 image/ffn-publish-check.py
+
+  selftests:
+    name: crypto, payload and WebUI selftests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+          persist-credentials: false
+
+      # ed25519 is a dependency-free reference implementation because the target
+      # appliances have no `cryptography` module. Its selftest covers the RFC 8032
+      # s7.1 vectors plus eight negative cases.
+      - name: ffn_ed25519 selftest
+        run: python3 opt/ffn_ed25519.py --selftest
+
+      # Exercises the update trust model itself: wrong key, tampered payload,
+      # unsigned manifest, and the hmac-to-ed25519 downgrade refusal. It rebinds
+      # its key paths into a tmpdir, so it cannot touch real key material.
+      - name: ffn_payload selftest
+        run: python3 opt/ffn_payload.py selftest
+
+      - name: WebUI JavaScript parses
+        run: python3 opt/ffn_jscheck.py static/index.html
+
+      - name: WebUI audit
+        run: python3 opt/ffn_uiaudit.py static/index.html
+
+      - name: every python file compiles
+        run: |
+          set -eu
+          find opt tests image -name '*.py' -print0 \
+            | xargs -0 -n50 python3 -m py_compile
+          echo "compiled cleanly"
+
+      - name: auth tests
+        run: python3 tests/test_auth.py
+
+  shell:
+    name: shell syntax and shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+          persist-credentials: false
+
+      # bash -n is the hard gate: a syntax error in provision.sh only surfaces
+      # halfway through a 40-minute image build otherwise.
+      - name: bash -n every shipped script
+        run: |
+          set -eu
+          rc=0
+          while IFS= read -r f; do
+            bash -n "$f" || { echo "SYNTAX: $f"; rc=1; }
+          done < <(git ls-files '*.sh')
+          exit $rc
+        shell: bash
+
+      - name: shellcheck (advisory)
+        continue-on-error: true
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          git ls-files '*.sh' | xargs -r shellcheck -S warning || true
+
+  dataplanes:
+    name: dataplane build and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - name: build
+        run: make dataplanes
+
+      - name: test
+        run: make test

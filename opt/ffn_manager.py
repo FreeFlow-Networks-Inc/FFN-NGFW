@@ -987,7 +987,7 @@ class ConfigManager:
     <entry name="localhost.localdomain">
       <deviceconfig>
         <system>
-          <hostname>ffn-ngfw</hostname>
+          <hostname>ffn-appliance</hostname>
           <domain/>
           <timezone>UTC</timezone>
           <update-server>updates.ffn-cloud.io</update-server>

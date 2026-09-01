@@ -1,0 +1,137 @@
+# FFN publication policy -- what may never be committed or shipped.
+#
+# One file, two consumers: image/ffn-publish-check.py reads it to gate the repo in
+# CI, and it documents the rule that image/verify-image.sh enforces against a built
+# artifact. Keeping the rule in one place is deliberate: the leak this file exists to
+# prevent got through because every existing gate matched FILE NAMES while the leak
+# lived in file CONTENT, and because two gates disagreed about what counted.
+#
+# THE RULE, as set by the project owner:
+#   No auth keys, master keys, or passwords are shipped, with two exceptions --
+#   FFN-FPGA licensing material, and a default credential for setup.
+#
+# A default setup credential is allowed BECAUSE a headless appliance needs a first
+# console login. It is only acceptable while it is a SETUP credential: provision.sh
+# runs `chage -d 0` on root and admin so the shipped password must be changed at
+# first login. A non-expiring shared password is a standing credential, not a setup
+# one, and is not permitted.
+#
+# Syntax: [section] headers, one entry per line, "#" comments, blank lines ignored.
+# Globs are fnmatch against the repo-relative path. Patterns are Python regexes.
+
+# --------------------------------------------------------------------------------
+# Paths that must never be tracked in git. Matched against every tracked file.
+# --------------------------------------------------------------------------------
+[deny-path]
+# --- private key material -------------------------------------------------------
+*/ssh_host_*_key
+ssh_host_*_key
+*/authorized_keys
+authorized_keys
+*.pem
+*.p12
+*.pfx
+*/id_rsa
+*/id_ed25519
+*/id_ecdsa
+*.key
+# --- FFN-specific secrets -------------------------------------------------------
+*/master.key
+*/update-sign.key
+*/update.key
+*/jwt.secret
+*/identity.secret
+# --- credential and state databases --------------------------------------------
+*.db
+*/shadow
+*/gshadow
+*/machine-id
+# --- build outputs: never in git, and they carry /etc/shadow ---------------------
+*.img
+*.img.gz
+*.qcow2
+*.tar.zst
+*.vmdk
+
+# --------------------------------------------------------------------------------
+# Exceptions to deny-path. Each needs a stated reason.
+# --------------------------------------------------------------------------------
+[allow-path]
+# FFN-FPGA licensing material. Reserved and documented; nothing ships under it
+# today (the appliance's /etc/ffn-ngfw/licenses is empty). Declared so that when
+# FPGA licensing does land it has a sanctioned home rather than an ad-hoc bypass.
+etc/ffn-ngfw/licenses/*
+image/profiles/*licenses*
+# Public keys are not secret. update.pub is REQUIRED in the image --
+# verify-image.sh fails an image that cannot verify its own updates.
+*.pub
+*/update.pub
+
+# --------------------------------------------------------------------------------
+# Content patterns that must never appear in a tracked file. This is the section
+# that catches what the filename gates could not.
+# --------------------------------------------------------------------------------
+[deny-content]
+# PEM-armoured private keys, whatever the file is called.
+# Anchored to its own line: real PEM armour starts at column 0. Unanchored this
+# matched the DLP signature table in opt/ffn_manager.py, which legitimately
+# contains the string in order to DETECT keys leaving the network.
+^\s*-----BEGIN [A-Z ]*PRIVATE KEY-----\s*$
+^\s*-----BEGIN OPENSSH PRIVATE KEY-----\s*$
+# A literal assigned to a password variable. The permitted form is an expansion
+# with an empty default -- FFN_ROOT_PW="${FFN_ROOT_PW:-}" -- so the value comes
+# from the environment and never from the tree. Requires 6+ chars to avoid
+# matching placeholders such as '...' in usage comments.
+(?:FFN_ROOT_PW|ROOT_PW|ADMIN_PW|FFN_ADMIN_PASSWORD)\s*=\s*["'][^"'$][^"']{5,}["']
+# A literal secret fallback. This is the exact shape of the JWT bug:
+#   JWT_SECRET = os.getenv("FFN_JWT_SECRET", "<literal>")
+(?:JWT_SECRET|SESSION_SECRET|SECRET_KEY|API_KEY|API_TOKEN)\s*=\s*["'][^"'$][^"']{7,}["']
+# A literal secret default. Excludes path-shaped defaults: os.getenv(
+# "FFN_JWT_SECRET_FILE", "/etc/ffn-ngfw/jwt.secret") names a FILE, not a secret.
+os\.getenv\(\s*["'][A-Z_]*SECRET[A-Z_]*["']\s*,\s*["'](?![./~])[^"'/]{7,}["']\s*\)
+# A yescrypt/sha-crypt hash pasted into a tracked file.
+\$(?:y|6|5)\$[./A-Za-z0-9]{8,}
+
+# --------------------------------------------------------------------------------
+# Build-host and lab identity. A distributed image must not carry the builder's
+# hostname, addresses or NIC names -- that is how a PA-5220 image came to ship
+# 10.1.0.106 and eno1np0 as its factory defaults.
+#
+# This section is a RATCHET, not a cleanup mandate: pre-existing occurrences are
+# baselined in [allow-identity] below so CI fails on NEW leaks without blocking on
+# the backlog. Removing a baseline entry after cleaning the file is the intended
+# way to tighten this.
+# --------------------------------------------------------------------------------
+[deny-identity]
+# Build-server and lab management subnets.
+\b10\.1\.0\.(?:9[0-9]|1[0-9][0-9])\b
+\b172\.19\.0\.[0-9]{1,3}\b
+# Build-host NIC names and its ZeroTier interface.
+\beno1np0\b
+\beno2np1\b
+\benp179s0f0np0\b
+\bztbtov4b2k\b
+# The build server's hostname used as a value (not as the /ffn-ngfw product path).
+FFN_HOSTNAME\s*=\s*["']?ffn-ngfw["']?
+<hostname>ffn-ngfw</hostname>
+
+# --------------------------------------------------------------------------------
+# Baselined pre-existing identity, as "path :: regex". Public since commit fe85fe3.
+# These are lab addresses, a hostname and NIC names -- not credentials; no secret
+# value has ever been committed to this repo. Each line is a to-do, not an excuse.
+# --------------------------------------------------------------------------------
+[allow-identity]
+# NIC-name defaults in firstboot's detection order and in the config bridge.
+image/ffn-firstboot.sh :: \b(?:eno1np0|ztbtov4b2k)\b
+opt/ffn_config_bridge.py :: \b(?:eno1np0|ztbtov4b2k)\b
+opt/ffn_manager.py :: \beno1np0\b
+# WebUI placeholder interface names in the shipped single-page app.
+opt/static/index.html :: \b(?:eno1np0|eno2np1|enp179s0f0np0|ztbtov4b2k)\b
+static/index.html :: \b(?:eno1np0|eno2np1|enp179s0f0np0|ztbtov4b2k)\b
+# Documentation and interop notes describing the lab topology on purpose.
+*.md :: \b(?:10\.1\.0\.[0-9]{1,3}|172\.19\.0\.[0-9]{1,3})\b
+image/README.md :: \b(?:eno1np0|ztbtov4b2k)\b
+# This policy file and its checker necessarily contain the patterns they match.
+image/PUBLISH-POLICY :: .*
+image/ffn-publish-check.py :: .*
+.github/workflows/*.yml :: .*
