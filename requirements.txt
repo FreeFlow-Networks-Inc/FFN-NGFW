@@ -14,3 +14,10 @@ psutil==5.9.7
 # clean install left ffn_sandbox_agent unimportable.
 numpy
 pydantic
+
+# FastAPI needs this to build any route taking Form or UploadFile. It is not a
+# soft dependency: /api/license/upload declares one, so fastapi raises at IMPORT
+# time and ffn_manager cannot be loaded at all without it. A clean install of this
+# file was unimportable until CI tried it -- the same trap the note above
+# describes, one dependency further on.
+python-multipart
