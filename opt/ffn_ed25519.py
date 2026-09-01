@@ -29,6 +29,7 @@ including the big-endian MIPS side if it is ever needed there.
 import hashlib
 import os
 import sys
+import tempfile
 
 # --- curve parameters (RFC 8032) ---------------------------------------------
 Q = 2 ** 255 - 19
@@ -244,7 +245,11 @@ def selftest():
     ncs = sig[:32] + (L + 1).to_bytes(32, "little")
     chk(not verify(msg, ncs, pub), "non-canonical scalar is rejected")
 
-    k, p, ph = keygen("/tmp/ffn-ed-test")
+    # tempfile, not a hardcoded /tmp path: the selftest should run wherever a
+    # contributor is, not only on Linux. This is the same defect class as the
+    # appliance paths that made ffn_payload.py selftest unrunnable off-box.
+    _td = tempfile.mkdtemp(prefix="ffn-ed-test")
+    k, p, ph = keygen(os.path.join(_td, "key"))
     s2 = open(k).read().strip()
     chk(publickey(bytes.fromhex(s2)).hex() == ph, "keygen key pair is consistent")
     for f in (k, p):

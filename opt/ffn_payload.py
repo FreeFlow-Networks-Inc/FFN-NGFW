@@ -499,7 +499,7 @@ def cmd_rollback(a):
 
 # -------------------------------------------------------------- selftest ----
 def cmd_selftest(a):
-    global SEED_PATH, PUB_PATH
+    global SEED_PATH, PUB_PATH, STATE
     fails = []
 
     def chk(c, m):
@@ -513,13 +513,19 @@ def cmd_selftest(a):
     # "hmac" cases would silently be signed with the real ed25519 seed and fail
     # -- a selftest that passes or fails depending on which box it runs on is
     # worse than no selftest.
-    _saved = (SEED_PATH, PUB_PATH)
+    # STATE is rebound for the same reason. Without it the downgrade case wrote to
+    # the real /var/lib/ffn-ngfw/update-state.json, so read_state() fell through to
+    # its {"installed": {}} default and the test raised KeyError anywhere the
+    # appliance state directory does not exist -- i.e. everywhere except an
+    # installed box. That is exactly the failure mode the comment above warns about.
+    _saved = (SEED_PATH, PUB_PATH, STATE)
     SEED_PATH = os.path.join(d, "absent-seed")
     PUB_PATH = os.path.join(d, "absent-pub")
+    STATE = os.path.join(d, "update-state.json")
     try:
         return _selftest_body(d, chk, fails)
     finally:
-        SEED_PATH, PUB_PATH = _saved
+        SEED_PATH, PUB_PATH, STATE = _saved
 
 
 def _selftest_body(d, chk, fails):
@@ -600,7 +606,7 @@ def _selftest_body(d, chk, fails):
     _inst = read_state()["installed"]["software"]
     chk(_inst["published"] > pub_new,
         "installed payload is recorded as newer than the offered one")
-    chk(("allow_downgrade" in open("/opt/ffn-ngfw-v2/ffn_payload.py").read()),
+    chk(("allow_downgrade" in open(os.path.abspath(__file__)).read()),
         "an --allow-downgrade escape hatch exists")
     write_state({"installed": {}})
 
@@ -611,7 +617,16 @@ def _selftest_body(d, chk, fails):
     dev, label = ab_target()
     r = running_root()
     rl = fs_label(r) if r else ""
-    chk(dev != r, "A/B target is never the running root (target=%s root=%s)" % (dev, r))
+    # This invariant -- an update must never target the filesystem it is running
+    # from -- only means anything where an FFN A/B layout exists. On a build runner
+    # or any non-FFN root both are None, and asserting None != None fails for
+    # environmental reasons rather than finding a defect. The no-layout case is
+    # covered by the very next check, so report the skip rather than hiding it.
+    if dev is None and r is None:
+        chk(True, "A/B target vs running root: skipped, no FFN A/B layout here")
+    else:
+        chk(dev != r,
+            "A/B target is never the running root (target=%s root=%s)" % (dev, r))
     if rl in AB_LABELS:
         chk(dev is not None and label in AB_LABELS,
             "on an FFN A/B layout the inactive slot resolves (%s -> %s/%s)"

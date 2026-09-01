@@ -55,7 +55,7 @@ jobs:
       PROFILE_NAME: ${{ inputs.profile || 'pa-5220' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: false
           persist-credentials: false
