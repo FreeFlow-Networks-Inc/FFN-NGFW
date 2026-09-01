@@ -84,7 +84,9 @@ image/profiles/*licenses*
 # matching placeholders such as '...' in usage comments.
 (?:FFN_ROOT_PW|ROOT_PW|ADMIN_PW|FFN_ADMIN_PASSWORD)\s*=\s*["'][^"'$][^"']{5,}["']
 # A literal secret fallback. This is the exact shape of the JWT bug:
-#   JWT_SECRET = os.getenv("FFN_JWT_SECRET", "<literal>")
+#   JWT_SECRET = os.getenv(<env name>, <a quoted literal fallback>)
+# Written descriptively rather than verbatim: a worked example here would match
+# this very rule, and the policy file must satisfy its own policy.
 (?:JWT_SECRET|SESSION_SECRET|SECRET_KEY|API_KEY|API_TOKEN)\s*=\s*["'][^"'$][^"']{7,}["']
 # A literal secret default. Excludes path-shaped defaults: os.getenv(
 # "FFN_JWT_SECRET_FILE", "/etc/ffn-ngfw/jwt.secret") names a FILE, not a secret.
