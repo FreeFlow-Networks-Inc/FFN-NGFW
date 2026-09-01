@@ -84,8 +84,33 @@ jobs:
             | xargs -0 -n50 python3 -m py_compile
           echo "compiled cleanly"
 
+  # Split out deliberately. Everything in the job above runs on a bare python3 with
+  # no third-party imports -- that is a property of the appliance, which has no
+  # `cryptography` module and no reliable way to install one, and it is worth
+  # demonstrating rather than quietly depending on pip. tests/test_auth.py imports
+  # ffn_manager, which needs fastapi, aiosqlite, passlib and the rest, so it gets its
+  # own job with the dependencies installed.
+  auth:
+    name: auth tests (needs runtime deps)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: install runtime requirements
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
       - name: auth tests
-        run: python3 tests/test_auth.py
+        run: python tests/test_auth.py
 
   shell:
     name: shell syntax and shellcheck
