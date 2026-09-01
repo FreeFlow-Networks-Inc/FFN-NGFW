@@ -173,7 +173,7 @@ publish(){
       --version "${MODEL}-${ver}" --notes "FFN image for ${MODEL}" \
       || die "publish failed"
   echo "  appliances can now fetch it:"
-  echo "    ffn_payload.py update --url ${FFN_UPDATE_URL:-https://10.1.0.106:8444} --kind image --apply"
+  echo "    ffn_payload.py update --url ${FFN_UPDATE_URL:?set FFN_UPDATE_URL} --kind image --apply"
 }
 
 case "$STAGE" in

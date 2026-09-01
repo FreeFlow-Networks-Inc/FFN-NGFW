@@ -8,7 +8,7 @@ set -euo pipefail
 export FFN_RELEASE="jammy"          # Ubuntu 22.04 LTS (matches the dev box)
 export FFN_ARCH="amd64"
 export FFN_MIRROR="http://archive.ubuntu.com/ubuntu"
-export FFN_HOSTNAME="ffn-ngfw"
+export FFN_HOSTNAME="${FFN_HOSTNAME:-ffn-appliance}"   # never the build host name
 export FFN_KERNEL_META="linux-generic-hwe-22.04"   # 6.8 HWE kernel like the box
 
 # --- versions of custom deps (pinned = reproducible) ---
@@ -46,10 +46,12 @@ libpam-systemd rsync cloud-guest-utils openssl"
 # fills the 24GB system partition instead.
 export PKGS_STORAGE="mdadm"
 
-export PKGS_NET="nftables iptables ipset conntrack bridge-utils ifenslave frr frr-pythontools \
-libnetfilter-queue1 libnfnetlink0 libhyperscan5 libnuma1 libpcap0.8 libbpf0 libmnl0 \
 # nfs-kernel-server: the OCTEON planes NFS-root from the MP SSD over PCIC,
 # which is what makes the control plane editable in place.
+# NOTE: keep comments OUTSIDE this string. A "#" line between the quotes is
+# not a comment -- apt-get install receives it as a literal package name.
+export PKGS_NET="nftables iptables ipset conntrack bridge-utils ifenslave frr frr-pythontools \
+libnetfilter-queue1 libnfnetlink0 libhyperscan5 libnuma1 libpcap0.8 libbpf0 libmnl0 \
 nfs-kernel-server nfs-common"
 # build deps (DPDK/flatcc/venv wheels + FFN C components); kept so runtime HS/pattern compile works
 export PKGS_BUILD="build-essential meson ninja-build cmake git pkg-config python3-pyelftools \
@@ -58,7 +60,7 @@ libnetfilter-queue-dev libnfnetlink-dev libhyperscan-dev zlib1g-dev"
 # python management plane
 export PKGS_PY="python3 python3-venv python3-dev python3-pip"
 # boot
-export PKGS_BOOT="${FFN_KERNEL_META} initramfs-tools grub-pc-bin grub-common"
+export PKGS_BOOT="${FFN_KERNEL_META} initramfs-tools grub-pc-bin grub-efi-amd64-bin grub-common"
 
 # --- SAFE default kernel cmdline (generic; ffn-hwtune tunes per-CPU on first boot) ---
 # NOTE: the dev box uses isolcpus=12-47 hugepages=2048 for a 48-thread Xeon. That is
@@ -92,7 +94,7 @@ export FFN_SSH_PUBKEY="${FFN_SSH_PUBKEY:-}"
 # Where appliances built from this image look for signed updates. The image
 # carries only the ed25519 PUBLIC key (staged from /etc/ffn-ngfw/update-sign.pub);
 # the private seed stays on this build server and is never packaged.
-FFN_UPDATE_URL="${FFN_UPDATE_URL:-https://10.1.0.106:8444}"
+FFN_UPDATE_URL="${FFN_UPDATE_URL:-}"
 
 # --- model profile -------------------------------------------------------------
 # A profile (profiles/<model>.conf) is sourced LAST so its values win over the
