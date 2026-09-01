@@ -1,8 +1,9 @@
-# FFN OCTEON-II dataplane
+# FFN OCTEON dataplane (OCTEON-II IPD/POW/PKO and OCTEON-III PKI/SSO/PKO3)
 #
 #   make            native build + test (x86-64, proves the logic)
 #   make test       run the test harness
-#   make mips64     cross-build for OCTEON-II (big-endian MIPS64)
+#   make mips64     cross-build for OCTEON (big-endian MIPS64)
+#   make oct3-cvmx  compile the CVMX backends against a real OCTEON SDK
 #   make qemu-test  run the SAME test under qemu-mips64 (validates big-endian)
 #
 # The forwarder has no chip headers, so the native and MIPS builds compile the
@@ -64,14 +65,16 @@ oct-test: ffn_dp_oct_io_test
 	./ffn_dp_oct_io_test
 
 # --- OCTEON-III backend (PKI + SSO + PKO3) ---
-# The PA-5220's CN73XX is OCTEON-III. This backend lives alongside the OCTEON-II
-# one (a PA-3200 needs that) and is selected at runtime by oct_detect_gen().
+# A PA-5220 carries two OCTEON-III parts: a CN73XX control plane and the 40-core
+# CN78XX that runs this dataplane. The backend lives alongside the OCTEON-II one
+# (a PA-3200 needs that) and is selected at runtime by oct_detect_gen().
 OCT3_SRC  = ffn_dp_io_octeon3.c
 OCT3_TEST = ffn_dp_io_octeon3_test.c
 OCT3_HDRS = $(HDRS) ffn_dp_io_octeon.h ffn_dp_io_octeon3.h
 
 ffn_dp_oct3_io_test: ffn_dp_oct.o $(OCT_SRC) $(OCT3_SRC) $(OCT3_TEST) $(OCT3_HDRS)
-	$(CC) $(CFLAGS) $(OCT_CFLAGS) ffn_dp_oct.o $(OCT_SRC) $(OCT3_SRC) $(OCT3_TEST) 	    -o $@
+	$(CC) $(CFLAGS) $(OCT_CFLAGS) ffn_dp_oct.o $(OCT_SRC) $(OCT3_SRC) \
+	    $(OCT3_TEST) -o $@
 
 oct3-test: ffn_dp_oct3_io_test
 	./ffn_dp_oct3_io_test
@@ -80,7 +83,8 @@ oct3-test: ffn_dp_oct3_io_test
 # big-endian MIPS64, so the same suite runs there too.
 oct3-qemu: $(SRC) $(OCT_SRC) $(OCT3_SRC) $(OCT3_TEST) $(OCT3_HDRS)
 	@command -v $(MIPS_CC) >/dev/null 2>&1 || { echo "MISSING $(MIPS_CC)"; exit 1; }
-	$(MIPS_CC) $(MIPS_CFLAGS) $(OCT_CFLAGS) $(SRC) $(OCT_SRC) $(OCT3_SRC) 	    $(OCT3_TEST) -o ffn_dp_oct3_io_test.mips64
+	$(MIPS_CC) $(MIPS_CFLAGS) $(OCT_CFLAGS) $(SRC) $(OCT_SRC) $(OCT3_SRC) \
+	    $(OCT3_TEST) -o ffn_dp_oct3_io_test.mips64
 	qemu-mips64 ./ffn_dp_oct3_io_test.mips64
 
 # same backend test, big-endian, as it will run on the real Octeon
@@ -89,6 +93,37 @@ oct-qemu: $(SRC) $(OCT_SRC) $(OCT_TEST) $(OCT_HDRS)
 	$(MIPS_CC) $(MIPS_CFLAGS) $(OCT_CFLAGS) $(SRC) $(OCT_SRC) $(OCT_TEST) \
 	    -o ffn_dp_oct_io_test.mips64
 	qemu-mips64 ./ffn_dp_oct_io_test.mips64
+
+# --- compile-check the hardware backends against a real OCTEON SDK ---
+# The CVMX call sites cannot be exercised without hardware, but they CAN be held
+# to the real API. Every mistake this target has caught -- a made-up
+# sub-descriptor code, an invented accessor, a call with the wrong arity, a hook
+# that was never defined -- would otherwise have surfaced as a dataplane that
+# builds, runs, and moves no packets.
+#
+#   make oct3-cvmx SDK=/path/to/OCTEON-SDK [MODEL=OCTEON_CN78XX]
+#
+# It compiles only; linking needs the SDK's libcvmx built for the same model.
+SDK   ?=
+MODEL ?= OCTEON_CN78XX
+SDK_CC      = $(SDK)/tools/bin/mips64-octeon-linux-gnu-gcc
+SDK_CFLAGS  = -c -march=octeon3 -mabi=64 -EB -O2 -g -std=gnu99 -Wall -Wextra \
+              -Wno-unused-parameter -DFFN_HAVE_CVMX=1 \
+              -DUSE_RUNTIME_MODEL_CHECKS=1 -DCVMX_ENABLE_POW_CHECKS=0 \
+              -DCVMX_ENABLE_PARAMETER_CHECKING=0 \
+              -DCVMX_ENABLE_CSR_ADDRESS_CHECKING=0 \
+              -DOCTEON_MODEL=$(MODEL) -I$(SDK)/target/include -I.
+CVMX_SRCS   = $(SRC) $(OCT_SRC) $(OCT3_SRC)
+
+oct3-cvmx:
+	@test -n "$(SDK)" || { echo "set SDK=/path/to/OCTEON-SDK"; exit 1; }
+	@test -x $(SDK_CC) || { echo "MISSING $(SDK_CC)"; exit 1; }
+	@mkdir -p cvmx-obj
+	@for f in $(CVMX_SRCS); do \
+	    echo "  CVMX-CC $$f"; \
+	    $(SDK_CC) $(SDK_CFLAGS) -o cvmx-obj/`basename $$f .c`.o $$f || exit 1; \
+	 done
+	@echo "octeon backends compile clean against $(MODEL)"
 
 # everything that can run without Octeon hardware
 check: test oct-test oct3-test
@@ -116,5 +151,16 @@ clean:
 	$(RM) ffn_dp_oct.o ffn_dp_oct_test ffn_dp_oct_test.mips64 ffn_dp_afpacket \
 	      ffn_dp_oct_io_test ffn_dp_oct_io_test.mips64 \
       ffn_dp_oct3_io_test ffn_dp_oct3_io_test.mips64
+	$(RM) -r cvmx-obj
 
-.PHONY: all test mips64 qemu-test veth-test oct-test oct-qemu oct3-test oct3-qemu check clean
+.PHONY: all test mips64 qemu-test veth-test oct-test oct-qemu oct3-test \
+        oct3-qemu oct3-cvmx check clean
+
+# interop harness: runs the real DP command loop over an mmap'd file so the
+# Python MP client is tested against actual C code, not a second model of the
+# wire format. Depends on the .o so a stale binary cannot silently pass.
+dp_serve: ffn_dp_oct.o dp_serve.c $(HDRS)
+	$(CC) $(CFLAGS) ffn_dp_oct.o dp_serve.c -o $@
+
+interop: dp_serve
+	python3 interop_test.py

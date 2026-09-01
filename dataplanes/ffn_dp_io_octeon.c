@@ -32,6 +32,17 @@
 #include "cvmx-pow.h"
 #include "cvmx-wqe.h"
 
+/* CVMX_FPA_WQE_POOL is NOT an SDK constant. It comes from the application's
+ * generated cvmx-config.h, because FPA pool numbering is the application's
+ * choice -- which is why building this file against a bare SDK include path
+ * fails on it. Every OCTEON-II consumer in the SDK (the Linux port and u-boot
+ * both) uses pool 1, so that is the default here; override it at build time if
+ * the pool layout on your box differs. Returning WQEs to the wrong pool
+ * corrupts FPA accounting with no immediate symptom. */
+#ifndef CVMX_FPA_WQE_POOL
+#define CVMX_FPA_WQE_POOL 1
+#endif
+
 static int cvmx_hw_init(struct oct_ctx *c)
 {
     if (cvmx_user_app_init() != 0)
@@ -46,8 +57,9 @@ static int cvmx_hw_init(struct oct_ctx *c)
         return DP_ERR_NOMEM;
 
     c->core_id = (int)cvmx_get_core_num();
-    /* Take work only from our group; the MP assigns groups per DP core. */
-    cvmx_pow_set_group_mask(c->core_id, 1ull << c->pow_group);
+    /* Which groups this core takes work from. Explicit because an empty mask
+     * means "no packets ever" with nothing logged. */
+    cvmx_pow_set_group_mask(c->core_id, c->pow_group_mask);
     c->available = 1;
     return DP_OK;
 }
@@ -117,7 +129,9 @@ const struct oct_hw_ops OCT_HW_CVMX = {
 };
 
 int oct_backend_available(void) { return 1; }
-const char *oct_backend_name(void) { return "cvmx(octeon-ii ipd/pow/pko)"; }
+/* Reports what this BUILD can drive, not which generation is live -- that is
+ * c->hw->name, chosen at runtime by oct_detect_gen(). */
+const char *oct_backend_name(void) { return "cvmx (octeon-ii and octeon-iii)"; }
 
 #else  /* !FFN_HAVE_CVMX ------------------------------------------------ */
 
@@ -325,7 +339,7 @@ static void oct_io_free_pkt(void *arg, struct dp_pkt *p)
 }
 
 const struct dp_io_ops OCT_IO = {
-    "octeon-ii(ipd/pow/pko)",
+    "octeon(ipd/pow/pko or pki/sso/pko3)",
     oct_io_init, oct_io_fini, oct_io_rx, oct_io_tx,
     oct_io_to_local, oct_io_to_offload, oct_io_free_pkt
 };
@@ -339,6 +353,7 @@ void oct_ctx_init(struct oct_ctx *c, const struct oct_hw_ops *hw, void *hw_priv)
     c->hw = hw ? hw : &OCT_HW_CVMX;
     c->hw_priv = hw_priv;
     c->pow_group = 0;
+    c->pow_group_mask = ~0ull;      /* accept work from every group */
     c->core_id = -1;
 }
 
@@ -359,11 +374,13 @@ int oct_add_port(struct oct_ctx *c, const char *name, int ipd_port,
 
 void oct_dump_stats(const struct oct_ctx *c, FILE *f)
 {
-    fprintf(f, "octeon(%s): ports=%d avail=%d rx=%llu tx=%llu tx_fail=%llu "
+    fprintf(f, "octeon(%s): ports=%d avail=%d rx=%llu rx_err=%llu tx=%llu tx_fail=%llu "
                "drop_freed=%llu local=%llu offload=%llu no_egress=%llu "
                "bad_egress=%llu\n",
             c->hw ? c->hw->name : "?", c->nports, c->available,
-            (unsigned long long)c->stat_rx, (unsigned long long)c->stat_tx,
+            (unsigned long long)c->stat_rx,
+            (unsigned long long)c->stat_rx_err,
+            (unsigned long long)c->stat_tx,
             (unsigned long long)c->stat_tx_fail,
             (unsigned long long)c->stat_drop_freed,
             (unsigned long long)c->stat_local,

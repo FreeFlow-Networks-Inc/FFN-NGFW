@@ -17,16 +17,24 @@
  *
  * BUFFER OWNERSHIP (the property that matters most)
  * ------------------------------------------------
- * Every work-queue entry from POW owns two allocations: the WQE itself (FPA WQE
- * pool) and the packet data (FPA packet pool). Each must be released EXACTLY
- * ONCE or the box leaks FPA buffers and wedges within minutes. Rules enforced:
+ * A work-queue entry covers two things that may or may not be one allocation:
+ * the WQE and the packet data. Each must be released EXACTLY ONCE or the box
+ * leaks FPA buffers and wedges within minutes. Rules enforced:
  *   * on transmit, PKO takes ownership of the packet data and frees it after the
  *     wire, so we must NOT free the data -- only the WQE;
- *   * on drop, we free both;
+ *   * on drop, we free both, data first (the WQE is still needed to find it);
  *   * a send failure leaves ownership with us, so we free both;
  *   * every WQE records its disposition, and a second disposal is a no-op that
  *     increments a bug counter instead of double-freeing.
  * The mock hardware in the test harness asserts exactly this.
+ *
+ * The OCTEON-III twist: PKI often places the WQE INSIDE the first packet
+ * buffer, in which case the two are one allocation and releasing the data has
+ * already released the WQE. `wqe_separate` below records which case this packet
+ * is, captured on receive -- because by the time the answer is needed, on the
+ * forward path, PKO3 may already have freed and recycled that buffer, so asking
+ * the WQE then is a use-after-free. Freeing the WQE must therefore never
+ * dereference it; the address and the aura are enough.
  */
 #ifndef FFN_DP_IO_OCTEON_H
 #define FFN_DP_IO_OCTEON_H
@@ -54,14 +62,38 @@ struct oct_wqe {
     uint16_t in_port;       /* IPD port -> our port index    */
     uint8_t  segs;          /* buffer segments (1 = linear)  */
     uint8_t  disp;          /* enum oct_disp                 */
-    /* OCTEON-III only. FPA3 frees to an AURA, not a pool, and PKI may place the
-     * WQE and the packet data in DIFFERENT auras -- so a single-pool assumption
-     * (correct on OCTEON-II) silently corrupts FPA accounting here. Each buffer
-     * therefore carries the aura it must be returned to. OCTEON-II leaves these
-     * zero and ignores them. */
+
+    /* --- OCTEON-III only; OCTEON-II leaves these zero and ignores them. --- */
+
+    /* FPA3 frees to an AURA, not a pool, so a single-pool assumption (correct
+     * on OCTEON-II) corrupts FPA accounting here. This is the GLOBAL aura,
+     * (node << 10) | local_aura, which is also exactly the 12-bit form
+     * PKO_SEND_HDR_S[AURA] takes. Both the packet data and the WQE belong to
+     * this one aura -- an earlier version of this struct carried a second
+     * `wqe_aura`, which does not exist in the hardware or the SDK. */
     uint16_t data_aura;
-    uint16_t wqe_aura;
+    /* 1 if the WQE is its own allocation, 0 if it lives inside the first packet
+     * buffer. Read from PKI's buffer pointer on receive, never later. */
+    uint8_t  wqe_separate;
+    /* The raw PKI buffer-pointer word for the first segment, captured on
+     * receive so the transmit path can describe the packet without touching the
+     * WQE. Decode it with the FFN_PKI_PTR_* accessors below rather than an SDK
+     * type: this header must compile with no SDK present. */
+    uint64_t pkt_ptr;
+    /* SSO flow tag of the incoming packet, used to keep egress in order when
+     * that is enabled. */
+    uint32_t flow_tag;
 };
+
+/* PKI buffer pointer (PKI_BUFLINK_S), decoded without the SDK so the descriptor
+ * model and its test need no chip headers. Layout, most significant bit first:
+ *   size:16  packet_outside_wqe:1  reserved:5  addr:42
+ * `addr` points at the first byte of DATA, not at the start of the buffer.
+ * cvmx3_hw_init() proves this decode against the SDK's own bitfields at
+ * start-up, so a layout change fails loudly instead of corrupting descriptors. */
+#define FFN_PKI_PTR_SIZE(u)     ((uint16_t)((uint64_t)(u) >> 48))
+#define FFN_PKI_PTR_OUTSIDE(u)  ((uint8_t)(((uint64_t)(u) >> 47) & 1u))
+#define FFN_PKI_PTR_ADDR(u)     ((uint64_t)(u) & 0x3FFFFFFFFFFULL)
 
 /* Which OCTEON family the hardware backend is talking to. Selected at runtime so
  * one FFN build serves a PA-3200 (OCTEON-II) and a PA-5220 (OCTEON-III). */
@@ -107,12 +139,23 @@ struct oct_ctx {
     struct oct_port ports[OCT_MAX_PORTS];
     int      nports;
     int      core_id;
-    int      pow_group;
+    int      pow_group;                     /* legacy single-group selector */
+    /* Which SSO/POW groups this core accepts work from, one bit per legacy
+     * group. Nothing in the SDK's CN78XX bring-up programs this register, and a
+     * core whose mask is empty receives no work at all -- silently, with no
+     * error reported anywhere -- so both backends set it explicitly rather than
+     * trusting a reset default. Defaults to every group, which is what a
+     * forwarder that owns the box wants; narrow it with (1ull << group). */
+    uint64_t pow_group_mask;
     int      available;                     /* hardware present + initialised */
+    /* OCTEON-III: hand PKO3 a per-(flow, queue) atomic tag so packets of one
+     * flow leave in the order they arrived, at the cost of a tag switch each.
+     * Off by default -- see cvmx3_hw_pkt_send(). */
+    int      ordered_egress;
     struct oct_wqe inflight[OCT_BURST];     /* current burst */
     int      n_inflight;
 
-    uint64_t stat_rx, stat_tx, stat_tx_fail, stat_drop_freed, stat_local;
+    uint64_t stat_rx, stat_rx_err, stat_tx, stat_tx_fail, stat_drop_freed, stat_local;
     uint64_t stat_no_egress, stat_bad_egress, stat_offload;
     uint64_t stat_wqe_freed, stat_data_freed;
     uint64_t bug_double_dispose;            /* must stay 0 */
