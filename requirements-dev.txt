@@ -7,4 +7,11 @@
 #   RuntimeError: The starlette.testclient module requires the httpx package
 #
 # Install with:  pip install -r requirements.txt -r requirements-dev.txt
-httpx
+#
+# Pinned below 0.28. requirements.txt pins fastapi==0.109.0, whose bundled
+# starlette.testclient constructs httpx.Client(app=...). httpx removed the `app`
+# argument in 0.28, so an unpinned install fails with
+#   TypeError: Client.__init__() got an unexpected keyword argument 'app'
+# after importing cleanly -- a mismatch between a pinned runtime and an unpinned
+# test dependency. Raise this ceiling only together with fastapi.
+httpx>=0.24,<0.28
