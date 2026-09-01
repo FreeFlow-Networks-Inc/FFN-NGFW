@@ -1,0 +1,10 @@
+# Test-only dependencies. Deliberately NOT in requirements.txt: that file is what
+# provision.sh-equivalent installs onto the appliance, and the appliance must not
+# carry a test HTTP client.
+#
+# httpx is required by fastapi.testclient (via starlette.testclient), which
+# tests/test_auth.py imports. Without it the import raises at module load:
+#   RuntimeError: The starlette.testclient module requires the httpx package
+#
+# Install with:  pip install -r requirements.txt -r requirements-dev.txt
+httpx
