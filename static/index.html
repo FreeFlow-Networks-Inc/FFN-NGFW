@@ -488,7 +488,7 @@ tbody tr.dragging{opacity:.4}
         <option value="">Full Commit (all pending changes)</option>
         <option value="config.device.setup">Partial: Device &gt; Setup only</option>
         <option value="config.device.setup.management">Partial: Setup &gt; Management only</option>
-        <option value="config.device.setup.wildfire">Partial: Setup &gt; WildFire only</option>
+        <option value="config.device.setup.wildfire">Partial: Setup &gt; Cloud Sandbox only</option>
         <option value="config.device.setup.session">Partial: Setup &gt; Session only</option>
         <option value="config.device.setup.services">Partial: Setup &gt; Services only</option>
         <option value="config.network">Partial: Network only</option>
@@ -605,7 +605,7 @@ const TAB_MENUS = {
   acc: [
     {id:'acc-dashboard',label:'ACC Dashboard'},
     {id:'ml-inference',label:'ML Inference'},
-    {id:'wildfire',label:'WildFire'},
+    {id:'wildfire',label:'Cloud Sandbox'},
     {id:'iot-devices',label:'IoT Devices'},
   ],
   policy: [
@@ -738,7 +738,7 @@ const TAB_MENUS = {
   acc: [
     {id:'acc-dashboard',label:'ACC Dashboard'},
     {id:'ml-inference',label:'ML Inference'},
-    {id:'wildfire',label:'WildFire'},
+    {id:'wildfire',label:'Cloud Sandbox'},
     {id:'iot-devices',label:'IoT Devices'},
   ],
 };
@@ -3164,7 +3164,7 @@ function renderDeviceStub(c) {
 const SETUP_TABS = [
   {id:'s-mgmt',label:'Management'},{id:'s-ops',label:'Operations'},{id:'s-svc',label:'Services'},
   {id:'s-iface',label:'Interfaces'},{id:'s-telem',label:'Telemetry'},{id:'s-cid',label:'Content-ID'},
-  {id:'s-wf',label:'WildFire'},{id:'s-sess',label:'Session'},{id:'s-hsm',label:'HSM'},
+  {id:'s-wf',label:'Cloud Sandbox'},{id:'s-sess',label:'Session'},{id:'s-hsm',label:'HSM'},
   {id:'s-ace',label:'ACE'},{id:'s-dlp',label:'DLP'},
 ];
 
@@ -3467,7 +3467,7 @@ function renderSetupServices(p) {
           <tr><td>Syslog</td><td>Management</td><td>(auto)</td></tr>
           <tr><td>RADIUS</td><td>Management</td><td>(auto)</td></tr>
           <tr><td>LDAP</td><td>Management</td><td>(auto)</td></tr>
-          <tr><td>WildFire</td><td>Management</td><td>(auto)</td></tr>
+          <tr><td>Cloud Sandbox</td><td>Management</td><td>(auto)</td></tr>
           <tr><td>Updates</td><td>Management</td><td>(auto)</td></tr>
         </tbody></table>
       </div>
@@ -3639,7 +3639,7 @@ function renderSetupWildFire(p) {
   p.innerHTML = `
     <div class="section"><div class="section-title">General Settings</div><div class="card">
       <div class="grid grid-2">
-        <div class="form-group"><label>WildFire Cloud</label>
+        <div class="form-group"><label>Cloud Sandbox</label>
           <select id="wf-cloud" onchange="toggleWfCustomEndpoint()">
             <option value="public">FFN Public Cloud</option>
             <option value="private">Private (On-Prem)</option>
@@ -3655,14 +3655,14 @@ function renderSetupWildFire(p) {
       <div id="wf-custom-endpoint" style="display:none;margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg)">
         <h4 style="margin-bottom:8px;font-size:12px;color:var(--accent)">Custom Endpoint (Private / Hybrid)</h4>
         <div class="grid grid-2">
-          <div class="form-group"><label>WildFire Server URL or IP</label><input type="text" id="wf-custom-url" placeholder="https://wildfire.corp.local or 10.0.0.50"></div>
+          <div class="form-group"><label>Sandbox Server URL or IP</label><input type="text" id="wf-custom-url" placeholder="https://sandbox.corp.local or 10.0.0.50"></div>
           <div class="form-group"><label>Port</label><input type="number" id="wf-custom-port" value="443"></div>
           <div class="form-group"><label>API Key / Registration Token</label><input type="password" id="wf-custom-key" placeholder="(optional)"></div>
           <div class="form-group"><label>Verify TLS Certificate</label><select><option>Yes</option><option>No (self-signed)</option></select></div>
           <div class="form-group"><label>Fallback to Public Cloud (Hybrid only)</label><select id="wf-fallback-public"><option>No</option><option>Yes</option></select></div>
           <div class="form-group"><label>Connection Timeout (sec)</label><input type="number" value="30"></div>
         </div>
-        <button class="btn btn-sm mt-8" onclick="alert('Testing connectivity to WildFire endpoint...')">Test Connection</button>
+        <button class="btn btn-sm mt-8" onclick="alert('Testing connectivity to sandbox endpoint...')">Test Connection</button>
       </div>
     </div></div>
 
@@ -3680,7 +3680,7 @@ function renderSetupWildFire(p) {
     </div></div>
 
     <div class="section"><div class="section-title">Session Information Settings</div><div class="card">
-      <p class="text-dim" style="font-size:11px;margin-bottom:10px">Metadata to include when forwarding files to WildFire for analysis.</p>
+      <p class="text-dim" style="font-size:11px;margin-bottom:10px">Metadata to include when forwarding files to the cloud sandbox for analysis.</p>
       <div class="grid grid-4">
         <div class="form-group"><label>Source IP</label><select><option>Enabled</option><option>Disabled</option></select></div>
         <div class="form-group"><label>Source Port</label><select><option>Enabled</option><option>Disabled</option></select></div>
@@ -3698,7 +3698,7 @@ function renderSetupWildFire(p) {
     </div></div>
 
     <div class="section"><div class="section-title">Inline Session Information Settings</div><div class="card">
-      <p class="text-dim" style="font-size:11px;margin-bottom:10px">Metadata to include for inline (real-time) ML verdicts — added to streaming telemetry sent to WildFire's inline inference engine.</p>
+      <p class="text-dim" style="font-size:11px;margin-bottom:10px">Metadata to include for inline (real-time) ML verdicts — added to streaming telemetry sent to the cloud sandbox inline inference engine.</p>
       <div class="grid grid-4">
         <div class="form-group"><label>Source IP</label><select><option>Enabled</option><option>Disabled</option></select></div>
         <div class="form-group"><label>Source Port</label><select><option>Enabled</option><option>Disabled</option></select></div>
@@ -3722,7 +3722,7 @@ function renderSetupWildFire(p) {
       </div>
     </div></div>
 
-    <div style="margin-top:16px;text-align:right"><button class="btn btn-primary" onclick="alert('WildFire settings saved')">Save WildFire Settings</button></div>`;
+    <div style="margin-top:16px;text-align:right"><button class="btn btn-primary" onclick="alert('Cloud Sandbox settings saved')">Save Cloud Sandbox Settings</button></div>`;
 
   toggleWfCustomEndpoint();
 }
@@ -3795,7 +3795,7 @@ function renderSetupACE(p) {
   p.innerHTML = `
     <div class="section"><div class="section-title">Application Content Engine (ACE)</div><div class="card">
       <div style="font-size:12px;line-height:2;color:var(--text-dim);margin-bottom:12px">
-        ACE handles deep application content inspection, file type identification, and data pattern matching used by Content-ID and WildFire.
+        ACE handles deep application content inspection, file type identification, and data pattern matching used by Content-ID and the cloud sandbox.
       </div>
       <div class="grid grid-2">
         <div class="form-group"><label>ACE Offload to FPGA</label><select><option>Enabled</option><option>Disabled (CPU fallback)</option></select></div>
@@ -7783,7 +7783,7 @@ function renderDeviceMasterKey(c) {
           <button class="btn btn-sm" onclick="alert('Downloading mp-log...')">Management Plane Log</button>
           <button class="btn btn-sm" onclick="alert('Downloading dp-log...')">Data Plane Log</button>
           <button class="btn btn-sm" onclick="alert('Downloading filter-log...')">Filter Acceleration Log</button>
-          <button class="btn btn-sm" onclick="alert('Downloading appid-log...')">App-ID Log</button>
+          <button class="btn btn-sm" onclick="alert('Downloading application-identification-log...')">Application Identification Log</button>
         </div>
       </div>
     </div>`;
@@ -8312,7 +8312,7 @@ async function loadMLInference() {
 }
 
 function retrainModel() {
-  document.getElementById('ml-action-status').textContent = 'Retrain triggered via WildFire agent...';
+  document.getElementById('ml-action-status').textContent = 'Retrain triggered via cloud sandbox agent...';
   document.getElementById('ml-action-status').style.color = 'var(--orange)';
   api('/api/ml/retrain',{method:'POST'});
   setTimeout(()=>{
@@ -8328,7 +8328,7 @@ function uploadModelWeights() {
 /* ---- ACC > WildFire ---- */
 function renderWildFire(c) {
   c.innerHTML = `
-    <div class="page-header"><h2>WildFire Threat Intelligence</h2></div>
+    <div class="page-header"><h2>Threat Intelligence</h2></div>
     <div class="grid grid-4 section">
       <div class="card"><h3>Pending Samples</h3><div class="big-num" id="wf-pending">--</div><div class="sub">In analysis queue</div></div>
       <div class="card"><h3>Analyzed Today</h3><div class="big-num" id="wf-analyzed">--</div><div class="sub">Samples processed</div></div>
@@ -8340,7 +8340,7 @@ function renderWildFire(c) {
       <tbody id="wf-queue-body"></tbody></table>
     </div></div></div>
     <div class="section"><div class="section-title">Analysis Results</div><div class="card"><div class="table-wrap" style="max-height:250px;overflow-y:auto">
-      <table><thead><tr><th>ID</th><th>Time</th><th>ML Verdict</th><th>WildFire Result</th><th>Action Taken</th></tr></thead>
+      <table><thead><tr><th>ID</th><th>Time</th><th>ML Verdict</th><th>Sandbox Result</th><th>Action Taken</th></tr></thead>
       <tbody id="wf-results-body"></tbody></table>
     </div></div></div>`;
   loadWildFire();

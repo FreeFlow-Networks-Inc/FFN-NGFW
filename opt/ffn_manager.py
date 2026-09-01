@@ -1937,7 +1937,7 @@ SECURITY_PLUGINS = [
     {"id": "inline_ips",   "display": "Inline Payload Detection / IPS", "category": "Threat",
      "engine": "inline_ips",  "backend": "inline_payload_det", "config": "dpi", "table_id": 0x10,
      "desc": "In-path content signatures (Aho-Corasick + PCRE), IOC extraction, flow reassembly + file carving."},
-    {"id": "cloud_det",    "display": "WildFire (Cloud Sandbox)",       "category": "Threat",
+    {"id": "cloud_det",    "display": "Cloud Sandbox",                  "category": "Threat",
      "engine": "cloud_det",   "backend": "cloud_det",         "config": None, "table_id": 0x15,
      "desc": "Cloud-backed sandbox: detonate unknown files -> verdict + generated signature back to the inline engine."},
     {"id": "dlp_scanner",  "display": "Data Filtering (DLP)",           "category": "Content",
