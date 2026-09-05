@@ -1870,9 +1870,14 @@ async function loadDPOffload(){
       ${[['Data plane', d.dp], ['Switch', d.switch], ['Front end', d.fe100]].map(([label, x]) => {
         x = x || {};
         if (!x.present) return `<div><strong>${label}:</strong> <span class="text-dim">not found</span></div>`;
-        const st = ('booted' in x)
-          ? (x.booted ? '<span class="badge badge-up">booted</span>'
-                      : '<span class="badge">present, not booted</span>')
+        // The dataplane OCTEON is driven with NO kernel driver bound -- dpboot
+        // enables it and mmaps its BARs -- so "no driver" is its normal state
+        // and must not be badged as a fault the way it would be for the
+        // switch or the front end.
+        const st = (x.liveness)
+          ? '<span class="badge badge-up">present</span>'
+            + ' <span class="text-dim" style="font-size:10px">running state '
+            + _escSP(x.liveness) + '</span>'
           : (x.driver ? '<span class="badge badge-up">driver bound</span>'
                       : '<span class="badge">no driver</span>');
         return `<div><strong>${label}:</strong> ${st}
@@ -7303,13 +7308,17 @@ function _offloadHTML(o) {
     rows.push(`<div class="text-dim" style="font-size:10px;margin-left:14px">${cp.detail}</div>`);
 
   if (dp.present) {
-    rows.push(`<div>${_dpDot(dp.booted ? 'up' : 'idle')}<strong>Data plane</strong> `
+    /* No "booted" badge. This device is brought up by enabling it and mmap'ing
+       its BARs, so nothing about its PCI state distinguishes a running
+       dataplane from an idle one, and a green dot claiming otherwise would be
+       an invention. It is reported as present, with what is genuinely known. */
+    rows.push(`<div>${_dpDot('up')}<strong>Data plane</strong> `
       + `<span class="mono" style="font-size:11px">${dp.pci}</span> `
-      + (dp.booted ? `<span class="text-green">booted</span>`
-                   : `<span style="color:#d29922">present, not booted</span>`)
+      + `<span class="text-green">present</span>`
+      + (dp.liveness ? ` <span class="text-dim" style="font-size:10px">(running state ${_escSP(dp.liveness)})</span>` : '')
       + `</div>`
       + `<div class="text-dim" style="font-size:10px;margin-left:14px">${dp.model||''}`
-      + (dp.driver ? ` · driver ${dp.driver}` : ' · no driver bound') + `</div>`);
+      + (dp.pci_enabled === false ? ' · PCI decode off' : '') + `</div>`);
   } else if (cp.reachable) {
     rows.push(`<div>${_dpDot('down')}<strong>Data plane</strong> <span class="text-dim">not found on the control plane's bus</span></div>`);
   }
@@ -7430,8 +7439,8 @@ async function loadFPGAStatus() {
          that does not fit it was both alarming and wrong. */
       const dp = off.dp || {}, sw = off.switch || {}, fe = off.fe100 || {};
       fwEl.innerHTML = `
-        <div><strong>Dataplane:</strong> <span class="${dp.booted?'text-green':''}" ${dp.booted?'':'style="color:#d29922"'}>`
-        + `${dp.booted ? 'Offload complex, running' : (dp.present ? 'Offload complex, not booted' : 'Offload complex')}</span></div>
+        <div><strong>Dataplane:</strong> <span class="${dp.present?'text-green':''}">`
+        + `${dp.present ? 'Offload complex' : 'Offload complex (no DP found)'}</span></div>
         <div><strong>Control plane:</strong> ${off.generation||'OCTEON'}${off.cp&&off.cp.kernel?` <span class="text-dim">(${off.cp.kernel})</span>`:''}</div>
         ${dp.present ? `<div><strong>Forwarding:</strong> ${dp.model||''}</div>` : ''}
         ${sw.present ? `<div><strong>Switch:</strong> ${sw.model||''}</div>` : ''}

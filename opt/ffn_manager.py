@@ -4773,7 +4773,7 @@ def _probe_host_octeon():
         "present": False, "generation": None, "pci": [], "driver": None,
         "bars": [], "boot_state": "absent", "note": "",
         "cp": {"present": False, "reachable": False},
-        "dp": {"present": False, "booted": False},
+        "dp": {"present": False},
         "switch": {"present": False}, "fe100": {"present": False},
         "forwarder": _sw_forwarder(),
     }
@@ -4893,15 +4893,25 @@ async def _detect_offload_dp(max_age: float = 15.0) -> dict:
             info["cp_devices"] = inv["devices"]
             for dev in inv["devices"]:
                 if dev["kind"] == "npu" and dev["device"] == "0095":
+                    # NO "booted" flag. It is tempting to derive one from the
+                    # driver link, and it would be wrong: this device is
+                    # brought up by writing its PCI `enable` file and then
+                    # mmap'ing resourceN directly -- dpboot and ffn_dpnetd both
+                    # do exactly that -- so NO kernel driver ever binds to it,
+                    # and driver=None is the normal, healthy state rather than
+                    # a fault. The `enable` bit is not a boot indicator either:
+                    # it stays 1 after whatever set it has gone away.
+                    #
+                    # There is no read-only PCI signal for "is the dataplane
+                    # running", so this reports what it can see and says so.
+                    # Asking the DP itself would answer it, but that goes
+                    # through ffn-dpsh, which is single-session -- a status
+                    # endpoint polled every ten seconds must not touch it.
                     info["dp"].update({
                         "present": True, "pci": dev["pci"],
                         "driver": dev["driver"], "model": dev["description"],
-                        # A driver bound on the CP side is what a BOOTED
-                        # dataplane looks like from here. Unbound means the
-                        # silicon is present and idle -- a completely different
-                        # operational state from absent, and the one the old
-                        # detector could not express.
-                        "booted": bool(dev["driver"]),
+                        "pci_enabled": dev.get("pci_enabled"),
+                        "liveness": "not observable from PCI",
                     })
                 elif dev["kind"] == "switch" and not info["switch"]["present"]:
                     info["switch"].update({
@@ -4915,9 +4925,7 @@ async def _detect_offload_dp(max_age: float = 15.0) -> dict:
                     })
             if info["dp"]["present"]:
                 info["generation"] = info["generation"] or "OCTEON III"
-                info["boot_state"] = ("CP running, DP booted"
-                                      if info["dp"]["booted"]
-                                      else "CP running, DP present but not booted")
+                info["boot_state"] = "CP running, DP present"
             else:
                 info["boot_state"] = "CP running, no DP found on its bus"
 
@@ -8272,10 +8280,15 @@ async def dataplane_status():
     # The offload complex, asked through the control plane. Cheap when absent
     # (one lspci) and one short CP round trip when present.
     offload = await _detect_offload_dp()
-    if offload.get("dp", {}).get("booted"):
+    # `kind` says which dataplane this box HAS, not whether it is currently
+    # passing traffic -- those are different questions and a UI needs both
+    # separately. An earlier version conflated them by deriving the kind from
+    # a "booted" flag that turned out to measure nothing (this DP is driven
+    # with no kernel driver bound, so its driver link is always empty).
+    if offload.get("dp", {}).get("present"):
         kind = "octeon-offload"
     elif offload.get("present"):
-        kind = "octeon-offload-idle"
+        kind = "octeon-offload-cp-only"
     elif fpga_detected:
         kind = "fpga"
     elif dpdk_running:
