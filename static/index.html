@@ -593,7 +593,7 @@ const TAB_MENUS = {
     {id:'dash-ddos',label:'DDoS Heatmap'},
     {id:'dash-system',label:'System Health'},
     {id:'dash-hardware',label:'Hardware'},
-    {id:'dash-offload',label:'Dataplane Offload'},
+    {id:'dash-offload',label:'Dataplane Offload',needs:'offload_complex'},
   ],
   monitor: [
     {id:'traffic',label:'Traffic'},
@@ -688,7 +688,7 @@ const TAB_MENUS = {
     {id:'vm-info-sources',label:'VM Info Sources'},
     {section:'System'},
     {id:'device-updates',label:'Software Updates'},
-    {id:'vendor-fw',label:'Vendor Firmware'},
+    {id:'vendor-fw',label:'Vendor Firmware',needs:'offload_complex'},
     {id:'troubleshooting',label:'Troubleshooting'},
     {id:'dataplane-engines',label:'Dataplane & Engines'},
     {id:'virtual-systems',label:'Virtual Systems'},
@@ -861,6 +861,7 @@ async function refreshCommitIndicator() {
 function startCommitPolling() {
   refreshCommitIndicator();
   refreshFipsBadge();
+  loadPlatform();
   if (commitPollTimer) clearInterval(commitPollTimer);
   commitPollTimer = setInterval(refreshCommitIndicator, 5000);
 }
@@ -1170,9 +1171,101 @@ function switchTab(tab) {
   switchSubPage(menu[0].id);
 }
 
+/* ===========================================================================
+   PLATFORM ADAPTATION
+
+   FFN runs on hardware with genuinely different shapes: its own board, which
+   has an accelerator card and a host-side DPDK datapath, and reclaimed
+   appliances that forward on their own silicon and have neither. This UI was
+   written for the first and rendered its features unconditionally, so on an
+   appliance an operator was shown a DPDK panel reporting "Stopped", a red
+   "Not Detected" beside an instruction to fit a card that does not physically
+   fit the chassis, and a prompt to enable core isolation on a box that
+   forwards nothing on its host cores. Every one of those reads as a fault.
+   None of them is one.
+
+   The server already answers this: /api/system/platform gives each feature an
+   `applicable` flag (does it belong on this hardware at all) separate from
+   `present` (is it here). This is the client half.
+
+     NOT APPLICABLE          hide it. There is nothing to report, and nothing
+                             an operator could do about it.
+     APPLICABLE, ABSENT      show it as missing. That IS actionable.
+
+   Fetched once at startup rather than per page: it describes the chassis, and
+   the chassis does not change while someone is logged in.
+   =========================================================================== */
+let _platform = null;
+
+async function loadPlatform() {
+  try {
+    _platform = await api('/api/system/platform');
+  } catch (e) {
+    _platform = null;
+  }
+  // Re-render the current page so anything drawn before the profile arrived
+  // picks it up, rather than staying in its unfiltered first paint.
+  if (typeof currentSubPage === 'string' && currentSubPage) {
+    renderSidebar(TAB_MENUS[currentTab] || []);
+    renderPage(currentSubPage);
+  }
+}
+
+/* Does this feature belong on this hardware?
+
+   Defaults to TRUE when the profile is unknown -- an unreachable or older
+   manager must show everything rather than silently hide half the UI. Hiding
+   on missing data would turn one failed request into "the features vanished",
+   which is far worse than showing a panel that does not apply. */
+function platformApplies(feature) {
+  if (!feature) return true;
+  // An array means "any of these applies" -- Device > Setup > Operations, for
+  // instance, is worth showing if EITHER host-side datapath exists.
+  if (Array.isArray(feature)) return feature.some(platformApplies);
+  const f = _platform && _platform.features && _platform.features[feature];
+  if (!f) return true;
+  return f.applicable !== false;
+}
+
+function platformReason(feature) {
+  const f = _platform && _platform.features && _platform.features[feature];
+  return (f && f.reason) || '';
+}
+
+/* The panel shown when someone reaches a page that does not apply here -- by
+   an old bookmark, or a link from elsewhere. A plain explanation, not an
+   error: nothing has gone wrong. */
+function platformNotApplicable(c, label, feature) {
+  const why = platformReason(feature);
+  const hw = (_platform && _platform.hardware) || 'this appliance';
+  c.innerHTML = `
+    <div class="page-header"><h2>${_escSP(label)}</h2></div>
+    <div class="card">
+      <div style="font-size:13px;line-height:1.9">
+        <strong>Not applicable on this hardware.</strong>
+        <div class="text-dim" style="margin-top:6px">
+          ${_escSP(hw)} does not have this subsystem${why ? ' &mdash; ' + _escSP(why) : ''}.
+        </div>
+        <div class="text-dim" style="margin-top:10px;font-size:11px">
+          This is not a fault and there is nothing to configure. See
+          <strong>Device &rsaquo; Setup</strong> for what this chassis does have.
+        </div>
+      </div>
+    </div>`;
+}
+
 function renderSidebar(items) {
   const sb = document.getElementById('sidebar');
-  sb.innerHTML = items.map(it => {
+  // Drop entries whose feature is not part of this hardware, then drop any
+  // section heading left with nothing under it -- an empty heading is worse
+  // than no heading, because it reads as a page that failed to load.
+  const keep = items.filter(it => it.section || platformApplies(it.needs));
+  const pruned = keep.filter((it, i) => {
+    if (!it.section) return true;
+    const next = keep[i + 1];
+    return next && !next.section;
+  });
+  sb.innerHTML = pruned.map(it => {
     if (it.section) return `<div class="sb-section">${it.section}</div>`;
     return `<div class="sb-item${it.id===currentSubPage?' active':''}" data-page="${it.id}" onclick="switchSubPage('${it.id}')">${it.label}</div>`;
   }).join('');
@@ -1192,9 +1285,26 @@ document.getElementById('main-tabs').addEventListener('click',e=>{
   if (e.target.dataset.tab) switchTab(e.target.dataset.tab);
 });
 
+/* Pages that belong to hardware not every appliance has. Hiding the nav entry
+   is not enough on its own: a bookmark, or a link from another page, still
+   reaches renderPage, so the router consults this too. Only pages that are
+   genuinely absent on some platform appear here -- a page that merely LOOKS
+   different is handled inside its own renderer. */
+const PAGE_NEEDS = {
+  'dash-offload': {label: 'Dataplane Offload', needs: 'offload_complex'},
+  'vendor-fw':    {label: 'Vendor Firmware',   needs: 'offload_complex'},
+};
+
 /* ---- Page Renderer ---- */
 function renderPage(pageId) {
   const c = document.getElementById('content-area');
+  // Hiding a nav entry does not make its page unreachable -- a bookmark or an
+  // internal link still lands here -- so the guard belongs at the router too,
+  // not only in the sidebar.
+  const gate = PAGE_NEEDS[pageId];
+  if (gate && !platformApplies(gate.needs)) {
+    return platformNotApplicable(c, gate.label, gate.needs);
+  }
   const renderers = {
     // Dashboard tab
     'dash-overview': renderDashOverview,
@@ -3184,14 +3294,16 @@ function renderDeviceStub(c) {
 
 /* ---- Device > Setup ---- */
 const SETUP_TABS = [
-  {id:'s-mgmt',label:'Management'},{id:'s-ops',label:'Operations'},{id:'s-svc',label:'Services'},
+  {id:'s-mgmt',label:'Management'},
+  {id:'s-ops',label:'Operations',needs:['dpdk','fpga_card']},{id:'s-svc',label:'Services'},
   {id:'s-iface',label:'Interfaces'},{id:'s-telem',label:'Telemetry'},{id:'s-cid',label:'Content-ID'},
   {id:'s-wf',label:'Crucible'},{id:'s-sess',label:'Session'},{id:'s-hsm',label:'HSM'},
   {id:'s-ace',label:'ACE'},{id:'s-dlp',label:'DLP'},
 ];
 
 function renderDeviceSetup(c) {
-  const tabs = SETUP_TABS.map(t=>`<button data-sp="${t.id}" onclick="switchSetupPanel('${t.id}')">${t.label}</button>`).join('');
+  const tabs = SETUP_TABS.filter(t=>platformApplies(t.needs))
+    .map(t=>`<button data-sp="${t.id}" onclick="switchSetupPanel('${t.id}')">${t.label}</button>`).join('');
   c.innerHTML = `
     <div class="page-header"><h2>Setup</h2></div>
     <div class="setup-tabs" id="setup-tab-bar">${tabs}</div>
@@ -7090,16 +7202,27 @@ function editCoPPClass(cls,bucket,refill) {
 
 /* ---- Device > FPGA / Dataplane ---- */
 function renderDeviceFPGA(c) {
+  // The page title, the card tiles and the restart controls all described ONE
+  // platform's dataplane. On a chassis that forwards on its own silicon the
+  // DPDK tile is not merely irrelevant, it was styled and labelled "primary",
+  // so the panel most likely to be believed was the one describing a subsystem
+  // the box does not run.
+  const hasDpdk = platformApplies('dpdk');
+  const hasCard = platformApplies('fpga_card');
+  const hasPlanes = platformApplies('cpu_isolation');
+  const title = (hasDpdk || hasCard) ? 'FPGA / Dataplane'
+              : 'Dataplane &amp; Engines';
   c.innerHTML = `
-    <div class="page-header"><h2>FPGA / Dataplane</h2></div>
-    <div class="section"><div class="grid grid-3">
+    <div class="page-header"><h2>${title}</h2></div>
+    ${hasCard ? `<div class="section"><div class="grid grid-3">
       <div class="card"><h3>Firmware</h3><div id="fpga-firmware" style="font-size:12px;line-height:2.2"></div></div>
       <div class="card"><h3>Resource Utilization</h3><div id="fpga-res-detail"></div></div>
       <div class="card"><h3>Thermal / Power</h3><div id="fpga-thermal" style="font-size:12px;line-height:2.2"></div></div>
-    </div></div>
+    </div></div>` : `<div class="section"><div class="card">
+      <div id="fpga-firmware" style="font-size:12px;line-height:2.2"></div></div></div>`}
     <div class="section"><div class="section-title">Dataplane Control</div><div class="card">
       <div class="grid grid-3" style="gap:16px">
-        <div style="border:1px solid var(--accent);border-radius:var(--radius);padding:16px">
+        ${!hasDpdk ? '' : `<div style="border:1px solid var(--accent);border-radius:var(--radius);padding:16px">
           <h3 style="margin-bottom:8px">DPDK Fast-Path <span class="badge badge-info" style="font-size:9px">primary</span></h3>
           <div id="dp-dpdk-status" style="font-size:12px;line-height:2;margin-bottom:10px">Loading...</div>
           <div style="display:flex;gap:8px">
@@ -7107,35 +7230,35 @@ function renderDeviceFPGA(c) {
             <button class="btn btn-sm" onclick="restartDataplane('dpdk-stop')">Stop</button>
           </div>
           <p class="text-dim" style="font-size:10px;margin-top:6px">Restarts the live DPDK unit (ffn-dpdk-fwd) — hugepages + isolcpus binding preserved. This is the primary host fast path.</p>
-        </div>
+        </div>`}
         <div style="border:1px solid var(--border);border-radius:var(--radius);padding:16px">
-          <h3 style="margin-bottom:8px">FPGA Dataplane <span class="badge" style="font-size:9px;background:var(--text-muted);color:#000">optional offload</span></h3>
+          <h3 style="margin-bottom:8px">${hasCard ? 'FPGA Dataplane <span class="badge" style="font-size:9px;background:var(--text-muted);color:#000">optional offload</span>' : 'Forwarding Complex'}</h3>
           <div id="dp-fpga-status" style="font-size:12px;line-height:2;margin-bottom:10px">Loading...</div>
-          <div style="display:flex;gap:8px">
+          ${!hasCard ? `<p class="text-dim" style="font-size:10px;margin-top:6px">This chassis forwards on its own silicon. There is no host-side reset for it here: the switch and the dataplane are brought up by the control plane, not by this page.</p>` : `<div style="display:flex;gap:8px">
             <button class="btn btn-sm btn-danger" onclick="restartDataplane('fpga')">Restart FPGA (PCIe Reset)</button>
             <button class="btn btn-sm" onclick="restartDataplane('fpga-warm')">Warm Reset</button>
           </div>
-          <p class="text-dim" style="font-size:10px;margin-top:6px">PCIe reset via kernel driver ioctl — triggers full FPGA reconfiguration. Absent card is a normal state.</p>
+          <p class="text-dim" style="font-size:10px;margin-top:6px">PCIe reset via kernel driver ioctl — triggers full FPGA reconfiguration. Absent card is a normal state.</p>`}
         </div>
-        <div style="border:1px solid var(--border);border-radius:var(--radius);padding:16px">
+        ${!(hasDpdk && hasCard) ? '' : `<div style="border:1px solid var(--border);border-radius:var(--radius);padding:16px">
           <h3 style="margin-bottom:8px">Full Dataplane</h3>
           <div style="font-size:12px;line-height:2;margin-bottom:10px;color:var(--text-dim)">
             <div>Restart both DPDK and FPGA dataplanes simultaneously</div>
             <div>Traffic will be interrupted during restart</div>
           </div>
           <button class="btn btn-sm btn-danger" onclick="if(confirm('Restart ALL dataplanes? Traffic will be interrupted.'))restartDataplane('all')">Restart All Dataplanes</button>
-        </div>
+        </div>`}
       </div>
       <div id="dp-restart-log" style="background:#0d1117;border:1px solid var(--border);border-radius:4px;padding:10px;margin-top:12px;font-family:monospace;font-size:11px;color:var(--green);max-height:150px;overflow-y:auto;display:none"></div>
     </div></div>
-    <div class="section"><div class="section-title">CPU Processing Planes</div>
+    ${!hasPlanes ? '' : `<div class="section"><div class="section-title">CPU Processing Planes</div>
       <div id="cpu-planes-card" class="card">Loading&hellip;</div>
-    </div>
+    </div>`}
     <div class="section">
-      <div class="section-title">Processing Engines <span class="text-dim" style="font-size:11px;text-transform:none;letter-spacing:0">— host software &amp; DPDK fast path</span></div>
+      <div class="section-title">Processing Engines <span class="text-dim" style="font-size:11px;text-transform:none;letter-spacing:0">${hasDpdk ? '— host software &amp; DPDK fast path' : '— host software and the offload complex'}</span></div>
       <div id="engine-primary"><div class="text-dim">Loading engines&hellip;</div></div>
     </div>
-    <div class="section">
+    ${!hasCard ? '' : `<div class="section">
       <details id="fpga-offload-panel" style="border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;background:var(--card)">
         <summary style="cursor:pointer;font-size:12px;font-weight:600;color:var(--text)">
           Optional FPGA Offload <span id="fpga-offload-summary" class="text-dim" style="font-weight:400"></span>
@@ -7145,11 +7268,11 @@ function renderDeviceFPGA(c) {
         </p>
         <div id="fpga-offload-body" style="margin-top:8px"><div class="text-dim">Loading&hellip;</div></div>
       </details>
-    </div>
-    <div class="section">
+    </div>`}
+    ${!hasCard ? '' : `<div class="section">
       <div class="section-title">FPGA Emulator <span class="text-dim" style="font-size:11px;text-transform:none;letter-spacing:0">— software AC/DFA DPI engine (dpi_l7 / dpi_regex), hardware-swappable</span></div>
       <div id="fpga-emu-body" class="card"><div class="text-dim">Loading emulator status&hellip;</div></div>
-    </div>
+    </div>`}
     <div class="section">
       <div class="section-title">MP&harr;DP Wire <span class="text-dim" style="font-size:11px;text-transform:none;letter-spacing:0">— FlatBuffers management&harr;dataplane channel</span></div>
       <div class="grid grid-2">
@@ -7395,7 +7518,7 @@ async function loadDataplaneStatus() {
   if (!dp) return;
   const fpgaEl = document.getElementById('dp-fpga-status');
   if (fpgaEl) {
-    if (dp.kind === 'octeon-offload' || dp.kind === 'octeon-offload-idle') {
+    if (dp.kind === 'octeon-offload' || dp.kind === 'octeon-offload-cp-only') {
       fpgaEl.innerHTML = _offloadHTML(dp.offload);
     } else if (dp.fpga_detected) {
       fpgaEl.innerHTML =
@@ -7432,7 +7555,7 @@ async function loadDataplaneStatus() {
       + `<div><strong>Cores:</strong> ${dp.dpdk_cores||'--'}</div>`
       + `<div><strong>Hugepages:</strong> ${hp}</div>`
       + (dp.dpdk_vm_hwm_mb ? `<div><strong>Peak RSS:</strong> ${dp.dpdk_vm_hwm_mb} MB</div>` : '');
-    } else if (dp.kind === 'octeon-offload' || dp.kind === 'octeon-offload-idle') {
+    } else if (dp.kind === 'octeon-offload' || dp.kind === 'octeon-offload-cp-only') {
       /* DPDK is not the dataplane here and its absence is not a fault, so it
          is reported as not applicable rather than as "Stopped" in a panel an
          operator is reading to find out why traffic is not flowing. */
