@@ -1860,15 +1860,32 @@ async function loadDPOffload(){
       <div><strong>Boot state:</strong> ${_escSP(d.boot_state||'')}</div>
       <div><strong>Driver:</strong> ${_escSP(d.driver||'unbound')}</div>
       <div><strong>BARs:</strong> ${_escSP(bars)}</div>
-      <div><strong>Functions:</strong> ${d.dp_instances||0}</div>
+      <div><strong>Chips:</strong> ${(d.cp&&d.cp.chips)||0}
+        <span class="text-dim" style="font-size:10px">(${(d.pci||[]).length} PCI function(s) of them)</span></div>
       ${(d.pci||[]).map(p=>`<div class="mono" style="font-size:10px">${_escSP(p)}</div>`).join('')}
       ${d.note?`<div class="text-dim" style="font-size:11px">${_escSP(d.note)}</div>`:''}
+    </div></div>
+    <div class="card"><div class="section-title">Behind the control plane</div><div style="font-size:12px;line-height:2">
+      <div class="text-dim" style="font-size:11px;margin-bottom:4px">Not on this host's PCI bus -- reported by the control plane itself.</div>
+      ${[['Data plane', d.dp], ['Switch', d.switch], ['Front end', d.fe100]].map(([label, x]) => {
+        x = x || {};
+        if (!x.present) return `<div><strong>${label}:</strong> <span class="text-dim">not found</span></div>`;
+        const st = ('booted' in x)
+          ? (x.booted ? '<span class="badge badge-up">booted</span>'
+                      : '<span class="badge">present, not booted</span>')
+          : (x.driver ? '<span class="badge badge-up">driver bound</span>'
+                      : '<span class="badge">no driver</span>');
+        return `<div><strong>${label}:</strong> ${st}
+                <div class="text-dim" style="font-size:10px">${_escSP(x.model||'')}
+                <span class="mono">${_escSP(x.pci||'')}</span>${x.driver?` &middot; ${_escSP(x.driver)}`:''}</div></div>`;
+      }).join('')}
+      ${(d.cp&&d.cp.kernel)?`<div class="text-dim" style="font-size:10px;margin-top:6px">CP kernel ${_escSP(d.cp.arch||'')} ${_escSP(d.cp.kernel)}</div>`:''}
     </div></div>
     <div class="card"><div class="section-title">FFN Forwarder (active path)</div><div style="font-size:12px;line-height:2">
       <div>Unit: <span class="mono">${_escSP(fw.unit||'n/a')}</span> ${fw.active?'<span class="badge badge-up">running</span>':'<span class="badge badge-down">stopped</span>'}</div>
       <div><strong>Kind:</strong> ${_escSP(fw.kind||'')}</div>
       <div><strong>Ports:</strong> ${(fw.ports||[]).map(p=>`<span class="badge badge-info" style="font-size:9px">${_escSP(p)}</span>`).join(' ')||'<span class="text-dim">none</span>'}</div>
-      <div class="text-dim" style="font-size:10px;margin-top:6px">Forwards as soon as the ports have link. FPGA/FE100 programming requires NPU bring-up first.</div>
+      <div class="text-dim" style="font-size:10px;margin-top:6px">The software path, for a host with no offload complex. On this chassis the faceplate is on the switch ASIC and forwarding is the data plane's job.</div>
     </div></div>
   </div>`;
 }

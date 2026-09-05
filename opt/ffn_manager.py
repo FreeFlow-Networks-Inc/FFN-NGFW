@@ -4761,31 +4761,13 @@ def _sw_forwarder():
     return out
 
 
-async def _detect_offload_dp() -> dict:
-    """The forwarding complex of a reclaimed appliance, walked as the chain it
-    actually is:
+def _probe_host_octeon():
+    """The host-side half of offload detection. BLOCKING -- runs in a thread.
 
-        MP (x86, this host) --PCIe--> CP OCTEON --PCIe--> DP OCTEON (CN78XX)
-                                          |
-                                          +--> BCM88375 switch --> faceplate
-                                          +--> FE100 front-end ASIC
-
-    The previous version stopped at the first hop and drew three wrong
-    conclusions from it. It ran `lspci` here, counted the THREE PCI functions of
-    the single CN73XX -- two OCTEON functions plus its NVMe-class one -- and
-    reported dp_instances=3. It read that chip's unbound driver link and
-    reported boot_state "unbound" for a CP that was up and answering. And it
-    called the CP itself the dataplane.
-
-    Everything past the CP -- the BCM, the FE100, and the 40-core CN78XX that
-    IS the dataplane -- hangs off the CP's own root complexes. None of it
-    appears in this host's PCI space, so no amount of host-side lspci could
-    ever have found it. That is why the far side is asked rather than guessed:
-    ffn-bcmd answers a read-only sysfs inventory on the CP.
-
-    That inventory query deliberately does not touch the switch session, so it
-    still answers while the chip is initialising and after that session has
-    died -- the cases where knowing what hardware exists matters most.
+    Everything here shells out or reads sysfs, and none of it belongs on an
+    event loop: this is called from request handlers the WebUI polls every ten
+    seconds, and a synchronous subprocess there stalls every other request on
+    the box, including the ones an operator is using to find out what is wrong.
     """
     info = {
         "present": False, "generation": None, "pci": [], "driver": None,
@@ -4793,10 +4775,8 @@ async def _detect_offload_dp() -> dict:
         "cp": {"present": False, "reachable": False},
         "dp": {"present": False, "booted": False},
         "switch": {"present": False}, "fe100": {"present": False},
-        "forwarder": {},
+        "forwarder": _sw_forwarder(),
     }
-
-    # -- hop 1: does this host see a control-plane OCTEON at all?
     try:
         out = subprocess.run(["lspci", "-Dnn"], capture_output=True,
                              text=True, timeout=5).stdout
@@ -4813,7 +4793,6 @@ async def _detect_offload_dp() -> dict:
     if not info["pci"]:
         info["note"] = ("No OCTEON complex on this host's PCI bus. FFN uses "
                         "its software dataplane here.")
-        info["forwarder"] = _sw_forwarder()
         return info
 
     info["present"] = True
@@ -4840,66 +4819,110 @@ async def _detect_offload_dp() -> dict:
     except Exception:
         pass
 
-    # -- hop 2: is the CP actually RUNNING? A bound driver says this host can
-    # reach the endpoint, not that anything boots on it.
     ok, detail = _cp_reachable()
     info["cp"]["reachable"] = ok
     info["cp"]["detail"] = detail
+    info["boot_state"] = "CP running" if ok else "CP present, not answering"
     if not ok:
-        info["boot_state"] = "CP present, not answering"
         info["note"] = ("The control plane is on the bus but not responding, "
                         "so nothing behind it can be enumerated. " + detail)
-        info["forwarder"] = _sw_forwarder()
-        return info
+    return info
 
-    info["boot_state"] = "CP running"
 
-    # -- hop 3: what the CP can see and this host cannot.
-    try:
-        inv = await _bcm_client().sys_inventory()
-    except ImportError as exc:
-        inv = {"ok": False, "error": "bcm client unavailable",
-               "detail": str(exc)}
-    if not inv.get("devices"):
-        info["note"] = ("CP is answering but returned no inventory: %s"
-                        % (inv.get("detail") or inv.get("error")
-                           or "empty reply"))
-        info["forwarder"] = _sw_forwarder()
-        return info
+async def _detect_offload_dp(max_age: float = 15.0) -> dict:
+    """The forwarding complex of a reclaimed appliance, walked as the chain it
+    actually is:
 
-    info["cp"]["kernel"] = (inv.get("cp") or {}).get("release")
-    info["cp"]["arch"] = (inv.get("cp") or {}).get("machine")
-    info["cp_devices"] = inv["devices"]
-    for dev in inv["devices"]:
-        if dev["kind"] == "npu" and dev["device"] == "0095":
-            info["dp"].update({
-                "present": True, "pci": dev["pci"], "driver": dev["driver"],
-                "model": dev["description"],
-                # A driver bound on the CP side is what a BOOTED dataplane
-                # looks like from here. Unbound means the silicon is present
-                # and idle -- a completely different operational state from
-                # absent, and the one the old detector could not express.
-                "booted": bool(dev["driver"]),
-            })
-        elif dev["kind"] == "switch" and not info["switch"]["present"]:
-            info["switch"].update({
-                "present": True, "pci": dev["pci"], "driver": dev["driver"],
-                "model": dev["description"],
-            })
-        elif dev["kind"] == "asic":
-            info["fe100"].update({
-                "present": True, "pci": dev["pci"], "driver": dev["driver"],
-                "model": dev["description"],
-            })
+        MP (x86, this host) --PCIe--> CP OCTEON --PCIe--> DP OCTEON (CN78XX)
+                                          |
+                                          +--> BCM88375 switch --> faceplate
+                                          +--> FE100 front-end ASIC
 
-    if info["dp"]["present"]:
-        info["generation"] = info["generation"] or "OCTEON III"
-        info["boot_state"] = ("CP running, DP booted" if info["dp"]["booted"]
-                              else "CP running, DP present but not booted")
-    else:
-        info["boot_state"] = "CP running, no DP found on its bus"
+    The previous version stopped at the first hop and drew three wrong
+    conclusions from it. It ran `lspci` here, counted the THREE PCI functions of
+    the single CN73XX -- two OCTEON functions plus its NVMe-class one -- and
+    reported dp_instances=3. It read that chip's unbound driver link and
+    reported "unbound" for a CP that was up and answering. And it called the CP
+    itself the dataplane.
 
-    info["forwarder"] = _sw_forwarder()
+    Everything past the CP -- the BCM, the FE100, and the 40-core CN78XX that
+    IS the dataplane -- hangs off the CP's own root complexes. None of it
+    appears in this host's PCI space, so no amount of host-side lspci could
+    ever have found it. That is why the far side is asked rather than guessed:
+    ffn-bcmd answers a read-only sysfs inventory on the CP, and that query
+    deliberately does not touch the switch session, so it still answers while
+    the chip is initialising or after that session has died.
+
+    CACHED, and the blocking half runs off the event loop. Three endpoints call
+    this and the WebUI polls two of them every ten seconds; without both of
+    those it would be four subprocesses and a synchronous socket connect on the
+    loop, several times per poll -- which stalls every other request on the box
+    at exactly the moment an operator is trying to find out what is wrong.
+    """
+    # Short-lived cache. Two endpoints the WebUI polls every ten seconds call
+    # this, and a third calls it per hardware refresh; what it reports -- which
+    # silicon is present, whether the CP answers -- does not change on a
+    # sub-second timescale, so re-probing per request buys nothing and costs a
+    # subprocess storm. Held as a function attribute rather than a module
+    # global so the function is self-contained and can be deployed on its own.
+    now = time.time()
+    ent = getattr(_detect_offload_dp, "_cache", None)
+    if ent is None:
+        ent = _detect_offload_dp._cache = {"t": 0.0, "data": None}
+    if ent["data"] is not None and (now - ent["t"]) < max_age:
+        return ent["data"]
+
+    info = await asyncio.to_thread(_probe_host_octeon)
+
+    if info["cp"]["reachable"]:
+        try:
+            inv = await _bcm_client().sys_inventory()
+        except ImportError as exc:
+            inv = {"ok": False, "error": "bcm client unavailable",
+                   "detail": str(exc)}
+        except Exception as exc:
+            inv = {"ok": False, "error": "inventory failed", "detail": str(exc)}
+
+        if not inv.get("devices"):
+            info["note"] = ("CP is answering but returned no inventory: %s"
+                            % (inv.get("detail") or inv.get("error")
+                               or "empty reply"))
+        else:
+            info["cp"]["kernel"] = (inv.get("cp") or {}).get("release")
+            info["cp"]["arch"] = (inv.get("cp") or {}).get("machine")
+            info["cp_devices"] = inv["devices"]
+            for dev in inv["devices"]:
+                if dev["kind"] == "npu" and dev["device"] == "0095":
+                    info["dp"].update({
+                        "present": True, "pci": dev["pci"],
+                        "driver": dev["driver"], "model": dev["description"],
+                        # A driver bound on the CP side is what a BOOTED
+                        # dataplane looks like from here. Unbound means the
+                        # silicon is present and idle -- a completely different
+                        # operational state from absent, and the one the old
+                        # detector could not express.
+                        "booted": bool(dev["driver"]),
+                    })
+                elif dev["kind"] == "switch" and not info["switch"]["present"]:
+                    info["switch"].update({
+                        "present": True, "pci": dev["pci"],
+                        "driver": dev["driver"], "model": dev["description"],
+                    })
+                elif dev["kind"] == "asic":
+                    info["fe100"].update({
+                        "present": True, "pci": dev["pci"],
+                        "driver": dev["driver"], "model": dev["description"],
+                    })
+            if info["dp"]["present"]:
+                info["generation"] = info["generation"] or "OCTEON III"
+                info["boot_state"] = ("CP running, DP booted"
+                                      if info["dp"]["booted"]
+                                      else "CP running, DP present but not booted")
+            else:
+                info["boot_state"] = "CP running, no DP found on its bus"
+
+    ent["t"] = now
+    ent["data"] = info
     return info
 
 
@@ -10200,6 +10223,9 @@ async def _faceplate_map():
     if bp is None:
         return None
 
+    if not _this_is_a_faceplate_chassis():
+        return None
+
     live = {}
     reply = {}
     try:
@@ -10241,10 +10267,38 @@ async def _faceplate_map():
     return out
 
 
+def _this_is_a_faceplate_chassis():
+    """Does this host actually have the chassis the faceplate map describes?
+
+    Importability is NOT the test. A platform module can be present because a
+    checkout has the submodule, or because someone copied it, and treating that
+    as "this is a PA-5200" would make a completely different host purge its
+    interface aliases and advertise 25 ports it does not have.
+
+    So the map is only claimed alongside positive hardware evidence: an OCTEON
+    on this host's PCI bus. That is the one part of the complex the host can
+    see, it is read straight from sysfs with no subprocess, and no other
+    platform FFN targets carries one.
+    """
+    if _bcm_faceplate() is None:
+        return False
+    try:
+        for dev in os.listdir("/sys/bus/pci/devices"):
+            try:
+                with open("/sys/bus/pci/devices/%s/vendor" % dev) as f:
+                    if f.read().strip().lower() == "0x177d":
+                        return True
+            except OSError:
+                continue          # hotplug/rescan race: skip, do not fail
+    except OSError:
+        return False
+    return False
+
+
 def _faceplate_map_sync():
     """Map only, no chip state. For the paths that cannot await."""
     bp = _bcm_faceplate()
-    if bp is None:
+    if bp is None or not _this_is_a_faceplate_chassis():
         return None
     out = {}
     for port in bp.faceplate_ports():
@@ -10300,12 +10354,22 @@ def _auto_assign_aliases() -> dict:
     # interface grid keeps offering an operator a management port to configure
     # as a data port long after the source of the mistake is fixed.
     if _faceplate_map_sync() is not None:
+        # Purge aliases pointing at NICs that are no longer eligible -- on this
+        # chassis, every control-plane NIC -- and then FALL THROUGH rather than
+        # returning. ffn_ifroles documents a `data_plane_netdevs` escape hatch
+        # for a platform where a host NIC really is a data port; returning here
+        # meant that override could never produce an alias, which quietly broke
+        # the one case it exists for. _list_linux_nics() already honours it, so
+        # falling through does the right thing for both.
+        eligible = set(_list_linux_nics())
         for pan, lnx in list(existing.items()):
+            if lnx in eligible:
+                continue
             logger.info("Purging host-NIC alias %s -> %s: this chassis's data "
                         "ports are on the switch ASIC, not on host NICs",
                         pan, lnx)
             _delete_alias(pan)
-        return {}
+            existing.pop(pan, None)
 
     # Purge stale aliases pointing at non-physical Linux interfaces
     # (bondN, veth, docker bridges) that may have leaked into the
