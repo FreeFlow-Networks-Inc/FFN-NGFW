@@ -110,6 +110,21 @@ def platform_mod(name):
             mod = __import__(name)
         except ImportError:
             mod = None
+        except Exception as exc:
+            # NOT just ImportError. A platform module may assert at import time
+            # -- ffn_bcmports checks its faceplate map against the vendor's own
+            # front-panel list, which is exactly the kind of check worth having
+            # -- and an AssertionError escaping here would propagate out of a
+            # request handler, or out of startup. A broken platform module must
+            # degrade to "this is not that hardware", never take the management
+            # plane with it.
+            logger.warning("platform module %s failed to import: %s: %s",
+                           name, type(exc).__name__, exc)
+            mod = None
+    except Exception as exc:
+        logger.warning("platform module %s failed to import: %s: %s",
+                       name, type(exc).__name__, exc)
+        mod = None
     cache[name] = mod
     return mod
 
@@ -10196,6 +10211,11 @@ async def _faceplate_map():
     except Exception as exc:                       # never fail the whole page
         reply = {"ok": False, "error": str(exc)}
 
+    # Insertion order is faceplate order -- bp.faceplate_ports() returns the
+    # numbered connectors in order and then the named ones. Callers iterate this
+    # dict directly, so ordering it here means the interface list reads like the
+    # front of the chassis rather than like the chip's port numbering, which is
+    # scrambled relative to the metal (logical 28 is connector 1).
     out = {}
     for port in bp.faceplate_ports():
         name = bp.pan_ifname(port)
@@ -10450,10 +10470,9 @@ async def aliases_list(user: dict = Depends(get_current_user)):
         # string an operator needs when correlating the two.
         return {
             "aliases": [{"pan_name": n, "linux_name": d["diag_name"]}
-                        for n, d in sorted(fp.items(),
-                                           key=lambda kv: kv[1]["bcm_port"])],
+                        for n, d in fp.items()],
             "linux_nics": [],
-            "faceplate": [fp[n] for n in sorted(fp, key=lambda k: fp[k]["bcm_port"])],
+            "faceplate": list(fp.values()),
             "source": "switch-asic faceplate map",
         }
 
@@ -10786,8 +10805,7 @@ async def interfaces_enriched(user: dict = Depends(get_current_user)):
                  "sdwan": []}
         fp0 = await _faceplate_map()
         if fp0 is not None:
-            empty["faceplate"] = [fp0[n] for n in sorted(
-                fp0, key=lambda k: fp0[k]["bcm_port"])]
+            empty["faceplate"] = list(fp0.values())
             empty["source"] = "switch-asic faceplate"
         return empty
 
@@ -10955,7 +10973,7 @@ async def interfaces_enriched(user: dict = Depends(get_current_user)):
         # Report the faceplate alongside the rows so a caller can show ports
         # that exist in the chassis but not yet in the config, and can say what
         # each one is (media, speed, which connector) without a second request.
-        out["faceplate"] = [fp[n] for n in sorted(fp, key=lambda k: fp[k]["bcm_port"])]
+        out["faceplate"] = list(fp.values())
         out["source"] = "switch-asic faceplate"
     net = candidate.find("./network/interface")
     if net is not None:
