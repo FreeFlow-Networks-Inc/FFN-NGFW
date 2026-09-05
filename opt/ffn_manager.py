@@ -247,6 +247,9 @@ class PolicyRule(BaseModel):
     dst_port: int = 0
     proto: str = "any"
     action: str = "permit"
+    # Numeric vsys_id. 0 means "every virtual system", which is what the
+    # dataplane's wildcard already meant and what an untagged rule should do.
+    vsys: int = 0
     description: str = ""
     position: int = 0
 
@@ -2155,6 +2158,12 @@ async def init_db():
                 dst_port INTEGER NOT NULL DEFAULT 0,
                 proto TEXT NOT NULL DEFAULT 'any',
                 action TEXT NOT NULL DEFAULT 'permit',
+                -- Which virtual system this rule belongs to, as the numeric
+                -- vsys_id the dataplane matches on. 0 is dp_classify()'s
+                -- WILDCARD -- a rule with vsys 0 applies to every tenant --
+                -- and it is the default so that every existing rule keeps
+                -- behaving exactly as it did before tenants existed.
+                vsys INTEGER NOT NULL DEFAULT 0,
                 description TEXT NOT NULL DEFAULT '',
                 hit_count INTEGER NOT NULL DEFAULT 0,
                 enabled INTEGER NOT NULL DEFAULT 1,
@@ -2344,6 +2353,10 @@ async def init_db():
             "ALTER TABLE policy_rules ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE policy_rules ADD COLUMN src_iface TEXT",
             "ALTER TABLE policy_rules ADD COLUMN dst_iface TEXT",
+            # Default 0 on purpose: 0 is the dataplane's wildcard, so an
+            # upgraded rulebase keeps applying to all traffic rather than
+            # silently binding every existing rule to tenant 1.
+            "ALTER TABLE policy_rules ADD COLUMN vsys INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE dlp_rules ADD COLUMN direction TEXT NOT NULL DEFAULT 'egress'",
             "ALTER TABLE dlp_rules ADD COLUMN threshold INTEGER NOT NULL DEFAULT 1",
             # FRR routing plane columns (contract §6) for upgraded VR tables.
@@ -3958,6 +3971,62 @@ def _vsys_id_for_entry(e) -> int:
     return _vsys_id_from_name(e.get("name") or "")
 
 
+def _configured_vsys_ids() -> set:
+    """The numeric ids of the virtual systems that actually exist.
+
+    Read from the candidate config, which is where a vsys lives -- there is no
+    vsys SQL table, and adding one would be a second source of truth for
+    something the PAN-OS config already owns.
+    """
+    ids = set()
+    try:
+        node = config_mgr.get_xpath(f"{DEV}.vsys", source="candidate")
+        for e in (node.findall("entry") if node is not None else []):
+            n = _vsys_id_from_name(e.get("name") or "")
+            if n:
+                ids.add(n)
+    except Exception:
+        pass
+    return ids
+
+
+def _check_vsys(v) -> int:
+    """Validate a rule's vsys id, or raise 400.
+
+    Two rejections, and both are about failing where someone is watching.
+
+    A rule bound to a virtual system that does not exist matches NOTHING -- the
+    dataplane compares the tag and never finds it -- so the rule sits in the
+    rulebase looking enabled while enforcing nothing. That is the worst outcome
+    a firewall can produce, and it is invisible until traffic goes the wrong
+    way, so it is refused at the point the rule is written.
+
+    An id above what the dataplane can express is refused for the same reason:
+    the wire format carries vsys in one byte and the plan allocates hardware per
+    tenant, so an id past that would be truncated rather than honoured.
+    """
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="vsys must be a number")
+    if n == 0:
+        return 0                      # the wildcard: applies to every tenant
+    if n < 0 or n > 32:               # DP_VSYS_MAX in ffn_dp_vsys.h
+        raise HTTPException(
+            status_code=400,
+            detail="vsys %d out of range; the dataplane supports 1..32 "
+                   "(0 means every virtual system)" % n)
+    have = _configured_vsys_ids()
+    if have and n not in have:
+        raise HTTPException(
+            status_code=400,
+            detail="no virtual system with id %d exists (configured: %s). "
+                   "A rule bound to a vsys that does not exist would match no "
+                   "traffic at all." % (n, ", ".join("vsys%d" % i
+                                                     for i in sorted(have))))
+    return n
+
+
 def _resolve_vsys_id(vsys) -> Optional[int]:
     """Resolve a `vsys` filter param to a numeric vsys_id (contract §2).
 
@@ -4945,7 +5014,6 @@ async def _detect_offload_dp(max_age: float = 15.0) -> dict:
                         "present": True, "pci": dev["pci"],
                         "driver": dev["driver"], "model": dev["description"],
                         "pci_enabled": dev.get("pci_enabled"),
-                        "liveness": "not observable from PCI",
                     })
                 elif dev["kind"] == "switch" and not info["switch"]["present"]:
                     info["switch"].update({
@@ -4960,6 +5028,29 @@ async def _detect_offload_dp(max_age: float = 15.0) -> dict:
             if info["dp"]["present"]:
                 info["generation"] = info["generation"] or "OCTEON III"
                 info["boot_state"] = "CP running, DP present"
+                # Liveness comes from the CP, because it is the only place with
+                # evidence: the dataplane is driven with no kernel driver bound,
+                # so from this host there is no driver, no netdev and no signal
+                # of any kind. Asking is the whole point -- an earlier version
+                # inferred "booted" from the driver link and would have reported
+                # a running dataplane as down.
+                try:
+                    st = await _bcm_client().dp_status()
+                except Exception as exc:
+                    st = {"error": str(exc)}
+                if st.get("summary"):
+                    info["dp"]["liveness"] = st["summary"]
+                    info["dp"]["agents"] = st.get("agent") or []
+                    info["dp"]["net"] = st.get("net") or {}
+                    info["dp"]["running"] = bool(st.get("agent"))
+                    info["boot_state"] = "CP running, DP %s" % (
+                        "running" if st.get("agent") else "present, idle")
+                else:
+                    # Say that the question was not answered, rather than
+                    # letting a missing field read as "not running".
+                    info["dp"]["liveness"] = (
+                        "unknown: the control plane did not report (%s)"
+                        % (st.get("detail") or st.get("error") or "no reply"))
             else:
                 info["boot_state"] = "CP running, no DP found on its bus"
 
@@ -5318,15 +5409,159 @@ async def policy_add(rule: PolicyRule, user: dict = Depends(get_current_user)):
         cursor = await db.execute(
             "INSERT INTO policy_rules "
             "(position, name, src_ip, dst_ip, src_iface, dst_iface, "
-            " src_port, dst_port, proto, action, description, kind) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'user')",
+            " src_port, dst_port, proto, action, vsys, description, kind) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'user')",
             (rule.position, rule.name, rule.src_ip, rule.dst_ip,
              rule.src_iface, rule.dst_iface,
              rule.src_port, rule.dst_port,
-             rule.proto, rule.action, rule.description),
+             rule.proto, rule.action, _check_vsys(rule.vsys), rule.description),
         )
         await audit(db, user["username"], "add_rule", f"id={cursor.lastrowid}")
         return {"id": cursor.lastrowid, "status": "created"}
+
+
+# Where the dataplane looks for its compiled tables. The DP reads this
+# directory directly, so writes into it are atomic (see below).
+_FASTPATH_DIR = os.getenv("FFN_FASTPATH_DIR", "/var/lib/ffn-ngfw/fastpath")
+
+
+def _cidr_to_pair(cidr: str):
+    """'10.1.0.0/16' -> (host-order base, host-order mask). '' or 'any' -> 0/0.
+
+    Host order, because that is what struct dp_policy_row holds and what
+    dp_classify() compares against a tuple built with explicit shifts. The
+    dataplane deliberately has no ntohl (see ffn_dp_oct.h), so getting the order
+    wrong here would produce rules that match on x86 and not on the OCTEON.
+    """
+    s = (cidr or "").strip()
+    if not s or s.lower() in ("any", "0.0.0.0/0", "*"):
+        return 0, 0
+    addr, _, bits = s.partition("/")
+    try:
+        parts = [int(x) for x in addr.split(".")]
+        if len(parts) != 4 or any(p < 0 or p > 255 for p in parts):
+            return 0, 0
+        base = (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]
+    except ValueError:
+        return 0, 0
+    try:
+        n = int(bits) if bits else 32
+    except ValueError:
+        n = 32
+    if n <= 0:
+        return 0, 0
+    if n > 32:
+        n = 32
+    mask = (0xFFFFFFFF << (32 - n)) & 0xFFFFFFFF
+    return base & mask, mask
+
+
+def _proto_to_num(p) -> int:
+    """Protocol name or number -> IP protocol number. An unknown name is 0,
+    which the dataplane treats as "any protocol" -- the same thing the
+    rulebase means by 'any'.
+
+    The table lives INSIDE the function deliberately. These helpers get
+    deployed individually onto an appliance whose manager is behind on
+    unrelated changes, and a module-level constant sitting beside them is
+    exactly what gets left behind -- which has now happened three times in
+    this file, each time surfacing as a NameError in a running handler.
+    """
+    proto_num = {"any": 0, "ip": 0, "tcp": 6, "udp": 17, "icmp": 1,
+                 "esp": 50, "ah": 51, "gre": 47, "sctp": 132}
+    if isinstance(p, int):
+        return p & 0xFF
+    s = (p or "any").strip().lower()
+    if s in proto_num:
+        return proto_num[s]
+    try:
+        return int(s) & 0xFF
+    except ValueError:
+        return 0
+
+
+async def _compile_policy_bin(path: str = None) -> dict:
+    """Compile the live rulebase into the dataplane's policy.bin.
+
+    THIS LINK DID NOT EXIST. ffn_fastpath_compile could build the blob and the
+    dataplane could load it, but nothing in the manager ever called the
+    compiler -- `load_policy` had no caller outside the compiler's own selftest.
+    So the rulebase an operator edits and the table the dataplane matches on
+    were never connected: rules were stored, displayed, audited, and never
+    enforced by the fast path.
+
+    Rules are emitted in POSITION order, because a fast-path table is
+    first-match and position is what the operator ordered them by. Disabled and
+    hidden rules are left out entirely rather than emitted with a flag: a row
+    the dataplane can never use still costs a comparison per packet.
+
+    The vsys byte comes from each rule's own column, so a rule tagged to a
+    tenant matches only that tenant's traffic, and an untagged rule (vsys 0)
+    keeps the wildcard behaviour every rule had before tenants existed.
+    """
+    import ffn_fastpath_compile as fpc
+
+    out = path or os.path.join(_FASTPATH_DIR, "ffn_fastpath.policy.bin")
+    rows = []
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT id, position, name, src_ip, dst_ip, src_port, dst_port, "
+            "       proto, action, vsys FROM policy_rules "
+            " WHERE enabled=1 AND COALESCE(hidden,0)=0 "
+            " ORDER BY position, id")
+        for r in await cur.fetchall():
+            src, srcm = _cidr_to_pair(r["src_ip"])
+            dst, dstm = _cidr_to_pair(r["dst_ip"])
+            sp = int(r["src_port"] or 0)
+            dp_ = int(r["dst_port"] or 0)
+            act = (r["action"] or "permit").strip().lower()
+            rows.append({
+                "src_ip": src, "src_mask": srcm,
+                "dst_ip": dst, "dst_mask": dstm,
+                # Port 0 in the rulebase means "any", which on the wire is the
+                # whole range -- not the single port zero.
+                "sport_lo": sp or 0, "sport_hi": sp or 0xFFFF,
+                "dport_lo": dp_ or 0, "dport_hi": dp_ or 0xFFFF,
+                "proto": _proto_to_num(r["proto"]),
+                "vsys": int(r["vsys"] or 0) & 0xFF,
+                # The dataplane's decision codes from ffn_dp_oct.h:
+                # FP_FORWARD_W 0, FP_INSPECT_W 1, FP_DROP_W 3. Inline for the
+                # same reason as the protocol table above.
+                "action": (3 if act in ("deny", "drop", "reject")
+                           else 1 if act in ("inspect", "scan")
+                           else 0),
+                "flags": 0,
+                # No egress is pinned from the rulebase: that is bump-in-the-wire
+                # forwarding, and the dataplane routes when a rule does not name
+                # one. DP_EGRESS_NONE.
+                "egress_port": 0xFFFF,
+                "rule_id": int(r["id"]) & 0xFFFF,
+            })
+
+    c = fpc.FastPathCompiler()
+    c.load_policy(rows, vsys=0)
+    blob = c._pack_policy()
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    tmp = out + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(blob)
+    os.replace(tmp, out)             # atomic: the DP may read this at any moment
+
+    import hashlib
+    return {"path": out, "rules": len(rows), "bytes": len(blob),
+            "sha256": hashlib.sha256(blob).hexdigest()[:16],
+            "tenants": sorted({r["vsys"] for r in rows if r["vsys"]})}
+
+
+@app.post("/api/policy/compile")
+async def policy_compile(user: dict = Depends(get_current_user)):
+    """Build policy.bin from the live rulebase. Also run at commit."""
+    try:
+        return await _compile_policy_bin()
+    except Exception as exc:
+        raise HTTPException(status_code=500,
+                            detail="policy compile failed: %s" % exc)
 
 
 @app.put("/api/policy/rules/{rule_id}")
@@ -5358,12 +5593,13 @@ async def policy_update(rule_id: int, rule: PolicyRule,
         await db.execute(
             "UPDATE policy_rules SET name=?, src_ip=?, dst_ip=?, "
             "  src_iface=?, dst_iface=?, src_port=?, dst_port=?, "
-            "  proto=?, action=?, description=?, position=?, "
+            "  proto=?, action=?, vsys=?, description=?, position=?, "
             "  updated_at=datetime('now') WHERE id=?",
             (rule.name, rule.src_ip, rule.dst_ip,
              rule.src_iface, rule.dst_iface,
              rule.src_port, rule.dst_port,
-             rule.proto, rule.action, rule.description, rule.position, rule_id),
+             rule.proto, rule.action, _check_vsys(rule.vsys),
+             rule.description, rule.position, rule_id),
         )
         await audit(db, user["username"], "update_rule", f"id={rule_id}")
         return {"status": "updated"}
