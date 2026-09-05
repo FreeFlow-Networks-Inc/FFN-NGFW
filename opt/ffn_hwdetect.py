@@ -23,6 +23,13 @@ V_MELLANOX = "15b3"   # NVIDIA/Mellanox ConnectX / BlueField DPU
 V_XILINX   = "10ee"   # Xilinx FPGA (VU9P etc.)
 V_ALTERA   = "1172"   # Intel/Altera FPGA
 V_INTEL    = "8086"
+# The forwarding silicon a reclaimed appliance actually carries. Without
+# these three the detector matched only Xilinx and Altera, so a chassis with
+# a packet processor, a front-end ASIC and a 40-core NPU reported
+# "None detected" -- and that report was believed.
+V_CAVIUM   = "177d"   # Cavium/Marvell OCTEON network processor
+V_BROADCOM = "14e4"   # Broadcom -- the BCM88375 packet processor
+V_PAN      = "feed"   # Palo Alto Networks -- the FE100 front-end ASIC
 DPDK_DRIVERS = ("vfio-pci", "igb_uio", "uio_pci_generic", "mlx5_core")
 
 
@@ -278,25 +285,58 @@ def detect_dpu():
 
 
 def detect_accelerators():
-    """FPGA / GPU / crypto (QAT) accelerators via PCI class + vendor."""
+    """Accelerators and forwarding silicon on THIS HOST's PCI bus.
+
+    "This host" is the limit worth stating. On a reclaimed PA-5200 the packet
+    processor, the front-end ASIC and the dataplane NPU all hang off the
+    control plane's own root complexes, so none of them appears here however
+    many vendor ids this function learns -- the host sees the control-plane
+    OCTEON and stops there. The manager merges the far side in from the CP's
+    own inventory; what this returns is labelled bus="host" so the two are
+    never confused.
+
+    The vendor list previously stopped at Xilinx and Altera, which meant an
+    appliance carrying three pieces of forwarding silicon reported
+    "None detected".
+    """
     accel = []
     lspci = _run(["lspci", "-Dnn"]) if _have("lspci") else ""
     for ln in lspci.splitlines():
         low = ln.lower()
-        role = None
+        role = kind = None
         if ("[%s:" % V_XILINX) in low or "xilinx" in low or \
            ("[%s:" % V_ALTERA) in low or "altera" in low:
-            role = "FPGA"
+            role, kind = "FPGA", "fpga"
         elif "quickassist" in low or " qat" in low or "co-processor [0b40]" in low:
-            role = "Crypto (QAT)"
+            role, kind = "Crypto (QAT)", "crypto"
+        elif ("[%s:" % V_CAVIUM) in low or "cavium" in low or "octeon" in low:
+            # A PCI bridge here is the OCTEON's own root complex, not a second
+            # processor: one chip presents several functions, and counting them
+            # as separate parts is how a single CN73XX became "3 instances".
+            # One OCTEON presents several PCI functions -- the processor
+            # itself, its root-complex bridges, and an NVMe-class function --
+            # and counting them as separate parts is how a single CN73XX came
+            # to be reported as "3 instances" of a dataplane.
+            if "pci bridge" in low:
+                role, kind = "NPU (root complex)", "bridge"
+            elif "non-volatile memory" in low or "[0108]" in low:
+                role, kind = "NPU (NVMe function)", "npu-function"
+            else:
+                role, kind = "NPU", "npu"
+        elif ("[%s:8375]" % V_BROADCOM) in low:
+            role, kind = "Packet processor", "switch"
+        elif ("[%s:" % V_PAN) in low:
+            role, kind = "Front-end ASIC", "asic"
         elif "3d controller" in low:
-            role = "GPU"
+            role, kind = "GPU", "gpu"
         elif "vga compatible controller" in low:
             # ASPEED / Matrox onboard VGA is the BMC display, not an accelerator
-            role = "BMC/VGA" if ("aspeed" in low or "[1a03:" in low or
-                                 "matrox" in low or "[102b:" in low) else "GPU"
+            is_bmc = ("aspeed" in low or "[1a03:" in low or
+                      "matrox" in low or "[102b:" in low)
+            role, kind = ("BMC/VGA", "bmc") if is_bmc else ("GPU", "gpu")
         if role:
-            accel.append({"role": role, "pci": ln.strip()})
+            accel.append({"role": role, "kind": kind, "bus": "host",
+                          "pci": ln.strip()})
     return accel
 
 

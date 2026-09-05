@@ -1937,7 +1937,7 @@ async function loadHardware(refresh) {
     <div class="card"><div class="section-title">DPU / SmartNIC</div><div style="font-size:12px;line-height:1.9">${dpuCard}</div></div>
     <div class="card">
       <div class="section-title">Accelerators</div>
-      <div style="font-size:12px;line-height:1.9">${accel.length ? accel.map(a => `<div>${_escSP(a.role)} <span class="mono" style="font-size:10px">${_escSP(a.pci)}</span></div>`).join('') : '<div class="text-dim">None detected</div>'}</div>
+      <div style="font-size:12px;line-height:1.9">${accel.length ? accel.map(a => `<div>${_escSP(a.role)}${a.bus==='control-plane'?' <span class="badge" style="background:#243447;color:#fff;font-size:9px">behind CP</span>':''}${a.driver?` <span class="text-dim" style="font-size:10px">driver ${_escSP(a.driver)}</span>`:''} <span class="mono" style="font-size:10px">${_escSP(a.pci)}</span></div>`).join('') : '<div class="text-dim">None detected</div>'}</div>
       <div class="section-title" style="margin-top:10px">Hugepages</div>
       <div style="font-size:12px;line-height:1.9">${(hp.pools || []).length ? (hp.pools.map(p => `<div>${p.nr} &times; ${p.size_mb} MB = ${p.total_gb} GB <span class="text-dim">(free ${p.free})</span></div>`).join('') + (hp.mounted ? '<div class="text-dim" style="font-size:10px">hugetlbfs mounted</div>' : '')) : '<div class="text-dim">None</div>'}</div>
     </div>
@@ -4011,11 +4011,30 @@ async function loadInterfacesFull() {
     panToLinux, linuxToPan,
   };
 
+  /* Where these interfaces come from. On a chassis whose data ports are on a
+     switch ASIC the old wording -- "N physical interface(s) auto-aliased from
+     Linux" -- described something that must NOT happen here: every host NIC is
+     management, HA, AUX or a backplane link, and none of them is a firewall
+     interface. Those live under Device > Setup > Interfaces. */
+  const fpList = (enriched && enriched.faceplate) || [];
+  _ifaceState.faceplate = {};
+  for (const f of fpList) _ifaceState.faceplate[f.name] = f;
+
   const src = document.getElementById('iface-source');
   if (src) {
+    let origin;
+    if (fpList.length) {
+      const linked = fpList.filter(f=>f.link===true).length;
+      const known  = fpList.some(f=>f.live);
+      origin = `${fpList.length} chassis faceplate port(s) on the switch ASIC`
+        + (known ? ` &middot; ${linked} with link`
+                 : ` &middot; <span class="text-dim">link state unavailable (control plane not answering)</span>`);
+    } else {
+      origin = `${Object.keys(_ifaceState.caps).length} physical interface(s) auto-aliased from Linux`;
+    }
     src.innerHTML = `Global MTU: <strong>${_ifaceState.jumbo.mtu}</strong>  |  `
       + `ethtool ${caps&&caps.ethtool_present?'available':'<span class="text-red">not installed</span>'}  |  `
-      + `${Object.keys(_ifaceState.caps).length} physical interface(s) auto-aliased from Linux`;
+      + origin;
   }
 
   _renderInterfaceGrid();
@@ -4087,12 +4106,30 @@ function _linkStateDot(state) {
   return '<span title="unknown" style="display:inline-block;width:16px;height:10px;background:#30363d;border-radius:2px"></span>';
 }
 
+/* The second line under an interface name. On a switch-ASIC chassis an
+   operator needs to know which CONNECTOR ethernet1/7 is -- the faceplate
+   number and the cage type -- and the chip name that every switch-level tool
+   and log line uses. Neither is derivable from the PAN name. Elsewhere it
+   keeps showing the Linux NIC, which is the equivalent fact there. */
+function _ifaceSubtitle(r) {
+  const f = (_ifaceState.faceplate||{})[r.name];
+  if (f) {
+    const pos = /^\d+$/.test(f.faceplate) ? `port ${f.faceplate}` : f.faceplate.toUpperCase();
+    return `<div class="text-dim" style="font-size:10px;margin-top:2px">`
+         + `${pos} &middot; ${f.media} ${f.speed_gbps}G &middot; `
+         + `<span class="mono">${f.diag_name}</span></div>`;
+  }
+  return r.linux_name
+    ? `<div class="text-dim" style="font-size:10px;margin-top:2px">&harr; <span class="mono">${r.linux_name}</span></div>`
+    : '';
+}
+
 function _ifaceRowHTML(r, isSub) {
   const nameCell = isSub
     ? `<td style="padding-left:24px" class="text-dim">└ <span class="mono"><strong>${r.name}</strong></span></td>`
     : `<td>
          <strong class="mono" style="color:var(--accent);cursor:pointer" onclick="openIfaceModal('${r.name}')">${r.name}</strong>
-         ${r.linux_name?`<div class="text-dim" style="font-size:10px;margin-top:2px">↔ <span class="mono">${r.linux_name}</span></div>`:''}
+         ${_ifaceSubtitle(r)}
        </td>`;
   const typeBadge = r.type ? `<span class="badge" style="background:#1a4f9e;color:#fff;font-size:10px">${r.type}</span>` : '';
   const ipCell = (r.ip_address && r.ip_address.length)
@@ -7195,14 +7232,96 @@ async function loadCpuPlanes() {
     ${warns?`<div style="margin-top:8px">${warns}</div>`:''}`;
 }
 
+/* Which dataplane this box has, and what state it is in.
+
+   Three are possible and this panel used to describe only two. FFN's own board
+   forwards on an FPGA; a DPDK build forwards on host cores; a reclaimed
+   appliance forwards on an OCTEON complex sitting behind the control plane.
+   Keying the whole panel off `fpga_detected` meant an appliance -- whose
+   dataplane may be up and passing traffic -- was reported in red as
+   "Not Detected", with an explanation naming a device file that does not
+   exist on that hardware.
+
+   `kind` comes from the server, which is the only place that can tell these
+   apart, so the UI branches on it instead of inferring from three unrelated
+   booleans. */
+function _dpDot(state) {
+  const c = {up: 'var(--green)', idle: '#d29922', down: 'var(--red)'}[state]
+            || '#30363d';
+  return `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;`
+       + `background:${c};margin-right:6px;vertical-align:middle"></span>`;
+}
+
+function _offloadHTML(o) {
+  if (!o || !o.present) {
+    return `<div><strong>Status:</strong> <span class="text-dim">No offload complex on this host's PCI bus</span></div>`
+         + (o && o.note ? `<div class="text-dim" style="font-size:11px">${o.note}</div>` : '');
+  }
+  const cp = o.cp || {}, dp = o.dp || {}, sw = o.switch || {}, fe = o.fe100 || {};
+  const rows = [];
+
+  /* The chain, in the order a packet would traverse it. Each hop reports what
+     is KNOWN about it rather than a single roll-up, because "CP up, DP idle"
+     and "CP down" need completely different actions and a single red dot
+     cannot distinguish them. */
+  rows.push(`<div>${_dpDot(cp.reachable ? 'up' : 'down')}<strong>Control plane</strong> `
+    + `<span class="mono" style="font-size:11px">${o.generation || 'OCTEON'}</span> `
+    + (cp.reachable
+        ? `<span class="text-green">answering</span>`
+        : `<span class="text-red">not answering</span>`)
+    + (cp.kernel ? ` <span class="text-dim" style="font-size:10px">${cp.arch||''} ${cp.kernel}</span>` : '')
+    + `</div>`);
+  if (cp.detail && !cp.reachable)
+    rows.push(`<div class="text-dim" style="font-size:10px;margin-left:14px">${cp.detail}</div>`);
+
+  if (dp.present) {
+    rows.push(`<div>${_dpDot(dp.booted ? 'up' : 'idle')}<strong>Data plane</strong> `
+      + `<span class="mono" style="font-size:11px">${dp.pci}</span> `
+      + (dp.booted ? `<span class="text-green">booted</span>`
+                   : `<span style="color:#d29922">present, not booted</span>`)
+      + `</div>`
+      + `<div class="text-dim" style="font-size:10px;margin-left:14px">${dp.model||''}`
+      + (dp.driver ? ` · driver ${dp.driver}` : ' · no driver bound') + `</div>`);
+  } else if (cp.reachable) {
+    rows.push(`<div>${_dpDot('down')}<strong>Data plane</strong> <span class="text-dim">not found on the control plane's bus</span></div>`);
+  }
+
+  if (sw.present)
+    rows.push(`<div>${_dpDot(sw.driver ? 'up' : 'idle')}<strong>Switch</strong> `
+      + `<span class="mono" style="font-size:11px">${sw.pci}</span> `
+      + `<span class="text-dim" style="font-size:10px">${sw.model||''}`
+      + (sw.driver ? ` · driver ${sw.driver}` : ' · no driver bound') + `</span></div>`);
+  if (fe.present)
+    rows.push(`<div>${_dpDot(fe.driver ? 'up' : 'idle')}<strong>Front end</strong> `
+      + `<span class="mono" style="font-size:11px">${fe.pci}</span> `
+      + `<span class="text-dim" style="font-size:10px">${fe.model||''}`
+      + (fe.driver ? ` · driver ${fe.driver}` : ' · no driver bound') + `</span></div>`);
+
+  if (o.note) rows.push(`<div class="text-dim" style="font-size:10px;margin-top:4px">${o.note}</div>`);
+  return rows.join('');
+}
+
 async function loadDataplaneStatus() {
   const dp = await api('/api/dataplane/status');
   if (!dp) return;
   const fpgaEl = document.getElementById('dp-fpga-status');
   if (fpgaEl) {
-    fpgaEl.innerHTML = dp.fpga_detected
-      ? `<div><strong>Status:</strong> <span class="text-green">Active</span></div><div><strong>Driver:</strong> ffn_ngfw.ko loaded</div><div><strong>PCIe:</strong> ${dp.pcie_link||'Gen3 x16'}</div>`
-      : `<div><strong>Status:</strong> <span class="text-red">Not Detected</span></div><div class="text-dim">No FPGA device at /dev/ngfw0</div>`;
+    if (dp.kind === 'octeon-offload' || dp.kind === 'octeon-offload-idle') {
+      fpgaEl.innerHTML = _offloadHTML(dp.offload);
+    } else if (dp.fpga_detected) {
+      fpgaEl.innerHTML =
+        `<div><strong>Status:</strong> <span class="text-green">Active</span></div>`
+      + `<div><strong>Driver:</strong> ffn_ngfw.ko loaded</div>`
+      + `<div><strong>PCIe:</strong> ${dp.pcie_link||'Gen3 x16'}</div>`;
+    } else {
+      /* No FPGA and no offload complex. Say which hardware is missing rather
+         than naming a device file, which reads as a fault on a box that was
+         never meant to have one. */
+      fpgaEl.innerHTML =
+        `<div><strong>Status:</strong> <span class="text-dim">No hardware dataplane</span></div>`
+      + `<div class="text-dim">Neither an FFN accelerator card nor an offload `
+      + `complex is present. Forwarding runs in software.</div>`;
+    }
   }
   const dpdkEl = document.getElementById('dp-dpdk-status');
   if (dpdkEl) {
@@ -7224,6 +7343,15 @@ async function loadDataplaneStatus() {
       + `<div><strong>Cores:</strong> ${dp.dpdk_cores||'--'}</div>`
       + `<div><strong>Hugepages:</strong> ${hp}</div>`
       + (dp.dpdk_vm_hwm_mb ? `<div><strong>Peak RSS:</strong> ${dp.dpdk_vm_hwm_mb} MB</div>` : '');
+    } else if (dp.kind === 'octeon-offload' || dp.kind === 'octeon-offload-idle') {
+      /* DPDK is not the dataplane here and its absence is not a fault, so it
+         is reported as not applicable rather than as "Stopped" in a panel an
+         operator is reading to find out why traffic is not flowing. */
+      dpdkEl.innerHTML =
+        `<div><strong>Status:</strong> <span class="text-dim">Not applicable</span></div>`
+      + `<div class="text-dim">This chassis forwards on its offload complex; `
+      + `the DPDK path is for hosts without one.</div>`
+      + `<div class="text-dim" style="font-size:10px">Hugepages reserved: ${hp}</div>`;
     } else {
       dpdkEl.innerHTML =
         `<div><strong>Status:</strong> <span class="text-dim">Stopped</span></div>`
@@ -7249,19 +7377,39 @@ async function restartDataplane(target) {
 }
 
 async function loadFPGAStatus() {
-  const [status, resources, engines] = await Promise.all([
+  const [status, resources, engines, dpst] = await Promise.all([
     api('/api/system/status'), api('/api/system/resources'), api('/api/engines'),
+    api('/api/dataplane/status'),
   ]);
 
   const fwEl = document.getElementById('fpga-firmware');
   if (fwEl && status) {
+    const off = (dpst && dpst.offload) || {};
     if (status.fpga_detected) {
+      /* The board name is only correct for FFN's own accelerator card. It was
+         printed unconditionally, so an appliance that has no such card was
+         told it had one. */
       fwEl.innerHTML = `
         <div><strong>Status:</strong> <span class="text-green">Detected</span></div>
         <div><strong>Version:</strong> v${status.fpga_version}</div>
         <div><strong>Board:</strong> BittWare XUP-P3R</div>
         <div><strong>Device:</strong> Xilinx VU9P (xcvu9p-flga2577-2-i)</div>
         <div><strong>Uptime:</strong> ${status.uptime_human}</div>`;
+    } else if (off.present) {
+      /* Not an error state. This chassis was never going to have an
+         accelerator card: its forwarding silicon is behind the control plane,
+         so the old red "Not Detected" plus an instruction to install a card
+         that does not fit it was both alarming and wrong. */
+      const dp = off.dp || {}, sw = off.switch || {}, fe = off.fe100 || {};
+      fwEl.innerHTML = `
+        <div><strong>Dataplane:</strong> <span class="${dp.booted?'text-green':''}" ${dp.booted?'':'style="color:#d29922"'}>`
+        + `${dp.booted ? 'Offload complex, running' : (dp.present ? 'Offload complex, not booted' : 'Offload complex')}</span></div>
+        <div><strong>Control plane:</strong> ${off.generation||'OCTEON'}${off.cp&&off.cp.kernel?` <span class="text-dim">(${off.cp.kernel})</span>`:''}</div>
+        ${dp.present ? `<div><strong>Forwarding:</strong> ${dp.model||''}</div>` : ''}
+        ${sw.present ? `<div><strong>Switch:</strong> ${sw.model||''}</div>` : ''}
+        ${fe.present ? `<div><strong>Front end:</strong> ${fe.model||''}</div>` : ''}
+        <div class="text-dim" style="font-size:11px;margin-top:6px">This chassis has no
+        add-in accelerator card; its forwarding silicon sits behind the control plane.</div>`;
     } else {
       fwEl.innerHTML = `
         <div><strong>Status:</strong> <span class="text-red">Not Detected</span></div>

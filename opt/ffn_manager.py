@@ -59,6 +59,71 @@ try:
     controld = _get_controld()
 except Exception:
     controld = None
+# ---------------------------------------------------------------------------
+# Hardware platform support (optional, per-platform submodule)
+# ---------------------------------------------------------------------------
+# A platform submodule (platform/pa5200, platform/vu9p) ships the code that
+# knows one chassis: its port table, which of its NICs are control-plane, and
+# the client for whatever agent runs on its co-processors. None of it is
+# vendored into this tree, because two copies of a port map drift and the one
+# that drifts is always the copy.
+#
+# Imported lazily and never fatally: a manager on a box with no platform
+# submodule, or with a different one, must still start and serve every other
+# endpoint. A missing platform means "this is not that hardware", which is a
+# fact to report, not an error to raise.
+
+def _platform_paths():
+    here = os.path.dirname(os.path.abspath(__file__))
+    return [
+        "/opt/ffn-ngfw-v2",                                   # installed, flat
+        "/opt/ffn-ngfw",
+        os.path.join(here, "..", "platform", "pa5200"),       # repo, submodule
+        os.path.join(here, "..", "platform", "pa5200", "octeon", "bcmagent"),
+    ]
+
+
+def platform_mod(name):
+    """Import a platform module by name, or return None. Cached, including the
+    misses -- a box without the submodule must not pay an import attempt on
+    every request.
+
+    The cache is a function attribute rather than a module global so this
+    function is self-contained: it can be transplanted into another copy of the
+    manager on its own, without a separate module-level line that is easy to
+    leave behind. Leaving it behind is not a subtle failure -- the first call
+    raises NameError inside a startup path.
+    """
+    cache = getattr(platform_mod, "_cache", None)
+    if cache is None:
+        cache = platform_mod._cache = {}
+    if name in cache:
+        return cache[name]
+    mod = None
+    try:
+        mod = __import__(name)
+    except ImportError:
+        for path in _platform_paths():
+            if path not in sys.path and os.path.isdir(path):
+                sys.path.append(path)
+        try:
+            mod = __import__(name)
+        except ImportError:
+            mod = None
+    cache[name] = mod
+    return mod
+
+
+def _bcm_faceplate():
+    """The chassis faceplate map, or None when this is not that chassis."""
+    return platform_mod("ffn_bcmports")
+
+
+def _if_roles():
+    """The control-plane / data-plane NIC rule for this chassis, or None."""
+    return platform_mod("ffn_ifroles")
+
+
 from fastapi.staticfiles import StaticFiles
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -4179,8 +4244,158 @@ def _hw_inventory(refresh: bool = False) -> dict:
 async def system_hardware(refresh: int = 0):
     """Autodetected hardware inventory: system/DMI, CPU+NUMA+crypto, memory,
     every NIC (driver/speed/PCI/DPDK-bind/role), the DPU/SmartNIC, accelerators
-    (FPGA/GPU/QAT), storage and hugepages. Cached ~30s; ?refresh=1 to force."""
-    return _hw_inventory(refresh=bool(refresh))
+    (FPGA/GPU/QAT), storage and hugepages. Cached ~30s; ?refresh=1 to force.
+
+    The accelerator list is completed from the CONTROL PLANE, because on a
+    reclaimed appliance the interesting silicon is not on this host bus at all:
+    the packet processor, the front-end ASIC and the dataplane NPU sit behind
+    the CP. Every row carries `bus`, so "host" and "control-plane" stay
+    distinguishable rather than merging into one misleading list."""
+    inv = _hw_inventory(refresh=bool(refresh))
+    try:
+        far = await _detect_offload_dp()
+    except Exception:
+        far = {}
+    rows = list(inv.get("accelerators") or [])
+    if inv.get("error") and "accelerators" not in inv:
+        # The host probe failed. Appending the control-plane rows to an empty
+        # list would produce a shorter list that looks complete -- which is how
+        # a NameError in the host detector read as "this box has no host-side
+        # silicon" instead of "the host probe did not run".
+        rows.append({"role": "host probe failed", "kind": "error", "bus": "host",
+                     "pci": str(inv["error"])[:200], "driver": None})
+    for dev in (far.get("cp_devices") or []):
+        # Bridges are plumbing. They are in the CP inventory because ruling them
+        # out is what stops a root complex being counted as a processor, but an
+        # operator reading an accelerator list does not need six PLX ports.
+        if dev.get("kind") in ("bridge", "serial"):
+            continue
+        rows.append({
+            "role": {"switch": "Packet processor",
+                     "asic": "Front-end ASIC",
+                     "npu": "NPU"}.get(dev.get("kind"), dev.get("kind")),
+            "kind": dev.get("kind"),
+            "bus": "control-plane",
+            "pci": "%s %s [%s:%s]" % (dev.get("pci"), dev.get("description"),
+                                      dev.get("vendor"), dev.get("device")),
+            "driver": dev.get("driver"),
+            "description": dev.get("description"),
+        })
+    inv["accelerators"] = rows
+    inv["offload"] = far
+    return inv
+
+
+# ==========================================================================
+# BCM88375 switch control -- proxied to ffn-bcmd on the CP
+# ==========================================================================
+#
+# The switch ASIC is on the CP's PCIe bus, so nothing here can touch it
+# directly. ffn-bcmd (octeon/bcmagent/) owns the chip on the CP and answers
+# JSON over ffnnet0; these endpoints are a thin proxy so the WebUI and ffn-cli
+# share one implementation, one auth check and one audit point.
+#
+# Every reply already carries "ok", and the client turns an unreachable CP into
+# an ok=False dict rather than an exception, so these handlers do not translate
+# errors -- a 500 here would lose the daemon's own "state": "init" / eta_s,
+# which is exactly what a UI needs to show progress during the ~150 s chip init.
+
+
+def _bcm_client():
+    """Import the client lazily.
+
+    Lazy so a manager on a box without the BCM payload still starts and every
+    other endpoint keeps working -- an ImportError at module scope would take
+    the whole management plane down over a switch feature.
+
+    Goes through platform_mod() rather than a bare import so it is found in the
+    repo layout too, where the client lives in the platform submodule
+    (platform/pa5200/octeon/bcmagent) and is deliberately NOT vendored into
+    this tree. A bare `import ffn_bcm_client` only ever worked on a box where
+    it had been copied next to the manager, which is why every /api/bcm/*
+    endpoint answered "bcm client unavailable" from a checkout.
+    """
+    mod = platform_mod("ffn_bcm_client")
+    if mod is None:
+        raise ImportError("ffn_bcm_client not found on any platform path: %s"
+                          % ", ".join(_platform_paths()))
+    return mod
+
+
+class BcmPortEnable(BaseModel):
+    enable: bool
+
+
+class BcmPortLoopback(BaseModel):
+    # none | mac | phy. mac/phy are the isolation tool: if they link while
+    # "none" stays down, the MAC, PCS and SerDes are all good and the fault is
+    # outside the die (cage, module or cabling).
+    mode: str
+
+
+def _bcm_unavailable(exc):
+    return {"ok": False, "error": "bcm client unavailable", "detail": str(exc),
+            "hint": "ffn_bcm_client.py must be importable by the manager "
+                    "(deploy it beside ffn_manager.py or into /opt/ffn-ngfw)"}
+
+
+@app.get("/api/bcm/status")
+async def bcm_status(user: dict = Depends(get_current_user)):
+    """Chip and daemon state. state is init|ready|dead; during init the reply
+    carries eta_s so a UI can show progress instead of an error."""
+    try:
+        return await _bcm_client().status()
+    except ImportError as exc:
+        return _bcm_unavailable(exc)
+
+
+@app.get("/api/bcm/ports")
+async def bcm_ports(user: dict = Depends(get_current_user)):
+    """The port table, structured. "faceplate" marks the 25 front-panel ports;
+    the rest are internal (the DP trunk, recycle, ILKN) and should not be
+    offered as user-configurable."""
+    try:
+        return await _bcm_client().port_list()
+    except ImportError as exc:
+        return _bcm_unavailable(exc)
+
+
+@app.post("/api/bcm/port/{port}/enable")
+async def bcm_port_enable(port: int, req: BcmPortEnable,
+                          user: dict = Depends(get_current_user)):
+    """Enable or disable one port. Takes effect immediately and is NOT
+    persisted: the shipped config.bcm disables every front-panel port, so this
+    is lost on the next chip init. Persisting belongs in the candidate config
+    with a commit-time applier, which does not exist yet."""
+    try:
+        return await _bcm_client().port_set(port, req.enable)
+    except ImportError as exc:
+        return _bcm_unavailable(exc)
+
+
+@app.post("/api/bcm/port/{port}/loopback")
+async def bcm_port_loopback(port: int, req: BcmPortLoopback,
+                            user: dict = Depends(get_current_user)):
+    """Set loopback mode (none|mac|phy). Diagnostic: mac/phy loop traffic inside
+    the chip, so a port left in either carries no external traffic."""
+    if req.mode not in ("none", "mac", "phy"):
+        return {"ok": False, "error": "bad request",
+                "detail": "mode must be none, mac or phy"}
+    try:
+        return await _bcm_client().port_loopback(port, req.mode)
+    except ImportError as exc:
+        return _bcm_unavailable(exc)
+
+
+@app.get("/api/bcm/leds")
+async def bcm_leds(user: dict = Depends(get_current_user)):
+    """Front-panel LED processor state. The LED processors are programmed and
+    started by the chip's own init script, so enabled=false on a ready chip
+    means init did not reach its LED section."""
+    try:
+        return await _bcm_client().led_status()
+    except ImportError as exc:
+        return _bcm_unavailable(exc)
 
 
 # ==========================================================================
@@ -4487,60 +4702,195 @@ async def ha_resume(user: dict = Depends(get_current_user)):
     return {"status": "resumed", "local": "active"}
 
 
-def _detect_offload_dp() -> dict:
-    """Reclaimed-appliance dataplane: the on-board Octeon NPU (+FE100/FPGA behind it)
-    and FFN's own forwarder. On EOL PAN hardware the x86 CP runs FFN while this
-    complex does line rate -- see Desktop/PAN/pa5200-brdagent-protocol.md."""
-    info={"present":False,"generation":None,"pci":[],"driver":None,"bars":[],
-          "dp_instances":0,"boot_state":"absent","fpga":"behind-octeon (not on host PCIe)",
-          "forwarder":{},"note":""}
+def _cp_reachable():
+    """Is the control plane answering? Returns (bool, detail).
+
+    Positive evidence only. `systemctl is-active ffn-octeon` is a oneshot with
+    RemainAfterExit, so it reports "active" forever after the bring-up script
+    exits -- including long after the CP has stopped answering.
+
+    The route check is here because 127.1.1.2 is inside 127/8: with ffnnet0
+    down the kernel hands that address to this host's own loopback, so the
+    connection is refused by our own sshd while ping still succeeds. That trap
+    has produced a confident wrong answer before.
+    """
     try:
-        out=subprocess.run(["lspci","-Dnn"],capture_output=True,text=True,timeout=5).stdout
-        for ln in out.splitlines():
-            low=ln.lower()
-            if "177d:" in low or "cavium" in low:
-                info["pci"].append(ln.strip())
-                if "octeon iii" in low or "cn73" in low: info["generation"]="OCTEON III (CN73xx)"
-                elif "octeon ii" in low:                 info["generation"]="OCTEON II"
-    except Exception: pass
-    if info["pci"]:
-        info["present"]=True
-        first=info["pci"][0].split()[0]
-        try:
-            import os as _o
-            d="/sys/bus/pci/devices/"+first
-            try: info["driver"]=_o.path.basename(_o.readlink(d+"/driver"))
-            except Exception: info["driver"]=None
-            for i,l in enumerate(open(d+"/resource").read().splitlines()):
-                p=l.split()
-                if len(p)>=2:
-                    st,en=int(p[0],16),int(p[1],16)
-                    if en>st: info["bars"].append({"bar":i,"size_mb":(en-st+1)//(1<<20)})
-        except Exception: pass
-        info["dp_instances"]=len(info["pci"])
-        info["boot_state"]=("vfio-bound (ready for bring-up)" if info["driver"]=="vfio-pci"
-                            else ("driver:"+str(info["driver"]) if info["driver"] else "unbound"))
+        r = subprocess.run(["ip", "route", "get", "127.1.1.2"],
+                           capture_output=True, text=True, timeout=4)
+        if "ffnnet0" not in r.stdout:
+            return False, ("127.1.1.2 does not route over ffnnet0, so it would "
+                           "reach this host's own loopback")
+    except Exception as exc:
+        return False, "route check failed: %s" % exc
+    try:
+        sock = socket.create_connection(("127.1.1.2", 8104), timeout=3)
+        sock.close()
+        return True, "ffn-bcmd answering on 127.1.1.2:8104"
+    except OSError as exc:
+        return False, "no answer on 127.1.1.2:8104: %s" % exc
+
+
+def _sw_forwarder():
+    """FFN's own software forwarder -- the path that works with no NPU at all."""
+    out = {"unit": "ffn-dp-afpacket", "active": False, "ports": [],
+           "kind": "AF_PACKET bump-in-the-wire"}
+    try:
+        r = subprocess.run(["systemctl", "is-active", "ffn-dp-afpacket"],
+                           capture_output=True, text=True, timeout=5)
+        out["active"] = r.stdout.strip() == "active"
+        pg = subprocess.run(["pgrep", "-af", "ffn_dp_afpacket"],
+                            capture_output=True, text=True, timeout=5).stdout
+        out["ports"] = re.findall(r"-i\s+(\S+)", pg)
+    except Exception:
+        pass
+    return out
+
+
+async def _detect_offload_dp() -> dict:
+    """The forwarding complex of a reclaimed appliance, walked as the chain it
+    actually is:
+
+        MP (x86, this host) --PCIe--> CP OCTEON --PCIe--> DP OCTEON (CN78XX)
+                                          |
+                                          +--> BCM88375 switch --> faceplate
+                                          +--> FE100 front-end ASIC
+
+    The previous version stopped at the first hop and drew three wrong
+    conclusions from it. It ran `lspci` here, counted the THREE PCI functions of
+    the single CN73XX -- two OCTEON functions plus its NVMe-class one -- and
+    reported dp_instances=3. It read that chip's unbound driver link and
+    reported boot_state "unbound" for a CP that was up and answering. And it
+    called the CP itself the dataplane.
+
+    Everything past the CP -- the BCM, the FE100, and the 40-core CN78XX that
+    IS the dataplane -- hangs off the CP's own root complexes. None of it
+    appears in this host's PCI space, so no amount of host-side lspci could
+    ever have found it. That is why the far side is asked rather than guessed:
+    ffn-bcmd answers a read-only sysfs inventory on the CP.
+
+    That inventory query deliberately does not touch the switch session, so it
+    still answers while the chip is initialising and after that session has
+    died -- the cases where knowing what hardware exists matters most.
+    """
+    info = {
+        "present": False, "generation": None, "pci": [], "driver": None,
+        "bars": [], "boot_state": "absent", "note": "",
+        "cp": {"present": False, "reachable": False},
+        "dp": {"present": False, "booted": False},
+        "switch": {"present": False}, "fe100": {"present": False},
+        "forwarder": {},
+    }
+
+    # -- hop 1: does this host see a control-plane OCTEON at all?
+    try:
+        out = subprocess.run(["lspci", "-Dnn"], capture_output=True,
+                             text=True, timeout=5).stdout
+    except Exception:
+        out = ""
+    for ln in out.splitlines():
+        low = ln.lower()
+        if "177d:" in low or "cavium" in low:
+            info["pci"].append(ln.strip())
+            if "cn73" in low or "octeon iii" in low:
+                info["generation"] = "OCTEON III (CN73XX)"
+            elif "octeon ii" in low:
+                info["generation"] = "OCTEON II"
+    if not info["pci"]:
+        info["note"] = ("No OCTEON complex on this host's PCI bus. FFN uses "
+                        "its software dataplane here.")
+        info["forwarder"] = _sw_forwarder()
+        return info
+
+    info["present"] = True
+    info["cp"]["present"] = True
+    # One chip, several functions. Count DISTINCT PCI slots, not BDF entries,
+    # or a single CN73XX reads as a three-instance dataplane.
+    info["cp"]["functions"] = sorted(set(ln.split()[0].rsplit(".", 1)[0]
+                                         for ln in info["pci"]))
+    info["cp"]["chips"] = len(info["cp"]["functions"])
+    first = info["pci"][0].split()[0]
+    d = "/sys/bus/pci/devices/" + first
+    try:
+        info["driver"] = os.path.basename(os.readlink(d + "/driver"))
+    except OSError:
+        info["driver"] = None
+    try:
+        for i, l in enumerate(open(d + "/resource").read().splitlines()):
+            parts = l.split()
+            if len(parts) >= 2:
+                st, en = int(parts[0], 16), int(parts[1], 16)
+                if en > st:
+                    info["bars"].append(
+                        {"bar": i, "size_mb": (en - st + 1) // (1 << 20)})
+    except Exception:
+        pass
+
+    # -- hop 2: is the CP actually RUNNING? A bound driver says this host can
+    # reach the endpoint, not that anything boots on it.
+    ok, detail = _cp_reachable()
+    info["cp"]["reachable"] = ok
+    info["cp"]["detail"] = detail
+    if not ok:
+        info["boot_state"] = "CP present, not answering"
+        info["note"] = ("The control plane is on the bus but not responding, "
+                        "so nothing behind it can be enumerated. " + detail)
+        info["forwarder"] = _sw_forwarder()
+        return info
+
+    info["boot_state"] = "CP running"
+
+    # -- hop 3: what the CP can see and this host cannot.
+    try:
+        inv = await _bcm_client().sys_inventory()
+    except ImportError as exc:
+        inv = {"ok": False, "error": "bcm client unavailable",
+               "detail": str(exc)}
+    if not inv.get("devices"):
+        info["note"] = ("CP is answering but returned no inventory: %s"
+                        % (inv.get("detail") or inv.get("error")
+                           or "empty reply"))
+        info["forwarder"] = _sw_forwarder()
+        return info
+
+    info["cp"]["kernel"] = (inv.get("cp") or {}).get("release")
+    info["cp"]["arch"] = (inv.get("cp") or {}).get("machine")
+    info["cp_devices"] = inv["devices"]
+    for dev in inv["devices"]:
+        if dev["kind"] == "npu" and dev["device"] == "0095":
+            info["dp"].update({
+                "present": True, "pci": dev["pci"], "driver": dev["driver"],
+                "model": dev["description"],
+                # A driver bound on the CP side is what a BOOTED dataplane
+                # looks like from here. Unbound means the silicon is present
+                # and idle -- a completely different operational state from
+                # absent, and the one the old detector could not express.
+                "booted": bool(dev["driver"]),
+            })
+        elif dev["kind"] == "switch" and not info["switch"]["present"]:
+            info["switch"].update({
+                "present": True, "pci": dev["pci"], "driver": dev["driver"],
+                "model": dev["description"],
+            })
+        elif dev["kind"] == "asic":
+            info["fe100"].update({
+                "present": True, "pci": dev["pci"], "driver": dev["driver"],
+                "model": dev["description"],
+            })
+
+    if info["dp"]["present"]:
+        info["generation"] = info["generation"] or "OCTEON III"
+        info["boot_state"] = ("CP running, DP booted" if info["dp"]["booted"]
+                              else "CP running, DP present but not booted")
     else:
-        info["note"]="No Octeon/offload NPU on this host; FFN uses its software dataplane."
-    # FFN's own forwarder (the path that works today, without the NPU)
-    try:
-        r=subprocess.run(["systemctl","is-active","ffn-dp-afpacket"],capture_output=True,text=True,timeout=5)
-        act=r.stdout.strip()=="active"
-        ports=[]
-        pg=subprocess.run(["pgrep","-af","ffn_dp_afpacket"],capture_output=True,text=True,timeout=5).stdout
-        for tok in pg.split():
-            pass
-        import re as _re
-        ports=_re.findall(r"-i\s+(\S+)", pg)
-        info["forwarder"]={"unit":"ffn-dp-afpacket","active":act,"ports":ports,
-                           "kind":"AF_PACKET bump-in-the-wire"}
-    except Exception: pass
+        info["boot_state"] = "CP running, no DP found on its bus"
+
+    info["forwarder"] = _sw_forwarder()
     return info
 
 
 @app.get("/api/dataplane/offload")
 async def dataplane_offload():
-    return _detect_offload_dp()
+    return await _detect_offload_dp()
 
 
 # ---------------------------------------------------------------------------
@@ -7836,10 +8186,19 @@ def _hugepage_snapshot() -> dict:
 
 @app.get("/api/dataplane/status")
 async def dataplane_status():
-    """Check FPGA and DPDK dataplane status — reflects live state, not
-    a hardcoded service name. Looks up whichever DPDK unit is actually
-    installed + running on the box (ffn-dpdk-runtime preferred, falls
-    back to ffn-dpdk-fwd for older deployments)."""
+    """Where packets are actually forwarded on this box.
+
+    THREE dataplanes can exist, and this endpoint used to describe only two of
+    them. The FPGA and DPDK paths belong to FFN's own board; a reclaimed
+    appliance has neither and forwards on an OCTEON complex behind the control
+    plane instead. Reporting only fpga_detected there produced a UI that said
+    the dataplane was absent on a box whose dataplane was running -- so the
+    offload chain is reported here too, and `kind` names which one is in play
+    rather than leaving a caller to infer it from three unrelated booleans.
+
+    Looks up whichever DPDK unit is actually installed and running
+    (ffn-dpdk-runtime preferred, ffn-dpdk-fwd for older deployments).
+    """
     fpga_detected = not fpga.sim_mode
     pcie_link = "N/A"
     if fpga_detected:
@@ -7872,7 +8231,26 @@ async def dataplane_status():
     except Exception:
         pass
 
+    # The offload complex, asked through the control plane. Cheap when absent
+    # (one lspci) and one short CP round trip when present.
+    offload = await _detect_offload_dp()
+    if offload.get("dp", {}).get("booted"):
+        kind = "octeon-offload"
+    elif offload.get("present"):
+        kind = "octeon-offload-idle"
+    elif fpga_detected:
+        kind = "fpga"
+    elif dpdk_running:
+        kind = "dpdk"
+    else:
+        kind = "software"
+
     return {
+        # Which dataplane this box actually has. A UI should branch on this
+        # rather than on fpga_detected, which is only ever true on the FPGA
+        # board and says nothing at all about an appliance.
+        "kind": kind,
+        "offload": offload,
         "fpga_detected": fpga_detected,
         "fpga_driver_loaded": driver_loaded,
         "pcie_link": pcie_link,
@@ -8343,6 +8721,39 @@ async def _sync_netresources_to_xml():
     return touched
 
 
+def _publish_to_planes() -> dict:
+    """Render the committed config out to the CP and, through it, the DP.
+
+    This is the top of a chain that was already complete below this point:
+
+        here -> /etc/ffn/config.env -> ffn_cfgd (MP, versioned + namespaced)
+          -> ffn_cfgagent (CP): applies cp.*, relays dp.*
+            -> PCIe mailbox (the DP has no IP path)
+              -> DP /etc/ffn/dp.env -> ffn_dp_l3_config.c -> the FIB
+
+    It is a PUBLISH, not a push. The agents pull and converge on their own, so a
+    CP or DP that reboots re-reads the current version without the MP having to
+    notice -- which matters because the MP cannot reach the DP to push even if
+    it wanted to.
+
+    A failure here NEVER fails the commit. By the time this runs the candidate
+    has already become running and the MP has applied it; raising would report a
+    commit that did happen as one that did not, and would leave the operator
+    with no idea which half succeeded. So problems are returned in the response
+    instead, where the UI can show "committed, not yet distributed".
+    """
+    try:
+        import ffn_config_render
+    except ImportError as exc:
+        return {"published": False, "error": "renderer unavailable: %s" % exc,
+                "hint": "deploy ffn_config_render.py beside ffn_manager.py"}
+    try:
+        return ffn_config_render.publish()
+    except Exception as exc:
+        logger.warning("plane publish failed: %s", exc)
+        return {"published": False, "error": repr(exc)}
+
+
 @app.post("/api/config/commit")
 async def config_commit(req: CommitRequest, user: dict = Depends(get_current_user)):
     """Commit candidate → running. Supports full or partial (xpath-scoped) commits."""
@@ -8395,6 +8806,12 @@ async def config_commit(req: CommitRequest, user: dict = Depends(get_current_use
                 result["applied_to_system"] = _apply_running_config()
         else:
             result["applied_to_system"] = _apply_running_config()
+
+        # Distribute to the CP and, through it, the DP. Ordered AFTER the local
+        # apply on purpose: the MP is the first hop of the chain, and publishing
+        # a config the MP itself has not accepted would put the planes ahead of
+        # their own management plane.
+        result["planes"] = _publish_to_planes()
         result["changes_committed"] = d["total_changes"]
 
         async with aiosqlite.connect(DB_PATH) as db:
@@ -9711,7 +10128,114 @@ def _list_linux_nics() -> list:
     # drop OVS bridges / internal ports (operator-named, so query OVS)
     _ovs = _ovs_owned_ifaces()
     names = [n for n in names if n not in _ovs]
+
+    # A platform submodule may declare which of this host's NICs are
+    # control-plane. On a PA-5200 that is ALL of them -- MGT, the HA1 pair, the
+    # two AUX ports and the internal backplane links -- and the rule has been
+    # written down in platform/pa5200/ffn_ifroles.py since it was worked out.
+    # It was referenced by nothing, so this function kept handing every one of
+    # them an ethernet1/N firewall slot at startup, and those aliases were
+    # written into the candidate config where they persisted across commits.
+    # Offering an operator a management NIC as a data port is how you bridge
+    # your own management network.
+    roles = _if_roles()
+    if roles is not None:
+        kept = []
+        for n in names:
+            try:
+                if roles.is_control_plane(n):
+                    continue
+            except Exception:
+                pass          # an undecidable NIC stays visible, not hidden
+            kept.append(n)
+        names = kept
     return sorted(names)
+
+
+
+
+# ---------------------------------------------------------------------------
+# The firewall's DATA interfaces
+# ---------------------------------------------------------------------------
+# On a reclaimed appliance the firewall's interfaces are the chassis faceplate
+# ports, which live on a switch ASIC behind the control plane. They are NOT
+# this host's NICs -- every one of those is management, HA, AUX or an internal
+# backplane link, which is what platform/pa5200/ffn_ifroles.py has said all
+# along.
+#
+# Two different things are being joined here, and keeping them separate is the
+# point:
+#
+#   the MAP    which chip port is behind which faceplate connector, and what
+#              ethernet1/N an operator should call it. A property of the board.
+#              Known whether or not anything is powered on.
+#   the STATE  link, admin state, negotiated speed. Read from the chip through
+#              ffn-bcmd, and only available when the control plane answers.
+#
+# So an unreachable CP costs the state and not the map: the interface list
+# still shows all 25 faceplate ports, with link state reported as unknown
+# rather than as down. Showing an empty interface list because a daemon is
+# restarting would be a worse answer than showing the ports with no state.
+
+
+async def _faceplate_map():
+    """{pan_name: portinfo} for this chassis, or None if it has no faceplate
+    map -- which is how "this is not that hardware" is reported."""
+    bp = _bcm_faceplate()
+    if bp is None:
+        return None
+
+    live = {}
+    reply = {}
+    try:
+        reply = await _bcm_client().port_list()
+        for p in (reply.get("ports") or []):
+            live[p.get("port")] = p
+    except ImportError:
+        reply = {"ok": False, "error": "bcm client unavailable"}
+    except Exception as exc:                       # never fail the whole page
+        reply = {"ok": False, "error": str(exc)}
+
+    out = {}
+    for port in bp.faceplate_ports():
+        name = bp.pan_ifname(port)
+        label, media, speed = bp.FACEPLATE[port]
+        p = live.get(port) or {}
+        out[name] = {
+            "name": name,
+            "bcm_port": port,
+            # The name the switch's own diag shell uses. Shown to an operator
+            # because it is what every chip-level tool and log line says, and
+            # it is not derivable from either the faceplate label or the chip
+            # port name.
+            "diag_name": p.get("name") or bp.diag_name(port),
+            "chip_name": bp.PORTS[port][0],
+            "faceplate": label,
+            "media": media,
+            "speed_gbps": speed,
+            "link": p.get("link"),
+            "admin_enabled": p.get("enabled"),
+            "state": p.get("state"),
+            "live": bool(p),
+        }
+    return out
+
+
+def _faceplate_map_sync():
+    """Map only, no chip state. For the paths that cannot await."""
+    bp = _bcm_faceplate()
+    if bp is None:
+        return None
+    out = {}
+    for port in bp.faceplate_ports():
+        label, media, speed = bp.FACEPLATE[port]
+        out[bp.pan_ifname(port)] = {
+            "name": bp.pan_ifname(port), "bcm_port": port,
+            "diag_name": bp.diag_name(port), "chip_name": bp.PORTS[port][0],
+            "faceplate": label, "media": media, "speed_gbps": speed,
+            "link": None, "admin_enabled": None, "state": None, "live": False,
+        }
+    return out
 
 
 def _load_aliases() -> dict:
@@ -9748,6 +10272,21 @@ def _auto_assign_aliases() -> dict:
     Returns the fresh {pan_name: linux_name} map.
     """
     existing = _load_aliases()
+
+    # On a chassis whose data ports are on a switch ASIC, NO host NIC is a
+    # firewall interface, so there is nothing here to auto-assign. Any alias
+    # already in the candidate was minted by an older build of this function
+    # and points at a management, HA, AUX or backplane NIC -- purge it, or the
+    # interface grid keeps offering an operator a management port to configure
+    # as a data port long after the source of the mistake is fixed.
+    if _faceplate_map_sync() is not None:
+        for pan, lnx in list(existing.items()):
+            logger.info("Purging host-NIC alias %s -> %s: this chassis's data "
+                        "ports are on the switch ASIC, not on host NICs",
+                        pan, lnx)
+            _delete_alias(pan)
+        return {}
+
     # Purge stale aliases pointing at non-physical Linux interfaces
     # (bondN, veth, docker bridges) that may have leaked into the
     # candidate before this filter was added.
@@ -9901,6 +10440,23 @@ async def aliases_list(user: dict = Depends(get_current_user)):
     Return the PAN-OS → Linux NIC alias map. Auto-assigns for any newly
     detected interface on every call so the UI reflects current hardware.
     """
+    fp = await _faceplate_map()
+    if fp is not None:
+        # The map is fixed by the board, so there is nothing to remap and
+        # linux_nics is empty on purpose: offering a host NIC as a remap target
+        # is what put management ports in the firewall interface list.
+        # linux_name carries the switch diag name (xe13, ce32) because that is
+        # what every chip-level tool and log line calls the port, and it is the
+        # string an operator needs when correlating the two.
+        return {
+            "aliases": [{"pan_name": n, "linux_name": d["diag_name"]}
+                        for n, d in sorted(fp.items(),
+                                           key=lambda kv: kv[1]["bcm_port"])],
+            "linux_nics": [],
+            "faceplate": [fp[n] for n in sorted(fp, key=lambda k: fp[k]["bcm_port"])],
+            "source": "switch-asic faceplate map",
+        }
+
     aliases = _auto_assign_aliases()
     # Include detected Linux NICs so UI can offer re-mapping
     linux_nics = []
@@ -10223,7 +10779,17 @@ async def interfaces_enriched(user: dict = Depends(get_current_user)):
     """
     candidate = config_mgr.get_xpath(f"{DEV}", source="candidate")
     if candidate is None:
-        return {"ethernet": [], "vlan": [], "loopback": [], "tunnel": [], "sdwan": []}
+        # No config yet is not the same as no interfaces. The faceplate is a
+        # property of the chassis, so report it even on a box that has never
+        # been configured -- that is precisely when an operator opens this page.
+        empty = {"ethernet": [], "vlan": [], "loopback": [], "tunnel": [],
+                 "sdwan": []}
+        fp0 = await _faceplate_map()
+        if fp0 is not None:
+            empty["faceplate"] = [fp0[n] for n in sorted(
+                fp0, key=lambda k: fp0[k]["bcm_port"])]
+            empty["source"] = "switch-asic faceplate"
+        return empty
 
     # Build name→VR, name→zone, name→vsys lookup tables once
     vr_of = {}
@@ -10264,6 +10830,12 @@ async def interfaces_enriched(user: dict = Depends(get_current_user)):
                     if m.text:
                         zone_of[m.text.strip()] = z_name
 
+    # Where the interface names and link state come from. On a switch-ASIC
+    # chassis both come from the faceplate: pan_to_linux maps ethernet1/N to
+    # the switch diag name, and link state is the chip's, not psutil's. The row
+    # shape does not change, so the grid renderer needs no knowledge of this.
+    fp = await _faceplate_map()
+
     # Live link state per Linux name
     live_up = {}
     live_ip = {}
@@ -10281,6 +10853,15 @@ async def interfaces_enriched(user: dict = Depends(get_current_user)):
     except Exception:
         pass
     pan_to_linux = _load_aliases()
+    if fp is not None:
+        pan_to_linux = {n: d["diag_name"] for n, d in fp.items()}
+        # The chip's link bit, keyed the same way, so _shape_row's existing
+        # live_up[linux] lookup picks it up without knowing what a switch is.
+        # None stays None: an unreachable control plane means link state is
+        # UNKNOWN, and painting that as down would report every port on a
+        # healthy chassis as failed because a daemon was restarting.
+        for d in fp.values():
+            live_up[d["diag_name"]] = d["link"]
 
     def _mode_and_type(entry: ET.Element):
         """Return (mode-key, pretty-type-label, aggregate-group or None)."""
@@ -10370,6 +10951,12 @@ async def interfaces_enriched(user: dict = Depends(get_current_user)):
         }
 
     out = {"ethernet": [], "vlan": [], "loopback": [], "tunnel": [], "sdwan": []}
+    if fp is not None:
+        # Report the faceplate alongside the rows so a caller can show ports
+        # that exist in the chassis but not yet in the config, and can say what
+        # each one is (media, speed, which connector) without a second request.
+        out["faceplate"] = [fp[n] for n in sorted(fp, key=lambda k: fp[k]["bcm_port"])]
+        out["source"] = "switch-asic faceplate"
     net = candidate.find("./network/interface")
     if net is not None:
         # Ethernet
