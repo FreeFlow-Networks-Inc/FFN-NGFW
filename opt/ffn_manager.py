@@ -5039,12 +5039,22 @@ async def _detect_offload_dp(max_age: float = 15.0) -> dict:
                 except Exception as exc:
                     st = {"error": str(exc)}
                 if st.get("summary"):
+                    mbox = st.get("mailbox") or {}
                     info["dp"]["liveness"] = st["summary"]
                     info["dp"]["agents"] = st.get("agent") or []
                     info["dp"]["net"] = st.get("net") or {}
-                    info["dp"]["running"] = bool(st.get("agent"))
+                    info["dp"]["mailbox"] = mbox
+                    # The agent answering on the mailbox is the strongest signal
+                    # there is, and it is the ONLY one right after a boot: the
+                    # control-plane network daemon is a separate step, so there
+                    # is no CP-side process and no dpnet interface yet. Keying
+                    # `running` off the process list alone reported a
+                    # demonstrably-alive dataplane as idle -- a false negative
+                    # that invites someone to re-boot working hardware.
+                    running = bool(mbox.get("agent_up")) or bool(st.get("agent"))
+                    info["dp"]["running"] = running
                     info["boot_state"] = "CP running, DP %s" % (
-                        "running" if st.get("agent") else "present, idle")
+                        "running" if running else "present, idle")
                 else:
                     # Say that the question was not answered, rather than
                     # letting a missing field read as "not running".
