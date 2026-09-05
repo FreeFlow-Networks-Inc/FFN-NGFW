@@ -3698,7 +3698,37 @@ def _get_real_interfaces() -> list:
 
 @app.get("/api/system/interfaces")
 async def system_interfaces():
-    return {"interfaces": _discover_interfaces()}
+    """The DEVICE's interfaces: this host's NICs, plus any faceplate connector
+    that belongs to the device rather than to the firewall.
+
+    On a PA-5200 that second group is HSCI -- the HA data link (HA2/HA3),
+    carrying session sync and, in active/active, forwarded packets between
+    peers. It is on the front of the chassis, which is why it used to appear in
+    the firewall's interface list, but it is HA plumbing: it is configured with
+    the device's high-availability settings and never appears in a security
+    policy. It lives on the switch ASIC rather than on a host NIC, so it is
+    marked `type: chassis` and carries no MAC or address of its own here.
+    """
+    out = _discover_interfaces()
+    fp = await _faceplate_map("management")
+    for d in (fp or {}).values():
+        out.append({
+            "name": d["name"],
+            "type": "chassis",
+            "role": d.get("role"),
+            "link_up": bool(d.get("link")),
+            "link_state": (d.get("link") if d.get("live") else None),
+            "speed_gbps": d.get("speed_gbps") or 0,
+            "media": d.get("media"),
+            "faceplate": d.get("faceplate"),
+            "chip_port": d.get("diag_name"),
+            "admin_enabled": d.get("admin_enabled"),
+            "mtu": 0, "mac": "", "ip_address": "", "netmask": "",
+            "ipv6_address": "",
+            "rx_bytes": 0, "tx_bytes": 0, "rx_packets": 0, "tx_packets": 0,
+            "rx_drops": 0, "tx_drops": 0, "rx_errors": 0,
+        })
+    return {"interfaces": out}
 
 
 @app.get("/api/system/resources")
@@ -10233,9 +10263,14 @@ def _list_linux_nics() -> list:
 # restarting would be a worse answer than showing the ports with no state.
 
 
-async def _faceplate_map():
+async def _faceplate_map(plane=None):
     """{pan_name: portinfo} for this chassis, or None if it has no faceplate
-    map -- which is how "this is not that hardware" is reported."""
+    map -- which is how "this is not that hardware" is reported.
+
+    `plane` selects which connectors: "data" for the firewall's interfaces,
+    "management" for the device's own (the HA data link). None returns the
+    whole faceplate, which is what a physical inventory wants.
+    """
     bp = _bcm_faceplate()
     if bp is None:
         return None
@@ -10260,20 +10295,23 @@ async def _faceplate_map():
     # front of the chassis rather than like the chip's port numbering, which is
     # scrambled relative to the metal (logical 28 is connector 1).
     out = {}
-    for port in bp.faceplate_ports():
+    for port in bp.faceplate_ports(plane):
         name = bp.pan_ifname(port)
-        label, media, speed = bp.FACEPLATE[port]
+        label, media, speed, pl = bp.FACEPLATE[port]
         p = live.get(port) or {}
         out[name] = {
             "name": name,
             "bcm_port": port,
-            # HSCI is the chassis interconnect: it carries cluster traffic
-            # between HA peers, and ffn_dp_abi.h already refuses to bridge a
-            # port in that role. Listing it is right -- an operator should see
-            # the connector exists -- but offering it for Layer3 configuration
-            # alongside the data ports invites exactly the mistake the role
-            # exists to prevent.
-            "configurable": bp.pan_ifname(port).startswith("ethernet"),
+            # Which plane the connector serves. HSCI is on the front of the
+            # chassis but it is the HA DATA link -- HA2/HA3, session sync and
+            # active/active packet forwarding between peers -- so it belongs to
+            # the device's high-availability configuration and not to the
+            # firewall's interface list. Being on the faceplate does not make a
+            # connector a firewall interface.
+            "plane": pl,
+            "role": ("HA data link (HA2/HA3)" if pl == bp.PLANE_MGMT
+                     else "data"),
+            "configurable": pl == bp.PLANE_DATA,
             # The name the switch's own diag shell uses. Shown to an operator
             # because it is what every chip-level tool and log line says, and
             # it is not derivable from either the faceplate label or the chip
@@ -10319,16 +10357,20 @@ def _this_is_a_faceplate_chassis():
     return False
 
 
-def _faceplate_map_sync():
+def _faceplate_map_sync(plane=None):
     """Map only, no chip state. For the paths that cannot await."""
     bp = _bcm_faceplate()
     if bp is None or not _this_is_a_faceplate_chassis():
         return None
     out = {}
-    for port in bp.faceplate_ports():
-        label, media, speed = bp.FACEPLATE[port]
+    for port in bp.faceplate_ports(plane):
+        label, media, speed, pl = bp.FACEPLATE[port]
         out[bp.pan_ifname(port)] = {
             "name": bp.pan_ifname(port), "bcm_port": port,
+            "plane": pl,
+            "role": ("HA data link (HA2/HA3)" if pl == bp.PLANE_MGMT
+                     else "data"),
+            "configurable": pl == bp.PLANE_DATA,
             "diag_name": bp.diag_name(port), "chip_name": bp.PORTS[port][0],
             "faceplate": label, "media": media, "speed_gbps": speed,
             "link": None, "admin_enabled": None, "state": None, "live": False,
@@ -10548,7 +10590,7 @@ async def aliases_list(user: dict = Depends(get_current_user)):
     Return the PAN-OS → Linux NIC alias map. Auto-assigns for any newly
     detected interface on every call so the UI reflects current hardware.
     """
-    fp = await _faceplate_map()
+    fp = await _faceplate_map("data")
     if fp is not None:
         # The map is fixed by the board, so there is nothing to remap and
         # linux_nics is empty on purpose: offering a host NIC as a remap target
@@ -10891,7 +10933,7 @@ async def interfaces_enriched(user: dict = Depends(get_current_user)):
         # been configured -- that is precisely when an operator opens this page.
         empty = {"ethernet": [], "vlan": [], "loopback": [], "tunnel": [],
                  "sdwan": []}
-        fp0 = await _faceplate_map()
+        fp0 = await _faceplate_map("data")
         if fp0 is not None:
             empty["faceplate"] = list(fp0.values())
             empty["source"] = "switch-asic faceplate"
@@ -10940,7 +10982,11 @@ async def interfaces_enriched(user: dict = Depends(get_current_user)):
     # chassis both come from the faceplate: pan_to_linux maps ethernet1/N to
     # the switch diag name, and link state is the chip's, not psutil's. The row
     # shape does not change, so the grid renderer needs no knowledge of this.
-    fp = await _faceplate_map()
+    #
+    # DATA plane only. HSCI is on the same faceplate but it is the HA data
+    # link, so it belongs to the device's HA configuration and appears under
+    # the system interfaces, not in the firewall's list.
+    fp = await _faceplate_map("data")
 
     # Live link state per Linux name
     live_up = {}

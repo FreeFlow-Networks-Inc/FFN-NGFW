@@ -3593,9 +3593,44 @@ async function loadSetupInterfaces() {
       + '</tr>';
   }).join('');
 
+  // Faceplate connectors that belong to the DEVICE rather than to the
+  // firewall. On a PA-5200 that is HSCI, the HA data link (HA2/HA3): it is on
+  // the front of the chassis, which is why it used to be listed among the
+  // firewall's interfaces, but it carries session sync and active/active
+  // forwarding between HA peers and is configured with the HA settings. It
+  // sits on the switch ASIC, not on a host NIC, so it has no PCI address, MAC
+  // or address of its own to show here.
+  const chassis = ((sys && sys.interfaces) || [])
+    .filter(function(i){ return i.type === 'chassis'; });
+  const chassisRows = chassis.map(function(i){
+    const up = i.link_state === true;
+    const link = i.link_state === null || i.link_state === undefined
+      ? '<span class="badge">unknown</span>'
+      : (up ? '<span class="badge badge-up">up</span>'
+            : '<span class="badge">no link</span>');
+    return '<tr>'
+      + '<td><strong>' + _escSP(i.role || 'chassis') + '</strong>'
+        + '<div class="text-dim" style="font-size:10px">front-panel connector '
+        + _escSP(i.faceplate || '') + ', ' + _escSP(i.media || '') + '</div></td>'
+      + '<td class="mono">' + _escSP(i.name) + '</td>'
+      + '<td>' + _escSP((i.speed_gbps || 0) + 'G') + '</td>'
+      + '<td class="text-dim" style="font-size:10px">switch ASIC '
+        + '<span class="mono">' + _escSP(i.chip_port || '') + '</span></td>'
+      + '<td>' + link + '</td>'
+      + '<td class="text-dim">&mdash;</td>'
+      + '<td class="text-dim">&mdash;</td>'
+      + '</tr>';
+  }).join('');
+
   el.innerHTML = '<table class="data-table"><thead><tr>'
     + '<th>Role</th><th>Interface</th><th>Type</th><th>PCI</th><th>Link</th><th>MAC</th><th>Address</th>'
-    + '</tr></thead><tbody>' + rows + '</tbody></table>';
+    + '</tr></thead><tbody>' + rows + chassisRows + '</tbody></table>'
+    + (chassis.length
+        ? '<div class="text-dim" style="font-size:11px;margin-top:6px">The HA'
+          + ' data link is a faceplate connector but not a firewall interface:'
+          + ' it is configured with the high-availability settings of the device and'
+          + ' never appears in a security policy.</div>'
+        : '');
 
   // Bind the MGT form to the interface that actually holds the mgmt role.
   const mg = roles['mgmt'];
