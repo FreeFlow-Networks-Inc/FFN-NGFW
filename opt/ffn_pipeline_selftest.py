@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-Offline end-to-end smoke test for the FFN WildFire pipeline.
+Offline end-to-end smoke test for the FFN threat-intel pipeline.
 
-    threat feed --> ThreatDB --> WildFire agent verdict --> ThreatDB
+    threat feed --> ThreatDB --> BNN agent verdict --> ThreatDB
                                                               |
                                             export(MALWARE region) --> compiler input
 
-Exercises the real code paths (ffn_threatdb.ThreatDB + ffn_wildfire_agent.
-WildFireAgent.analyze_packet) with NO FPGA and NO network. The only stub is
+Exercises the real code paths (ffn_threatdb.ThreatDB + ffn_bnn_agent.
+BnnAgent.analyze_packet) with NO FPGA and NO network. The only stub is
 the BNN prediction, pinned to low confidence so the FPGA-score tiebreaker is
 the deterministic decision-maker (otherwise the randomly-initialised net makes
 the verdict nondeterministic).
@@ -22,9 +22,9 @@ import sys
 
 def main():
     from ffn_threatdb import NGFW_RGN_MALWARE
-    import ffn_wildfire_agent as wf
+    import ffn_bnn_agent as bnn
 
-    print("FFN WildFire pipeline selftest")
+    print("FFN threat-intel pipeline selftest")
 
     # Build the agent with NO hardware. FPGAInterface/QDMAReader are created but
     # never .open()'d, so no /dev access happens; threatdb is in-memory.
@@ -32,7 +32,7 @@ def main():
         dev="/dev/null", qdma="/dev/null",
         hashdb="/nonexistent/hashes.db", threatdb=":memory:",
         interval=300, min_samples=100)
-    agent = wf.WildFireAgent(args)
+    agent = bnn.BnnAgent(args)
     assert agent.threatdb is not None, "ThreatDB must initialise"
 
     # Pin the BNN to a low-confidence benign guess so the deterministic path is

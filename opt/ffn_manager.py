@@ -7217,6 +7217,152 @@ async def sigdb_update(user: dict = Depends(get_current_user)):
             "total": st["total"], "added": added, "wire_pushed": wire_pushed}
 
 
+@app.get("/api/crucible/status")
+async def crucible_status():
+    """Live state of the Crucible unknown-object pipeline.
+
+    Sourced from the same sqlite tables the data plane writes to, so the
+    numbers here are the queue the datapath is actually feeding -- not a
+    separate counter that can drift from it.
+    """
+    import json as _json
+    import os as _os
+    import time as _time
+
+    out = {
+        "available": False,
+        "pending": 0,
+        "analyzed_today": 0,
+        "analyzed_total": 0,
+        "verdicts": {},
+        "queue": [],
+        "results": [],
+        # No source for these yet: the BNN agent owns model versioning and does
+        # not publish it. Null, not invented.
+        "last_update": None,
+        "retrain": None,
+        "backend": None,
+        "policy": None,
+        "chambers": [],
+        "relay": None,
+    }
+
+    # -- where does analysis happen -------------------------------------
+    spec = _os.getenv("FFN_CRUCIBLE_BACKEND", "local")
+    policy = _os.getenv("FFN_CRUCIBLE_POLICY", "static")
+    out["backend"], out["policy"] = spec, policy
+    try:
+        from ffn_crucible import CrucibleSandbox
+        eng = CrucibleSandbox(policy="best")
+        out["chambers"] = [
+            {"name": st.name, "fidelity": st.fidelity,
+             "available": st.available, "executes": st.executes,
+             "reason": st.reason}
+            for st in eng.statuses()]
+        out["max_fidelity"] = max(
+            [st.fidelity for st in eng.statuses() if st.available], default=0)
+    except Exception as e:
+        out["chambers_error"] = str(e)[:160]
+
+    if spec.startswith("relay"):
+        url = spec.split(":", 1)[1] if ":" in spec else ""
+        pub = _os.getenv("FFN_CRUCIBLE_RELAY_PUB",
+                         "/etc/ffn-ngfw/crucible-verdict.pub")
+        tok = _os.getenv("FFN_CRUCIBLE_TOKEN",
+                         "/etc/ffn-ngfw/crucible-node.token")
+        out["relay"] = {
+            "url": url,
+            "pinned_key": _os.path.exists(pub),
+            "token": _os.path.exists(tok),
+            "fallback_local": spec.startswith("relay+local"),
+        }
+
+    # -- the queue and the verdicts --------------------------------------
+    try:
+        from ffn_threatdb import ThreatDB
+        tdb = ThreatDB()
+    except Exception as e:
+        out["error"] = str(e)[:160]
+        return out
+    try:
+        conn = tdb.conn
+        have = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "cloud_queue" not in have:
+            # Nothing has ever submitted on this box, so the tables the
+            # service creates on first use do not exist yet. Not an error.
+            out["available"] = True
+            return out
+        out["available"] = True
+        out["pending"] = conn.execute(
+            "SELECT COUNT(*) FROM cloud_queue WHERE status='pending'"
+        ).fetchone()[0]
+        today = _time.strftime("%Y-%m-%d", _time.gmtime())
+        if "cloud_reports" in have:
+            out["analyzed_total"] = conn.execute(
+                "SELECT COUNT(*) FROM cloud_reports").fetchone()[0]
+            out["analyzed_today"] = conn.execute(
+                "SELECT COUNT(*) FROM cloud_reports WHERE analyzed LIKE ?",
+                (today + "%",)).fetchone()[0]
+            for row in conn.execute(
+                    "SELECT verdict, COUNT(*) FROM cloud_reports "
+                    "GROUP BY verdict"):
+                out["verdicts"][row[0]] = row[1]
+
+        for row in conn.execute(
+                "SELECT sha256,status,file_type,size,meta,submitted "
+                "FROM cloud_queue WHERE status IN ('pending','analyzing') "
+                "ORDER BY submitted DESC LIMIT 50"):
+            try:
+                meta = _json.loads(row[4] or "{}")
+            except ValueError:
+                meta = {}
+            out["queue"].append({
+                "id": row[0][:16],
+                "time": row[5],
+                "src": meta.get("src") or meta.get("flow") or "-",
+                "verdict": "unknown",
+                "confidence": None,
+                "status": row[1],
+                "result": "%s, %s bytes" % (row[2] or "unknown type",
+                                            row[3] or 0),
+            })
+
+        if "cloud_reports" in have:
+            for row in conn.execute(
+                    "SELECT sha256,verdict,score,threat_name,file_type,"
+                    "backend,analyzed,report FROM cloud_reports "
+                    "ORDER BY analyzed DESC LIMIT 50"):
+                details = {}
+                try:
+                    details = (_json.loads(row[7] or "{}") or {}).get(
+                        "details", {}) or {}
+                except ValueError:
+                    pass
+                out["results"].append({
+                    "id": row[0][:16],
+                    "time": row[6],
+                    "ml_verdict": row[1],
+                    "result": row[1],
+                    "score": row[2],
+                    "threat": row[3] or "-",
+                    "file_type": row[4] or "-",
+                    "chamber": details.get("chamber") or row[5] or "-",
+                    "confidence": details.get("confidence") or "-",
+                    "action": ("blocked" if row[1] in ("malware", "phishing")
+                               else "alerted" if row[1] == "grayware"
+                               else "allowed"),
+                })
+    except Exception as e:
+        out["error"] = str(e)[:160]
+    finally:
+        try:
+            tdb.close()
+        except Exception:
+            pass
+    return out
+
+
 @app.get("/api/detection/engines")
 async def detection_engines():
     """Live status of the host detection engines (sig DB, AV, anti-malware,
@@ -7493,7 +7639,7 @@ class RetrainRequest(BaseModel):
 
 @app.post("/api/ml/retrain")
 async def ml_retrain(req: RetrainRequest = None, user: dict = Depends(get_current_user)):
-    # In production, this sends weights to the WildFire agent which
+    # In production, this sends weights to the BNN agent which
     # retrains the BNN and programs weights via ioctl
     job_id = f"retrain-{int(time.time())}"
     logger.info("ML retrain triggered by %s: model=%s epochs=%d",
@@ -7506,7 +7652,7 @@ async def ml_retrain(req: RetrainRequest = None, user: dict = Depends(get_curren
         "job_id": job_id,
         "model_type": req.model_type if req else "anomaly",
         "epochs": req.epochs if req else 10,
-        "message": "Retrain job queued for WildFire agent",
+        "message": "Retrain job queued for BNN agent",
     }
 
 

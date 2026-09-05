@@ -488,7 +488,7 @@ tbody tr.dragging{opacity:.4}
         <option value="">Full Commit (all pending changes)</option>
         <option value="config.device.setup">Partial: Device &gt; Setup only</option>
         <option value="config.device.setup.management">Partial: Setup &gt; Management only</option>
-        <option value="config.device.setup.wildfire">Partial: Setup &gt; Cloud Sandbox only</option>
+        <option value="config.device.setup.wildfire">Partial: Setup &gt; Crucible only</option>
         <option value="config.device.setup.session">Partial: Setup &gt; Session only</option>
         <option value="config.device.setup.services">Partial: Setup &gt; Services only</option>
         <option value="config.network">Partial: Network only</option>
@@ -605,7 +605,7 @@ const TAB_MENUS = {
   acc: [
     {id:'acc-dashboard',label:'ACC Dashboard'},
     {id:'ml-inference',label:'ML Inference'},
-    {id:'wildfire',label:'Cloud Sandbox'},
+    {id:'crucible',label:'Crucible'},
     {id:'iot-devices',label:'IoT Devices'},
   ],
   policy: [
@@ -738,7 +738,7 @@ const TAB_MENUS = {
   acc: [
     {id:'acc-dashboard',label:'ACC Dashboard'},
     {id:'ml-inference',label:'ML Inference'},
-    {id:'wildfire',label:'Cloud Sandbox'},
+    {id:'crucible',label:'Crucible'},
     {id:'iot-devices',label:'IoT Devices'},
   ],
 };
@@ -1215,7 +1215,7 @@ function renderPage(pageId) {
     // ACC tab
     'acc-dashboard': renderACCDashboard,
     'ml-inference': renderMLInference,
-    'wildfire': renderWildFire,
+    'crucible': renderCrucible,
     'iot-devices': renderIoTDevices,
     // Policy tab
     'security': renderPolicySecurity,
@@ -3164,7 +3164,7 @@ function renderDeviceStub(c) {
 const SETUP_TABS = [
   {id:'s-mgmt',label:'Management'},{id:'s-ops',label:'Operations'},{id:'s-svc',label:'Services'},
   {id:'s-iface',label:'Interfaces'},{id:'s-telem',label:'Telemetry'},{id:'s-cid',label:'Content-ID'},
-  {id:'s-wf',label:'Cloud Sandbox'},{id:'s-sess',label:'Session'},{id:'s-hsm',label:'HSM'},
+  {id:'s-wf',label:'Crucible'},{id:'s-sess',label:'Session'},{id:'s-hsm',label:'HSM'},
   {id:'s-ace',label:'ACE'},{id:'s-dlp',label:'DLP'},
 ];
 
@@ -3183,7 +3183,7 @@ function switchSetupPanel(id) {
   const r = {
     's-mgmt': renderSetupMgmt, 's-ops': renderSetupOps, 's-svc': renderSetupServices,
     's-iface': renderSetupInterfaces, 's-telem': renderSetupTelemetry, 's-cid': renderSetupContentID,
-    's-wf': renderSetupWildFire, 's-sess': renderSetupSession, 's-hsm': renderSetupHSM,
+    's-wf': renderSetupCrucible, 's-sess': renderSetupSession, 's-hsm': renderSetupHSM,
     's-ace': renderSetupACE, 's-dlp': renderSetupDLP,
   };
   if (r[id]) r[id](p); else p.innerHTML='<div class="card"><p class="text-dim">Panel loading...</p></div>';
@@ -3467,7 +3467,7 @@ function renderSetupServices(p) {
           <tr><td>Syslog</td><td>Management</td><td>(auto)</td></tr>
           <tr><td>RADIUS</td><td>Management</td><td>(auto)</td></tr>
           <tr><td>LDAP</td><td>Management</td><td>(auto)</td></tr>
-          <tr><td>Cloud Sandbox</td><td>Management</td><td>(auto)</td></tr>
+          <tr><td>Crucible</td><td>Management</td><td>(auto)</td></tr>
           <tr><td>Updates</td><td>Management</td><td>(auto)</td></tr>
         </tbody></table>
       </div>
@@ -3634,12 +3634,12 @@ function renderSetupContentID(p) {
     </div></div>`;
 }
 
-/* ---- Setup > WildFire ---- */
-function renderSetupWildFire(p) {
+/* ---- Setup > Crucible ---- */
+function renderSetupCrucible(p) {
   p.innerHTML = `
     <div class="section"><div class="section-title">General Settings</div><div class="card">
       <div class="grid grid-2">
-        <div class="form-group"><label>Cloud Sandbox</label>
+        <div class="form-group"><label>Crucible</label>
           <select id="wf-cloud" onchange="toggleWfCustomEndpoint()">
             <option value="public">FFN Public Cloud</option>
             <option value="private">Private (On-Prem)</option>
@@ -3722,7 +3722,7 @@ function renderSetupWildFire(p) {
       </div>
     </div></div>
 
-    <div style="margin-top:16px;text-align:right"><button class="btn btn-primary" onclick="alert('Cloud Sandbox settings saved')">Save Cloud Sandbox Settings</button></div>`;
+    <div style="margin-top:16px;text-align:right"><button class="btn btn-primary" onclick="alert('Crucible settings saved')">Save Cloud Sandbox Settings</button></div>`;
 
   toggleWfCustomEndpoint();
 }
@@ -8312,7 +8312,7 @@ async function loadMLInference() {
 }
 
 function retrainModel() {
-  document.getElementById('ml-action-status').textContent = 'Retrain triggered via cloud sandbox agent...';
+  document.getElementById('ml-action-status').textContent = 'Retrain triggered via the BNN agent...';
   document.getElementById('ml-action-status').style.color = 'var(--orange)';
   api('/api/ml/retrain',{method:'POST'});
   setTimeout(()=>{
@@ -8325,8 +8325,8 @@ function uploadModelWeights() {
   document.getElementById('ml-action-status').textContent = 'Weight upload interface - select .bin file';
 }
 
-/* ---- ACC > WildFire ---- */
-function renderWildFire(c) {
+/* ---- ACC > Crucible ---- */
+function renderCrucible(c) {
   c.innerHTML = `
     <div class="page-header"><h2>Threat Intelligence</h2></div>
     <div class="grid grid-4 section">
@@ -8335,22 +8335,30 @@ function renderWildFire(c) {
       <div class="card"><h3>Last Model Update</h3><div id="wf-last-update" style="font-size:12px;line-height:2"></div></div>
       <div class="card"><h3>Auto-Retrain</h3><div id="wf-retrain-status" style="font-size:12px;line-height:2"></div></div>
     </div>
+    <div class="section"><div class="section-title">Analysis Backend</div><div class="card">
+      <div class="grid grid-2">
+        <div id="wf-backend" style="font-size:12px;line-height:2"></div>
+        <div><div class="table-wrap"><table>
+          <thead><tr><th>Chamber</th><th>Fidelity</th><th>State</th><th>Detail</th></tr></thead>
+          <tbody id="wf-chambers"></tbody></table></div></div>
+      </div>
+    </div></div>
     <div class="section"><div class="section-title">Suspicious Sample Queue</div><div class="card"><div class="table-wrap" style="max-height:300px;overflow-y:auto">
       <table><thead><tr><th>ID</th><th>Time</th><th>Source</th><th>ML Verdict</th><th>Confidence</th><th>Status</th><th>Result</th></tr></thead>
       <tbody id="wf-queue-body"></tbody></table>
     </div></div></div>
     <div class="section"><div class="section-title">Analysis Results</div><div class="card"><div class="table-wrap" style="max-height:250px;overflow-y:auto">
-      <table><thead><tr><th>ID</th><th>Time</th><th>ML Verdict</th><th>Sandbox Result</th><th>Action Taken</th></tr></thead>
+      <table><thead><tr><th>ID</th><th>Time</th><th>Verdict</th><th>Score</th><th>Threat</th><th>Chamber</th><th>Confidence</th><th>Action Taken</th></tr></thead>
       <tbody id="wf-results-body"></tbody></table>
     </div></div></div>`;
-  loadWildFire();
-  refreshTimer = setInterval(loadWildFire,10000);
+  loadCrucible();
+  refreshTimer = setInterval(loadCrucible,10000);
 }
 
-async function loadWildFire() {
-  // Real source: WildFire agent status/queue. No fabricated fallback — zeros and
+async function loadCrucible() {
+  // Real source: the Crucible node/queue status. No fabricated fallback — zeros and
   // empty states until the backend exposes live sample-analysis telemetry.
-  const d = await api('/api/wildfire/status') || {};
+  const d = await api('/api/crucible/status') || {};
   const el = id => document.getElementById(id);
   if (el('wf-pending')) el('wf-pending').textContent = d.pending != null ? fmt(d.pending) : '0';
   if (el('wf-analyzed')) el('wf-analyzed').textContent = d.analyzed_today != null ? fmt(d.analyzed_today) : '0';
@@ -8360,6 +8368,38 @@ async function loadWildFire() {
   if (el('wf-retrain-status')) el('wf-retrain-status').innerHTML = d.retrain
     ? `<div><strong>Status:</strong> ${d.retrain.active ? '<span class="text-green">Active</span>' : '<span class="text-dim">Idle</span>'}</div><div><strong>Threshold:</strong> ${_escSP(d.retrain.threshold != null ? d.retrain.threshold + ' new samples' : '--')}</div><div><strong>Last Retrain:</strong> ${_escSP(d.retrain.last || '--')}</div>`
     : '<div class="text-dim">--</div>';
+
+  const be = document.getElementById('wf-backend');
+  if (be) {
+    const rows = [];
+    rows.push(`<div><strong>Backend:</strong> ${_escSP(d.backend || 'local')}</div>`);
+    rows.push(`<div><strong>On-box policy:</strong> ${_escSP(d.policy || 'static')}${d.policy === 'static' ? ' <span class="text-dim">(never executes a sample)</span>' : ''}</div>`);
+    rows.push(`<div><strong>Highest fidelity available:</strong> ${d.max_fidelity != null ? d.max_fidelity : '--'}</div>`);
+    if (d.relay) {
+      rows.push(`<div><strong>Relay node:</strong> <span class="mono">${_escSP(d.relay.url || '--')}</span></div>`);
+      rows.push(`<div><strong>Verdict key pinned:</strong> ${d.relay.pinned_key ? '<span class="text-green">yes</span>' : '<span class="text-red">no &mdash; verdicts will be refused</span>'}</div>`);
+      rows.push(`<div><strong>Submitter token:</strong> ${d.relay.token ? '<span class="text-green">yes</span>' : '<span class="text-dim">none</span>'}</div>`);
+      rows.push(`<div><strong>Local fallback:</strong> ${d.relay.fallback_local ? 'yes' : '<span class="text-dim">no &mdash; an outage means no verdict</span>'}</div>`);
+    } else {
+      rows.push('<div class="text-dim">Analysis runs on this appliance; nothing is relayed.</div>');
+    }
+    if (d.verdicts && Object.keys(d.verdicts).length) {
+      rows.push(`<div><strong>Verdicts to date:</strong> ${_escSP(Object.entries(d.verdicts).map(([k,v])=>k+': '+v).join(', '))}</div>`);
+    }
+    be.innerHTML = rows.join('');
+  }
+  const ch = document.getElementById('wf-chambers');
+  if (ch) {
+    const cs = Array.isArray(d.chambers) ? d.chambers : [];
+    ch.innerHTML = cs.length
+      ? cs.map(x=>`<tr>
+        <td>${_escSP(x.name || '--')}</td>
+        <td>${x.fidelity != null ? x.fidelity : '--'}</td>
+        <td>${x.available ? '<span class="text-green">available</span>' : '<span class="text-dim">unavailable</span>'}</td>
+        <td class="text-dim">${_escSP(x.reason || '')}</td>
+      </tr>`).join('')
+      : '<tr><td colspan="4" class="text-dim">No chamber information.</td></tr>';
+  }
 
   const queue = document.getElementById('wf-queue-body');
   if (queue) {
@@ -8382,13 +8422,16 @@ async function loadWildFire() {
     const rs = Array.isArray(d.results) ? d.results : [];
     results.innerHTML = rs.length
       ? rs.map(x=>`<tr>
-        <td>${_escSP(x.id || '--')}</td>
+        <td class="mono">${_escSP(x.id || '--')}</td>
         <td class="mono">${_escSP(x.time || x.ts || '--')}</td>
         <td><span class="badge badge-${_escSP(x.ml_verdict || 'suspicious')}">${_escSP(x.ml_verdict || '--')}</span></td>
-        <td><span class="badge badge-${_escSP(x.result || 'benign')}">${_escSP(x.result || '--')}</span></td>
+        <td>${x.score != null ? x.score : '--'}</td>
+        <td>${_escSP(x.threat || '--')}</td>
+        <td>${_escSP(x.chamber || '--')}</td>
+        <td>${_escSP(x.confidence || '--')}</td>
         <td>${_escSP(x.action || '--')}</td>
       </tr>`).join('')
-      : '<tr><td colspan="5" class="text-dim">No analysis results.</td></tr>';
+      : '<tr><td colspan="8" class="text-dim">No analysis results.</td></tr>';
   }
 }
 

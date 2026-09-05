@@ -9,3 +9,8 @@
 [submodule "image-build"]
 	path = image-build
 	url = https://github.com/FreeFlow-Networks-Inc/ffn-image-build.git
+	update = none
+[submodule "crucible"]
+	path = crucible
+	url = https://github.com/FreeFlow-Networks-Inc/ffn-crucible.git
+	branch = main

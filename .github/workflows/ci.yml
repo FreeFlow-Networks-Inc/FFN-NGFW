@@ -4,9 +4,11 @@ name: CI
 # and on pull requests from forks. Anything needing a credential or root lives in
 # build-image.yml instead.
 #
-# Submodules are deliberately NOT checked out: platform/vu9p (FFN-NGFW-FPGA) is a
-# private repository, so an anonymous or fork-triggered clone cannot fetch it. Both
-# submodules are declared `update = none` in .gitmodules for the same reason.
+# The PRIVATE submodules are deliberately NOT checked out: platform/vu9p
+# (FFN-NGFW-FPGA) is private, so an anonymous or fork-triggered clone cannot
+# fetch it, and platform/pa5200 and image-build are declared `update = none` in
+# .gitmodules. The `crucible` submodule (ffn-crucible) IS public and IS fetched,
+# explicitly and on its own, by the jobs that need the detonation engine.
 
 on:
   push:
@@ -60,6 +62,28 @@ jobs:
       - name: ffn_payload selftest
         run: python3 opt/ffn_payload.py selftest
 
+      # ffn_ed25519.py exists twice on purpose: the Crucible node cannot sign a
+      # verdict without it, and a signing engine that needed this repository
+      # checked out beside it would not stand alone. Both copies passing their
+      # own RFC 8032 vectors proves nothing about whether they still MATCH, and
+      # this job is the only place both files exist -- so the identity check
+      # lives here. A fix applied to one copy and not the other is the failure
+      # this catches.
+      - name: the duplicated ed25519 copies are identical
+        run: |
+          set -eu
+          if [ ! -f crucible/ffn_ed25519.py ]; then
+            echo "crucible submodule not checked out; cannot compare" >&2
+            exit 1
+          fi
+          if ! cmp -s opt/ffn_ed25519.py crucible/ffn_ed25519.py; then
+            echo "opt/ffn_ed25519.py and crucible/ffn_ed25519.py have DIVERGED:" >&2
+            diff -u opt/ffn_ed25519.py crucible/ffn_ed25519.py >&2 || true
+            echo "Both must be updated together, in both repositories." >&2
+            exit 1
+          fi
+          echo "identical: $(sha256sum opt/ffn_ed25519.py | cut -d' ' -f1)"
+
       - name: WebUI JavaScript parses
         run: python3 opt/ffn_jscheck.py static/index.html
 
@@ -77,10 +101,60 @@ jobs:
       - name: WebUI vendor-trademark audit
         run: python3 opt/ffn_uiaudit.py static/index.html
 
+      # Hermetic: the engine runs at policy=static so no sample is ever
+      # executed, and the node/relay round trips bind loopback on an ephemeral
+      # port. A live chamber needs unshare + strace and is exercised by hand
+      # (see docs/crucible.md), not here.
+      # The detonation engine lives in its own repository now, consumed as a
+      # submodule. It is PUBLIC, so unlike platform/vu9p it can be fetched by
+      # an anonymous or fork-triggered clone -- fetched on its own here rather
+      # than by flipping `submodules: true`, which would try the private one.
+      # NOT --depth 1. A shallow submodule fetch gets only the remote tip, so
+      # checking out a pinned gitlink that is not the tip fails with
+      # "reference is not a tree" -- which would turn this repository's CI red
+      # the first time ffn-crucible moves ahead of the pin, for a change made
+      # in the other repository.
+      - name: fetch the crucible submodule
+        run: git submodule update --init --checkout crucible
+
+      # PYTHONPATH=crucible reproduces the appliance's FLAT layout: on a real
+      # box the engine and cloud_det.py both sit in /opt/ffn-ngfw-v2, because
+      # the image is built by tarring that directory. Only the git tree
+      # separates them. Without this, cloud_det's selftest does not fail
+      # loudly -- it falls back to the legacy sandbox and reports a detection
+      # regression instead of a missing module.
+      - name: ffn_crucible selftest (dissectors, sinkhole, assay, IOC safety)
+        run: python3 crucible/ffn_crucible.py selftest
+
+      - name: ffn_crucible_node selftest (signed verdicts, forgery refusal)
+        run: python3 crucible/ffn_crucible_node.py selftest
+
+      # Covers the closed loop end to end: carve -> submit -> detonate ->
+      # verdict -> ThreatDB + inline signature, the queue drainer, and the
+      # offload path against a node on loopback.
+      - name: cloud_det selftest (the Crucible loop, drainer, offload)
+        env:
+          PYTHONPATH: crucible
+        run: python3 opt/cloud_det.py selftest
+
+      # The integration must not quietly degrade when the submodule is absent
+      # -- that is the state of a shallow clone, and of anyone who forgets
+      # --recurse-submodules. It should skip loudly, not mis-report.
+      - name: cloud_det degrades honestly with no engine present
+        run: python3 opt/cloud_det.py selftest
+
+      - name: inline_payload_det selftest
+        run: python3 opt/inline_payload_det.py selftest
+
+      - name: ffn_threatdb selftest
+        run: python3 opt/ffn_threatdb.py selftest
+
+      # crucible is included: without it the submodule's ~5600 lines are never
+      # syntax-checked by either repository's compile step on this path.
       - name: every python file compiles
         run: |
           set -eu
-          find opt tests image -name '*.py' -print0 \
+          find opt tests image crucible -name '*.py' -print0 \
             | xargs -0 -n50 python3 -m py_compile
           echo "compiled cleanly"
 

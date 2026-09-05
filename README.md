@@ -192,6 +192,8 @@ platform provides, and how to add one.
     tools/             host diagnostics
     image/             appliance image build and the bare-metal installer
     platform/          hardware platform registry and opt-in submodules
+    crucible/          submodule: the unknown-object detonation engine and
+                       its offloadable analysis node (see below)
     tests/             tests that need the app importable
     opt/               ALL the Python: management plane and host tooling
       ffn_manager.py     the API server and management plane
@@ -201,6 +203,34 @@ platform provides, and how to add one.
       ffn_platform.py    list and select hardware platforms
       ...                policy compiler, signature and threat databases,
                          detection engines, updater, sysd
+
+## Crucible: unknown-object detonation
+
+The half of the detection stack that deals with objects nothing yet has a
+verdict for lives in its own repository,
+[ffn-crucible](https://github.com/FreeFlow-Networks-Inc/ffn-crucible),
+consumed here as a submodule at `crucible/`. It takes the files
+`inline_payload_det.py` carves out of live flows, detonates them, and turns the
+observed behaviour into a hash verdict, network IOCs and inline content
+signatures that come back through `opt/cloud_det.py` into ThreatDB and the FPGA
+fast path.
+
+It is offloadable: analysis runs either on the appliance or on a separate node
+the firewall relays to, with ed25519-signed verdicts. `opt/cloud_det.py
+--backend` selects the shape, and `crucible/docs/crucible.md` explains them.
+
+    git submodule update --init crucible
+
+**It has to be flat at runtime.** `opt/cloud_det.py` imports it as
+`ffn_crucible` -- a same-directory import -- which resolves on an appliance
+because everything lands in a single flat `/opt/ffn-ngfw-v2`. Only the git tree
+separates them, so in a checkout the engine needs to be on the path:
+
+    PYTHONPATH=crucible python3 opt/cloud_det.py selftest
+
+Without it, `cloud_det.py` still runs: it falls back to the legacy static
+sandbox and its selftests skip the Crucible parts with a message saying so,
+rather than silently reporting a weaker result.
 
 ## Building
 

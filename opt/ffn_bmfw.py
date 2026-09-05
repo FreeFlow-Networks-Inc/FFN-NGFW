@@ -213,6 +213,20 @@ class DataplaneConfig:
     nfqueue_base: int = 0
     queue_bypass: bool = True
     default_forward: str = "drop"
+    # Unknown-object analysis (Crucible). The spec string is passed straight to
+    # cloud_det.build_backend: "local" analyses on this box, "relay:<url>"
+    # offloads to an analysis node, "relay+local:<url>" offloads and falls back
+    # here when the node is unreachable.
+    crucible_backend: str = "local"
+    # On-box chamber policy. "static" never executes a sample; "jail" and "vm"
+    # do. Left at static deliberately -- see the module docstring.
+    crucible_policy: str = "static"
+    crucible_timeout: int = 30
+    crucible_relay_token: str = "/etc/ffn-ngfw/crucible-node.token"
+    crucible_relay_pubkey: str = "/etc/ffn-ngfw/crucible-verdict.pub"
+    # Drain the submission queue in the parent process. Turning this off means
+    # objects are queued and never analysed unless something else drains them.
+    crucible_drain: bool = True
     enable_nat: bool = True
     enable_forwarding: bool = True
     data_frac: float = 0.5           # fraction of cores for the data plane
@@ -626,6 +640,33 @@ class _FlowState:
     last: float = 0.0
 
 
+def build_crucible_backend(spec: str = "local", *, policy: str = "static",
+                           timeout: int = 30, token_file: str = "",
+                           pubkey_file: str = ""):
+    """Resolve a backend spec, degrading to the legacy sandbox if need be.
+
+    A misconfigured backend must not stop the firewall from forwarding, so a
+    bad spec is logged and downgraded rather than raised: inspection continues
+    at lower fidelity instead of the data plane failing to start.
+    """
+    if CloudDetectionService is None:
+        return None
+    try:
+        from cloud_det import build_backend
+    except ImportError:
+        return LocalSandbox() if LocalSandbox else None
+    try:
+        return build_backend(spec, policy=policy, timeout=timeout,
+                             token_file=token_file, pubkey_file=pubkey_file)
+    except Exception as e:
+        logger.error("crucible backend %r rejected (%s); falling back to "
+                     "on-box static analysis", spec, e)
+        try:
+            return build_backend("local", policy="static", timeout=timeout)
+        except Exception:
+            return LocalSandbox() if LocalSandbox else None
+
+
 class InspectionEngine:
     CARRY = 512
     FLOW_IDLE = 120
@@ -835,7 +876,10 @@ class NFQueueSource(PacketSource):
 # ===========================================================================
 def _run_vsys_worker(vsys_name: str, queue_num: int, threatdb_path: str,
                      threatlog_path: Optional[str],
-                     vsys_id: int = 0) -> None:  # pragma: no cover
+                     vsys_id: int = 0, backend_spec: str = "local",
+                     policy: str = "static", timeout: int = 30,
+                     token_file: str = "", pubkey_file: str = "",
+                     ) -> None:  # pragma: no cover
     """Data-plane worker: own detection stack + NFQUEUE bind for one vsys.
 
     Runs in a child process already pinned to a data-plane core by CpuPlanes.
@@ -846,7 +890,14 @@ def _run_vsys_worker(vsys_name: str, queue_num: int, threatdb_path: str,
     inline = InlinePayloadDetector(db)
     if not inline.sigs:
         seed_baseline(inline)
-    cloud = CloudDetectionService(db, inline=inline, backend=LocalSandbox())
+    # The worker submits; it does NOT drain. Draining happens once, in the
+    # parent, so N vsys processes do not each detonate the same sample.
+    cloud = CloudDetectionService(
+        db, inline=inline,
+        backend=build_crucible_backend(backend_spec, policy=policy,
+                                       timeout=timeout,
+                                       token_file=token_file,
+                                       pubkey_file=pubkey_file))
     am = None
     if _HAVE_AM:
         sigdb = SignatureDB(os.getenv("FFN_SIGDB_PATH", "/var/lib/ffn-ngfw/sigdb.sqlite"))
@@ -883,6 +934,7 @@ class BareMetalDataplane:
         self.sigdb = None
         self.antimalware = None
         self.engines: Dict[str, InspectionEngine] = {}
+        self.drainer = None
         self.cpu = CpuPlanes.from_system(data_frac=cfg.data_frac) if _HAVE_PLANES else None
         self._procs: List = []
         if _HAVE_DETECT:
@@ -894,8 +946,13 @@ class BareMetalDataplane:
         self.inline = InlinePayloadDetector(self.db)
         if not self.inline.sigs:
             seed_baseline(self.inline)
-        self.cloud = CloudDetectionService(self.db, inline=self.inline,
-                                           backend=LocalSandbox())
+        self.cloud = CloudDetectionService(
+            self.db, inline=self.inline,
+            backend=build_crucible_backend(
+                self.cfg.crucible_backend, policy=self.cfg.crucible_policy,
+                timeout=self.cfg.crucible_timeout,
+                token_file=self.cfg.crucible_relay_token,
+                pubkey_file=self.cfg.crucible_relay_pubkey))
         # inline anti-malware (signature DB + AV + heuristics) for carved files
         if _HAVE_AM:
             self.sigdb = SignatureDB(self.sigdb_path)
@@ -986,18 +1043,46 @@ class BareMetalDataplane:
                     {k: v["dp_core"] for k, v in placement.items()})
         if self.cpu is None:
             raise RuntimeError("ffn_cpu_planes unavailable")
+        self.start_drainer()
         for v in self.cfg.vsys:
             core = v.dp_core if v.dp_core is not None else 0
             p = self.cpu.spawn_worker(
                 core, _run_vsys_worker,
                 args=(v.name, v.nfqueue_num, self.threatdb_path,
-                      self.threatlog_path, v.vsys_id),
+                      self.threatlog_path, v.vsys_id,
+                      self.cfg.crucible_backend, self.cfg.crucible_policy,
+                      self.cfg.crucible_timeout,
+                      self.cfg.crucible_relay_token,
+                      self.cfg.crucible_relay_pubkey),
                 name="ffn-dp-%s" % v.name, realtime=self.cfg.realtime)
             self._procs.append(p)
         for p in self._procs:
             p.join()
 
+    def start_drainer(self):
+        """Start the one queue drainer, in this process.
+
+        Without it the data plane spools every carved object to a `pending` row
+        and nothing ever analyses it -- submission with no analysis, and no
+        generated signatures. It lives here rather than in the vsys workers
+        because the queue is shared: N drainers would contend to detonate the
+        same sample, and the parent is not on a forwarding path.
+        """
+        if not self.cfg.crucible_drain or self.cloud is None:
+            return None
+        try:
+            from cloud_det import QueueDrainer
+        except ImportError as e:
+            logger.warning("no queue drainer available (%s): carved objects "
+                           "will be queued but not analysed", e)
+            return None
+        self.drainer = QueueDrainer(self.cloud).start()
+        return self.drainer
+
     def stop(self) -> None:  # pragma: no cover
+        if self.drainer is not None:
+            self.drainer.stop()
+            self.drainer = None
         for p in self._procs:
             try:
                 p.terminate()
@@ -1006,6 +1091,15 @@ class BareMetalDataplane:
 
     def stats(self) -> dict:
         s = {"table": self.cfg.table, "vsys": {}}
+        if self.cloud is not None:
+            s["crucible"] = {
+                "backend": self.cloud.backend.name,
+                "spec": self.cfg.crucible_backend,
+                "policy": self.cfg.crucible_policy,
+                "queue_depth": self.cloud.queue_depth(),
+                "drainer": self.drainer.summary() if self.drainer
+                           else {"running": False},
+            }
         if self.cpu:
             s["cpu_planes"] = {p: c for p, c in self.cpu.snapshot()["planes"].items()}
         s["placement"] = self.plan_placement()
