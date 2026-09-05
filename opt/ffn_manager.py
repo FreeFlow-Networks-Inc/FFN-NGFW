@@ -4809,7 +4809,11 @@ def _probe_host_octeon():
     except OSError:
         info["driver"] = None
     try:
+        # Rows 0-5 are the BARs; 6 is the expansion ROM and 7-12 are bridge
+        # forwarding windows. Counting those as BARs inflates the device.
         for i, l in enumerate(open(d + "/resource").read().splitlines()):
+            if i > 5:
+                break
             parts = l.split()
             if len(parts) >= 2:
                 st, en = int(parts[0], 16), int(parts[1], 16)
@@ -10263,6 +10267,13 @@ async def _faceplate_map():
         out[name] = {
             "name": name,
             "bcm_port": port,
+            # HSCI is the chassis interconnect: it carries cluster traffic
+            # between HA peers, and ffn_dp_abi.h already refuses to bridge a
+            # port in that role. Listing it is right -- an operator should see
+            # the connector exists -- but offering it for Layer3 configuration
+            # alongside the data ports invites exactly the mistake the role
+            # exists to prevent.
+            "configurable": bp.pan_ifname(port).startswith("ethernet"),
             # The name the switch's own diag shell uses. Shown to an operator
             # because it is what every chip-level tool and log line says, and
             # it is not derivable from either the faceplate label or the chip

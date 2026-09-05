@@ -4121,9 +4121,16 @@ function _renderInterfaceGrid() {
 
 function _unconfiguredRow(name) {
   const linux = (_ifaceState.panToLinux||{})[name] || '';
+  // A port with no config still has a link state, and we already fetched it.
+  // Hardcoding null here meant every unconfigured faceplate port -- which on a
+  // fresh box is all of them -- showed a grey "unknown" dot next to a known
+  // answer, and an operator plugging a cable in saw nothing change.
+  const f = (_ifaceState.faceplate||{})[name];
   return {
     name, parent:null, tag:null, kind:'ethernet',
-    type:'', management_profile:'', link_state:null, linux_name:linux,
+    type:'', management_profile:'',
+    link_state: f ? (f.live ? !!f.link : null) : null,
+    linux_name:linux,
     ip_address:[], mtu:'', virtual_router:'', vlan_tag:'', vlan_or_vwire:'',
     virtual_system:'', security_zone:'', sdwan_interface_profile:'',
     upstream_nat:false, features:[], comment:'',
@@ -4161,7 +4168,9 @@ function _ifaceRowHTML(r, isSub) {
   const nameCell = isSub
     ? `<td style="padding-left:24px" class="text-dim">└ <span class="mono"><strong>${r.name}</strong></span></td>`
     : `<td>
-         <strong class="mono" style="color:var(--accent);cursor:pointer" onclick="openIfaceModal('${r.name}')">${r.name}</strong>
+         ${(_ifaceState.faceplate||{})[r.name] && (_ifaceState.faceplate||{})[r.name].configurable === false
+            ? `<strong class="mono">${r.name}</strong>`
+            : `<strong class="mono" style="color:var(--accent);cursor:pointer" onclick="openIfaceModal('${r.name}')">${r.name}</strong>`}
          ${_ifaceSubtitle(r)}
        </td>`;
   const typeBadge = r.type ? `<span class="badge" style="background:#1a4f9e;color:#fff;font-size:10px">${r.type}</span>` : '';
@@ -4178,8 +4187,16 @@ function _ifaceRowHTML(r, isSub) {
   const feats = (r.features && r.features.length)
     ? r.features.map(f=>`<span class="badge" style="background:#243447;color:#fff;font-size:9px;margin-right:2px">${f}</span>`).join('')
     : '';
+  // A faceplate port the chassis does not let you use as a data interface --
+  // hsci, the cluster interconnect -- is shown but not offered for editing.
+  // The dataplane already refuses to bridge a port in that role, so offering
+  // the dialog would only produce config that silently does nothing.
+  const fpr = (_ifaceState.faceplate||{})[r.name];
+  const locked = fpr && fpr.configurable === false;
   const actions = isSub
     ? `<button class="btn btn-xs btn-danger" onclick="deleteSubif('${r.parent}','${r.name}')">Del</button>`
+    : locked
+    ? `<span class="text-dim" style="font-size:10px">not user-configurable</span>`
     : `<button class="btn btn-xs" onclick="openIfaceModal('${r.name}')">Edit</button>
        <button class="btn btn-xs" onclick="openSubinterfaceModal('${r.name}')">+Sub</button>
        <button class="btn btn-xs btn-danger" onclick="deleteIface('${r.name}')">Del</button>`;
@@ -7298,14 +7315,14 @@ function _offloadHTML(o) {
      and "CP down" need completely different actions and a single red dot
      cannot distinguish them. */
   rows.push(`<div>${_dpDot(cp.reachable ? 'up' : 'down')}<strong>Control plane</strong> `
-    + `<span class="mono" style="font-size:11px">${o.generation || 'OCTEON'}</span> `
+    + `<span class="mono" style="font-size:11px">${_escSP(o.generation || 'OCTEON')}</span> `
     + (cp.reachable
         ? `<span class="text-green">answering</span>`
         : `<span class="text-red">not answering</span>`)
-    + (cp.kernel ? ` <span class="text-dim" style="font-size:10px">${cp.arch||''} ${cp.kernel}</span>` : '')
+    + (cp.kernel ? ` <span class="text-dim" style="font-size:10px">${_escSP(cp.arch||'')} ${_escSP(cp.kernel)}</span>` : '')
     + `</div>`);
   if (cp.detail && !cp.reachable)
-    rows.push(`<div class="text-dim" style="font-size:10px;margin-left:14px">${cp.detail}</div>`);
+    rows.push(`<div class="text-dim" style="font-size:10px;margin-left:14px">${_escSP(cp.detail)}</div>`);
 
   if (dp.present) {
     /* No "booted" badge. This device is brought up by enabling it and mmap'ing
@@ -7313,11 +7330,11 @@ function _offloadHTML(o) {
        dataplane from an idle one, and a green dot claiming otherwise would be
        an invention. It is reported as present, with what is genuinely known. */
     rows.push(`<div>${_dpDot('up')}<strong>Data plane</strong> `
-      + `<span class="mono" style="font-size:11px">${dp.pci}</span> `
+      + `<span class="mono" style="font-size:11px">${_escSP(dp.pci)}</span> `
       + `<span class="text-green">present</span>`
       + (dp.liveness ? ` <span class="text-dim" style="font-size:10px">(running state ${_escSP(dp.liveness)})</span>` : '')
       + `</div>`
-      + `<div class="text-dim" style="font-size:10px;margin-left:14px">${dp.model||''}`
+      + `<div class="text-dim" style="font-size:10px;margin-left:14px">${_escSP(dp.model||'')}`
       + (dp.pci_enabled === false ? ' · PCI decode off' : '') + `</div>`);
   } else if (cp.reachable) {
     rows.push(`<div>${_dpDot('down')}<strong>Data plane</strong> <span class="text-dim">not found on the control plane's bus</span></div>`);
@@ -7325,16 +7342,16 @@ function _offloadHTML(o) {
 
   if (sw.present)
     rows.push(`<div>${_dpDot(sw.driver ? 'up' : 'idle')}<strong>Switch</strong> `
-      + `<span class="mono" style="font-size:11px">${sw.pci}</span> `
-      + `<span class="text-dim" style="font-size:10px">${sw.model||''}`
-      + (sw.driver ? ` · driver ${sw.driver}` : ' · no driver bound') + `</span></div>`);
+      + `<span class="mono" style="font-size:11px">${_escSP(sw.pci)}</span> `
+      + `<span class="text-dim" style="font-size:10px">${_escSP(sw.model||'')}`
+      + (sw.driver ? ` · driver ${_escSP(sw.driver)}` : ' · no driver bound') + `</span></div>`);
   if (fe.present)
     rows.push(`<div>${_dpDot(fe.driver ? 'up' : 'idle')}<strong>Front end</strong> `
-      + `<span class="mono" style="font-size:11px">${fe.pci}</span> `
-      + `<span class="text-dim" style="font-size:10px">${fe.model||''}`
-      + (fe.driver ? ` · driver ${fe.driver}` : ' · no driver bound') + `</span></div>`);
+      + `<span class="mono" style="font-size:11px">${_escSP(fe.pci)}</span> `
+      + `<span class="text-dim" style="font-size:10px">${_escSP(fe.model||'')}`
+      + (fe.driver ? ` · driver ${_escSP(fe.driver)}` : ' · no driver bound') + `</span></div>`);
 
-  if (o.note) rows.push(`<div class="text-dim" style="font-size:10px;margin-top:4px">${o.note}</div>`);
+  if (o.note) rows.push(`<div class="text-dim" style="font-size:10px;margin-top:4px">${_escSP(o.note)}</div>`);
   return rows.join('');
 }
 
