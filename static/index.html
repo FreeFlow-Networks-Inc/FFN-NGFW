@@ -4059,14 +4059,25 @@ function _renderInterfaceGrid() {
     const panNames = new Set(Object.keys(_ifaceState.panToLinux||{}));
     for (const e of _ifaceState.enriched.ethernet||[]) panNames.add(e.parent || e.name);
 
-    // Sort: ethernet1/1, ethernet1/2, ..., aeN, then any others
-    const ordered = [...panNames].sort((a,b)=>{
-      const ae_a = a.startsWith('ae'); const ae_b = b.startsWith('ae');
-      if (ae_a !== ae_b) return ae_a ? 1 : -1;
-      const na = parseInt((a.match(/(\d+)$/)||[0,0])[1]);
-      const nb = parseInt((b.match(/(\d+)$/)||[0,0])[1]);
-      return na - nb;
-    });
+    // Sort. When the server supplied a faceplate order, honour it: it is the
+    // order of the connectors on the front of the chassis, which is what an
+    // operator is looking at. The fallback below sorts on a TRAILING number,
+    // and a port with no number in its name -- hsci -- parses as 0 and sorts
+    // ahead of ethernet1/1, which is exactly backwards.
+    const fpOrder = new Map(
+      ((_ifaceState.enriched && _ifaceState.enriched.faceplate) || [])
+        .map((f, i) => [f.name, i]));
+    const ordered = fpOrder.size
+      ? [...panNames].sort((a, b) =>
+          (fpOrder.has(a) ? fpOrder.get(a) : 1e6) -
+          (fpOrder.has(b) ? fpOrder.get(b) : 1e6))
+      : [...panNames].sort((a,b)=>{
+        const ae_a = a.startsWith('ae'); const ae_b = b.startsWith('ae');
+        if (ae_a !== ae_b) return ae_a ? 1 : -1;
+        const na = parseInt((a.match(/(\d+)$/)||[0,0])[1]);
+        const nb = parseInt((b.match(/(\d+)$/)||[0,0])[1]);
+        return na - nb;
+        });
 
     for (const name of ordered) {
       const r = enrichedByName[name] || _unconfiguredRow(name);
