@@ -8971,21 +8971,221 @@ async def config_apply_status(user: dict = Depends(get_current_user)):
         return {"overall": "error", "error": str(exc)}
 
 
+def _platform_decl() -> dict:
+    """The selected platform's own declaration, or {}.
+
+    ffn_cpuisol already knows how to find platform/<name>/platform.json and is
+    the module that consumes `datapath` today, so it owns the reader. A second
+    one here would be a second thing to keep in agreement.
+
+    Returns {} on an installed appliance, where the tree is flat and there is no
+    platform/ directory -- which is why nothing downstream may treat an empty
+    declaration as "no platform". Evidence decides that; see _platform_profile.
+    """
+    try:
+        import ffn_cpuisol
+        decl, _path = ffn_cpuisol.find_platform_decl(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        return decl or {}
+    except Exception:
+        return {}
+
+
+def _chassis_family_name(chassis: dict) -> str:
+    """A human name for the chassis family, from the models it could be.
+
+    Deliberately the family. The vendor fingerprint identifies the BOARD, and
+    one board serves several models -- a PA-5220 and a PA-5280 are the same
+    board -- so picking a model out of the list would state something the
+    detector never established.
+    """
+    models = [m for m in (chassis.get("models") or []) if m]
+    if not models:
+        return ""
+    pfx = models[0]
+    for m in models[1:]:
+        while pfx and not m.startswith(pfx):
+            pfx = pfx[:-1]
+    pfx = pfx.rstrip("-")
+    if not pfx:
+        return ""
+    # "PA-52" from PA-5220/5250/... is a family stem, not a product name.
+    name = pfx + "0" * max(0, len(models[0]) - len(pfx))
+    return "Palo Alto Networks %s series" % name if len(models) > 1 else            "Palo Alto Networks %s" % models[0]
+
+
+def _chassis_fingerprint() -> dict:
+    """What chassis this is, from the vendor detector. {} when unrecognised."""
+    try:
+        import ffn_vendor
+        return ffn_vendor.detect_chassis() or {}
+    except Exception:
+        return {}
+
+
+async def _platform_profile() -> dict:
+    """What this appliance IS, and therefore which features apply to it.
+
+    WHY THIS EXISTS. The WebUI was written for FFN's own board -- an accelerator
+    card plus a DPDK path -- and shows that board's features unconditionally. On
+    an appliance that has neither, the result is not a missing panel but a
+    misleading one: a red "Not Detected" beside an instruction to install a card
+    that does not fit the chassis, and a DPDK panel reporting "Stopped" for a
+    subsystem the box was never going to run. Both read as faults. Neither is.
+
+    So every feature carries TWO booleans, and the difference between them is
+    the whole point:
+
+        applicable  does this feature belong on this hardware at all?
+        present     is it actually there right now?
+
+    not applicable  -> the UI hides it. There is nothing to report and nothing
+                       an operator could do about it.
+    applicable, not present -> the UI reports it missing. That IS actionable.
+
+    Everything here is DERIVED. The platform declaration is used when there is
+    one, and otherwise the answer comes from what was detected -- an installed
+    appliance has a flat tree with no platform/ directory, so treating a missing
+    declaration as "no platform" would misreport every deployed box.
+    """
+    decl = _platform_decl()
+    chassis = _chassis_fingerprint()
+    offload = await _detect_offload_dp()
+    faceplate = await _faceplate_map("data")
+
+    has_fpga_card = not fpga.sim_mode
+    has_offload = bool(offload.get("present"))
+    dpdk_unit = _detect_dpdk_service()
+    # A unit FILE existing is not a datapath. The image ships ffn-dpdk-fwd on
+    # every platform, so keying "present" off the unit reported DPDK as present
+    # on a chassis that has never run it.
+    dpdk_running = bool(_detect_dpdk_process())
+
+    # Datapath: the declaration is authoritative where it exists, because it is
+    # the platform stating its own design. Otherwise infer from what is here.
+    datapath = decl.get("datapath")
+    if not datapath:
+        datapath = ("offload" if has_offload
+                    else "fpga" if has_fpga_card
+                    else "dpdk")
+
+    off_reason = ("this chassis forwards on its own offload complex, so the "
+                  "host-side datapath is not used here")
+
+    def feat(applicable, present, reason="", **extra):
+        d = {"applicable": bool(applicable), "present": bool(present)}
+        if reason:
+            d["reason"] = reason
+        d.update(extra)
+        return d
+
+    features = {
+        # The host-side datapaths. Both are FFN's own board's design; an
+        # offload chassis has neither and needs neither.
+        "dpdk": feat(datapath == "dpdk", dpdk_running,
+                     off_reason if datapath != "dpdk" else "",
+                     unit=dpdk_unit),
+        "fpga_card": feat(datapath in ("dpdk", "fpga"), has_fpga_card,
+                          off_reason if datapath == "offload" else ""),
+        "hugepages": feat(datapath == "dpdk", datapath == "dpdk",
+                          "hugepages back the DPDK mempools; nothing here uses "
+                          "them" if datapath != "dpdk" else ""),
+        # Isolating host cores only helps a host-side poll-mode datapath, so it
+        # follows the datapath rather than a default. This cannot be left to the
+        # declaration alone: an INSTALLED appliance has a flat tree with no
+        # platform/ directory, so the declaration is absent exactly where it
+        # matters, and defaulting to "auto" reported core isolation as
+        # applicable on a chassis that forwards nothing on its host cores.
+        "cpu_isolation": feat(
+            decl.get("cpu_isolation", "auto") != "none" and datapath == "dpdk",
+            decl.get("cpu_isolation", "auto") != "none" and datapath == "dpdk",
+            decl.get("reason") or (off_reason if datapath == "offload" else "")),
+
+        # The offload chassis's own silicon.
+        "offload_complex": feat(has_offload, has_offload,
+                                detail=offload.get("boot_state") or ""),
+        "switch_faceplate": feat(faceplate is not None, bool(faceplate),
+                                 ports=len(faceplate or {})),
+        "front_end_asic": feat(has_offload,
+                               bool((offload.get("fe100") or {}).get("present")),
+                               model=(offload.get("fe100") or {}).get("model") or ""),
+
+        # Software subsystems, present when their binary is.
+        "frr": feat(True, os.path.exists("/usr/bin/vtysh")),
+        "ipsec": feat(True, os.path.exists("/usr/sbin/swanctl")
+                      or os.path.exists("/usr/bin/swanctl")),
+        "zerotier": feat(True, os.path.exists("/usr/sbin/zerotier-cli")
+                         or os.path.exists("/usr/bin/zerotier-cli")),
+    }
+
+    return {
+        "platform": decl.get("platform") or (
+            "pa5200" if faceplate is not None else
+            "vu9p" if has_fpga_card else "generic"),
+        # Falls back to the chassis fingerprint, because the declaration is the
+        # thing that is missing on a deployed box.
+        # Falls back to the chassis fingerprint, because the declaration is the
+        # thing that is missing on a deployed box. The FAMILY, not a model: the
+        # fingerprint lists every model this board could be (the PA-5220 and
+        # PA-5280 share it), and naming one of them would be a guess.
+        "hardware": decl.get("hardware") or _chassis_family_name(chassis),
+        "datapath": datapath,
+        "chassis": {
+            "family": chassis.get("platform") or "",
+            "models": chassis.get("models") or [],
+            "dmi": chassis.get("dmi") or "",
+            "match": chassis.get("match"),
+            # Named by whichever detector answered; the CLI reports it as
+            # "octeon" and the in-process call may not carry it at all.
+            "npu": chassis.get("octeon") or offload.get("generation") or "",
+        },
+        "features": features,
+    }
+
+
 @app.get("/api/system/capabilities")
 async def system_capabilities(user: dict = Depends(get_current_user)):
-    """Which subsystems are present (FPGA, DPDK, FRR, strongSwan, ZeroTier)."""
+    """Which subsystems are present, and which ones this appliance even has.
+
+    The flat booleans are kept because callers already read them, but they
+    cannot express the difference that matters on an appliance: a subsystem
+    that is MISSING versus one that was never part of this hardware. `platform`
+    carries that, per feature, as applicable/present -- see _platform_profile.
+    A UI should branch on it and hide what is not applicable, rather than
+    reporting a DPDK path this chassis does not have as "Stopped".
+    """
+    base = None
     if controld is not None and controld.available():
         try:
-            return controld.capabilities()
+            base = controld.capabilities()
         except Exception:
-            pass
-    return {
-        "fpga":     not fpga.sim_mode,
-        "dpdk":     os.path.exists("/var/run/ffn-ngfw/dpdk.sock"),
-        "frr":      os.path.exists("/usr/bin/vtysh"),
-        "ipsec":    os.path.exists("/usr/sbin/swanctl") or os.path.exists("/usr/bin/swanctl"),
-        "zerotier": os.path.exists("/usr/sbin/zerotier-cli") or os.path.exists("/usr/bin/zerotier-cli"),
-    }
+            base = None
+    if base is None:
+        base = {
+            "fpga":     not fpga.sim_mode,
+            "dpdk":     os.path.exists("/var/run/ffn-ngfw/dpdk.sock"),
+            "frr":      os.path.exists("/usr/bin/vtysh"),
+            "ipsec":    os.path.exists("/usr/sbin/swanctl") or os.path.exists("/usr/bin/swanctl"),
+            "zerotier": os.path.exists("/usr/sbin/zerotier-cli") or os.path.exists("/usr/bin/zerotier-cli"),
+        }
+    # Merged rather than replacing controld's answer: it owns the subsystem
+    # booleans, this owns what the hardware is.
+    try:
+        base = dict(base)
+        base["platform"] = await _platform_profile()
+    except Exception as exc:
+        logger.warning("platform profile failed: %s", exc)
+    return base
+
+
+@app.get("/api/system/platform")
+async def system_platform(user: dict = Depends(get_current_user)):
+    """The appliance's own specification: what it is, and which features apply.
+
+    Separate from /api/system/capabilities so a caller that only wants to know
+    what hardware this is does not have to reason about subsystem booleans.
+    """
+    return await _platform_profile()
 
 
 # ---------------------------------------------------------------------------
