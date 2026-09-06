@@ -210,6 +210,28 @@ class DataplaneConfig:
     mgmt_ifaces: List[str] = field(default_factory=list)
     mgmt_tcp_ports: List[int] = field(default_factory=lambda: [22, 443])
     mgmt: List[dict] = field(default_factory=list)  # per-iface mgmt profiles
+    # Internal chassis buses, accepted WHOLESALE like "lo" -- not networks.
+    #
+    # mgmt_ifaces is the wrong tool for these: it opens exactly
+    # mgmt_tcp_ports, and the PCIe link to the control plane carries far more
+    # than ssh and https. Measured on the 5220, the MP serves the CP over
+    # ffnnet0 (127.1.1.1):
+    #
+    #     2049   NFS -- the CP's ROOT FILESYSTEM
+    #     111    rpcbind, plus rpc.mountd/statd on ephemeral high ports
+    #     8080   the nginx opkg mirror the CP installs packages from
+    #     7420   ffn control agent
+    #
+    # A ruleset that permits only 22/443/8443 there takes the control plane's
+    # root filesystem away. It does not fail immediately either, because
+    # established flows match the conntrack rule -- an existing NFS mount keeps
+    # working until it reconnects and then hangs, which is worse than an
+    # outright break because it detaches cause from symptom.
+    #
+    # rpc.mountd and rpc.statd bind EPHEMERAL ports, so there is no port list
+    # that could be written here even in principle. The bus is either trusted
+    # or the control plane does not work.
+    trusted_ifaces: List[str] = field(default_factory=list)
     nfqueue_base: int = 0
     queue_bypass: bool = True
     default_forward: str = "drop"
@@ -264,6 +286,12 @@ class DataplaneConfig:
         cfg = cls.__new__(cls)
         cfg.table = d.get("table", "ffn_ngfw")
         cfg.mgmt_ifaces = d.get("mgmt_ifaces", [])
+        # from_dict builds the instance with cls.__new__ and assigns every
+        # field by hand, so a dataclass default is NOT applied here. Adding
+        # the field to the class is not enough -- it has to be read out of
+        # the dict too, or it silently stays empty and the rule it drives
+        # never renders.
+        cfg.trusted_ifaces = d.get("trusted_ifaces", [])
         cfg.mgmt_tcp_ports = d.get("mgmt_tcp_ports", [22, 443])
         cfg.mgmt = d.get("mgmt", [])
         cfg.nfqueue_base = d.get("nfqueue_base", 0)
@@ -403,6 +431,12 @@ class NftGenerator:
         L.append("        ct state invalid drop")
         L.append("        ct state { established, related } accept")
         L.append('        iif "lo" accept')
+        # Internal chassis buses, next to "lo" and for the same reason: the far
+        # end is another processor on this board, not a network. See
+        # DataplaneConfig.trusted_ifaces.
+        for _t in (getattr(c, "trusted_ifaces", []) or []):
+            L.append('        iifname "%s" accept comment "trusted transport"'
+                     % _t)
         L.append("        meta l4proto { icmp, icmpv6 } accept")
         if c.mgmt_ifaces and c.mgmt_tcp_ports:
             mgmt_if = ", ".join('"%s"' % i for i in c.mgmt_ifaces)

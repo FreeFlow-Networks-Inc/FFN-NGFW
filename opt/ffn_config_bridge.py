@@ -37,7 +37,22 @@ def _mgmt_ifaces():
         except Exception: pass
     return ifs
 MGMT_IFACES=_mgmt_ifaces()
-NEVER_VSYS=set(MGMT_IFACES)|{"lo","tmfifo_net0"}          # control/mgmt: never in a vsys
+
+def _trusted_ifaces():
+    """Internal chassis buses: accepted wholesale, like "lo".
+
+    The PCIe transport to the control plane is not a network -- the far end is
+    another processor on this board. The MP serves the CP its NFS ROOT over it
+    (2049 + rpcbind + rpc.mountd/statd on EPHEMERAL ports), the opkg mirror on
+    8080, and the control agent on 7420. Putting it in MGMT_IFACES would open
+    only MGMT_PORTS and take the control plane's root filesystem away; the
+    ephemeral RPC ports mean no port list could be correct even in principle.
+    """
+    return [d for d in ("ffnnet0", "pcicp0") if d in REAL]
+TRUSTED_IFACES=_trusted_ifaces()
+# Neither a mgmt port nor a trusted bus may be pulled into a vsys zone: doing so
+# rewrites the box's own conntrack and breaks the path it is managed over.
+NEVER_VSYS=set(MGMT_IFACES)|set(TRUSTED_IFACES)|{"lo","tmfifo_net0"}
 MGMT_KINDS={"lab-mgmt","mgmt"}
 def _aliases():
     m={}
@@ -132,5 +147,6 @@ for (nm,vid,data_ifs) in _vsyses(al):
     zones=[{"name":zn(i),"interfaces":[i],"kind":"trust"} for i in data_ifs]
     vconf.append({"name":nm,"vsys_id":vid,"zones":zones,"rules":ro})
 cfg={"table":"ffn_ngfw","mgmt_ifaces":MGMT_IFACES,"mgmt_tcp_ports":MGMT_PORTS,
+     "trusted_ifaces":TRUSTED_IFACES,
      "nfqueue_base":0,"queue_bypass":True,"default_forward":"drop","enable_nat":True,"mgmt":ifmgmt,"vsys":vconf}
 json.dump(cfg,sys.stdout,indent=2)
