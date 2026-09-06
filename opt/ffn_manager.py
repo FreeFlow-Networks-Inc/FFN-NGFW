@@ -12162,9 +12162,26 @@ if __name__ == "__main__":
     # Override with FFN_MGR_WORKERS=N env to enable multi-worker mode once
     # the commit lock and config cache are backed by a shared store.
     workers = int(os.getenv("FFN_MGR_WORKERS", "1"))
+
+    # Same resolution the systemd unit uses, so running this file directly and
+    # running it as a service cannot disagree about where the manager listens.
+    # A hardcoded 0.0.0.0 here would quietly reintroduce the behaviour the unit
+    # was changed to stop -- and this path is what a developer or a recovery
+    # shell actually uses.
+    try:
+        from ffn_mgmt_bind import resolve as _resolve_bind
+        _host, _why, _detail = _resolve_bind()
+        print("ffn-manager: binding %s (%s)" % (_host, _why))
+        if _detail.get("warning"):
+            print("ffn-manager: WARNING: %s" % _detail["warning"])
+    except Exception as _exc:              # never fail to start over this
+        _host = "0.0.0.0"
+        print("ffn-manager: bind resolver unavailable (%s); binding %s"
+              % (_exc, _host))
+
     uvicorn.run(
         "ffn_manager:app",
-        host="0.0.0.0",
+        host=_host,
         port=8443,
         reload=False,
         log_level="info",
