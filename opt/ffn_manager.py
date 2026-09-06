@@ -5165,7 +5165,7 @@ async def updates_set_server(cfg: UpdateServerCfg):
 
 
 @app.post("/api/system/updates/check")
-async def updates_check(insecure: bool = True):
+async def updates_check(insecure: bool = True, user: dict = Depends(get_current_user)):
     url = _update_server_url()
     if not url:
         raise HTTPException(400, "no update server configured")
@@ -5182,7 +5182,7 @@ class UpdateInstall(BaseModel):
 
 
 @app.post("/api/system/updates/install")
-async def updates_install(req: UpdateInstall):
+async def updates_install(req: UpdateInstall, user: dict = Depends(get_current_user)):
     """Download+verify a payload; only writes anything when apply=true.
 
     An 'image' payload is written to the INACTIVE A/B root, never the running
@@ -7490,7 +7490,7 @@ async def ml_status():
 
 
 @app.post("/api/ml/score")
-async def ml_score(req: MlScoreRequest):
+async def ml_score(req: MlScoreRequest, user: dict = Depends(get_current_user)):
     """Score a buffer for a malware/grayware/benign verdict (contract §8).
 
     Body: {"text": "..."} or {"hex": "deadbeef"}. Returns MlEngine.score():
