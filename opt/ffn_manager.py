@@ -2500,7 +2500,28 @@ async def get_current_user(
 # FastAPI application
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="FFN NGFW Manager", version="1.0.0")
+# docs_url/redoc_url/openapi_url are all None so FastAPI registers NONE of its
+# three built-in endpoints. They are re-registered below, behind auth.
+#
+# WHY. /openapi.json was answering 200 to anyone who could reach port 8443 --
+# 136 KB describing all 157 paths, every parameter and every request model. It
+# is the single most useful read on this box for someone who should not be here,
+# and it is invisible to any audit that walks the @app.get decorators, because
+# FastAPI adds it internally rather than through one. Guarding 58 handlers while
+# publishing their complete map would have been theatre.
+#
+# /docs and /redoc are not re-registered. They are browser UIs whose only job is
+# to fetch and render /openapi.json, and a browser opening them cannot send an
+# Authorization header, so behind bearer auth they can only ever render an empty
+# shell. A 404 is the honest answer; the spec itself is still available to any
+# authenticated caller at /openapi.json.
+app = FastAPI(
+    title="FFN NGFW Manager",
+    version="1.0.0",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -2509,6 +2530,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/openapi.json", include_in_schema=False)
+async def openapi_json(user: dict = Depends(get_current_user)):
+    """The API schema, for authenticated callers only.
+
+    Kept at its conventional path so anything that generates a client still
+    works -- it just has to authenticate first, like every other read on this
+    box. include_in_schema=False only stops it describing itself.
+    """
+    return app.openapi()
+
 
 fpga = FPGADevice(DEV_PATH)
 config_mgr = ConfigManager()
@@ -3545,7 +3578,7 @@ async def system_fips_selftest(user: dict = Depends(get_current_user)):
 
 
 @app.get("/api/system/status")
-async def system_status():
+async def system_status(user: dict = Depends(get_current_user)):
     try:
         hostname = platform.node()
     except Exception:
@@ -3710,7 +3743,7 @@ def _get_real_interfaces() -> list:
 
 
 @app.get("/api/system/interfaces")
-async def system_interfaces():
+async def system_interfaces(user: dict = Depends(get_current_user)):
     """The DEVICE's interfaces: this host's NICs, plus any faceplate connector
     that belongs to the device rather than to the firewall.
 
@@ -3745,7 +3778,7 @@ async def system_interfaces():
 
 
 @app.get("/api/system/resources")
-async def system_resources():
+async def system_resources(user: dict = Depends(get_current_user)):
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
     cpu_freq = psutil.cpu_freq()
@@ -3835,7 +3868,7 @@ _prev_counter_time = 0
 
 
 @app.get("/api/dashboard/throughput")
-async def dashboard_throughput():
+async def dashboard_throughput(user: dict = Depends(get_current_user)):
     global _prev_counters, _prev_counter_time
 
     now = time.time()
@@ -3896,7 +3929,7 @@ async def dashboard_throughput():
 
 
 @app.get("/api/dashboard/threats")
-async def dashboard_threats():
+async def dashboard_threats(user: dict = Depends(get_current_user)):
     """
     Threat summary from the REAL detection stack (signature DB, threat DB /
     inline IPS, anti-malware, cloud verdicts) via `_detection_live()`. Counts
@@ -4159,7 +4192,7 @@ def _count_conntrack_by_state(limit: int = 1_000_000, vsys_id: Optional[int] = N
 
 
 @app.get("/api/dashboard/sessions")
-async def dashboard_sessions(breakdown: bool = False, vsys: Optional[str] = None):
+async def dashboard_sessions(breakdown: bool = False, vsys: Optional[str] = None, user: dict = Depends(get_current_user)):
     """
     Active firewall sessions = flows currently tracked in the kernel's
     conntrack table. On a firewall appliance every forwarded flow hits
@@ -4250,7 +4283,7 @@ async def dashboard_sessions(breakdown: bool = False, vsys: Optional[str] = None
 
 
 @app.get("/api/dashboard/ddos")
-async def dashboard_ddos():
+async def dashboard_ddos(user: dict = Depends(get_current_user)):
     if not fpga.sim_mode:
         zones = fpga.get_ddos_zones()
     else:
@@ -4283,7 +4316,7 @@ async def dashboard_ddos():
 
 
 @app.get("/api/security/dos-protection")
-async def dos_protection_get():
+async def dos_protection_get(user: dict = Depends(get_current_user)):
     """Anti-DDoS engine: configured thresholds + live drop state."""
     return {"config": _read_dos_config(), "live": _ddos_engine_state(),
             "backend": "nftables (forward hook, transit)"}
@@ -4355,7 +4388,7 @@ def _hw_inventory(refresh: bool = False) -> dict:
 
 
 @app.get("/api/system/hardware")
-async def system_hardware(refresh: int = 0):
+async def system_hardware(refresh: int = 0, user: dict = Depends(get_current_user)):
     """Autodetected hardware inventory: system/DMI, CPU+NUMA+crypto, memory,
     every NIC (driver/speed/PCI/DPDK-bind/role), the DPU/SmartNIC, accelerators
     (FPGA/GPU/QAT), storage and hugepages. Cached ~30s; ?refresh=1 to force.
@@ -4735,7 +4768,7 @@ def _ha_live_state() -> dict:
 
 
 @app.get("/api/ha/config")
-async def ha_config_get():
+async def ha_config_get(user: dict = Depends(get_current_user)):
     return {"config": _read_ha_config()}
 
 
@@ -4774,7 +4807,7 @@ async def ha_config_set(cfg: HaConfig, user: dict = Depends(get_current_user)):
 
 
 @app.get("/api/ha/state")
-async def ha_state_get():
+async def ha_state_get(user: dict = Depends(get_current_user)):
     return _ha_live_state()
 
 
@@ -5070,7 +5103,7 @@ async def _detect_offload_dp(max_age: float = 15.0) -> dict:
 
 
 @app.get("/api/dataplane/offload")
-async def dataplane_offload():
+async def dataplane_offload(user: dict = Depends(get_current_user)):
     return await _detect_offload_dp()
 
 
@@ -5106,7 +5139,7 @@ def _payload_cli(args, timeout=120):
 
 
 @app.get("/api/system/updates")
-async def updates_status():
+async def updates_status(user: dict = Depends(get_current_user)):
     """Installed payload versions, key presence, and the configured server."""
     import json as _j
     st = {}
@@ -5151,7 +5184,7 @@ class UpdateServerCfg(BaseModel):
 
 
 @app.put("/api/system/updates/server")
-async def updates_set_server(cfg: UpdateServerCfg):
+async def updates_set_server(cfg: UpdateServerCfg, user: dict = Depends(get_current_user)):
     u = (cfg.url or "").strip()
     if u and not u.startswith(("http://", "https://")):
         raise HTTPException(400, "url must start with http:// or https://")
@@ -5258,7 +5291,7 @@ def _vendor_registry_raw():
 
 
 @app.get("/api/vendor/status")
-async def vendor_status():
+async def vendor_status(user: dict = Depends(get_current_user)):
     """Chassis fingerprint, owner-imported firmware, and bring-up readiness."""
     det = _vendor_cli(["detect", "--json"], timeout=30)
     chassis = {}
@@ -5293,7 +5326,7 @@ async def vendor_status():
 
 
 @app.get("/api/octeon/bringup")
-async def octeon_bringup():
+async def octeon_bringup(user: dict = Depends(get_current_user)):
     """The 9-step bring-up plan, parsed for display. Read-only: this never
     touches the hardware (ffn_oct.py needs --force for that)."""
     import subprocess as _sp
@@ -5327,13 +5360,13 @@ class VendorScanReq(BaseModel):
 
 
 @app.post("/api/vendor/scan")
-async def vendor_scan(req: VendorScanReq):
+async def vendor_scan(req: VendorScanReq, user: dict = Depends(get_current_user)):
     r = _vendor_cli(["scan", "--source", req.path], timeout=180)
     return {"success": r["rc"] == 0, "output": r["out"] or r["err"]}
 
 
 @app.post("/api/vendor/import")
-async def vendor_import(req: VendorScanReq):
+async def vendor_import(req: VendorScanReq, user: dict = Depends(get_current_user)):
     a = ["import", "--source", req.path]
     if req.force:
         a.append("--force")
@@ -5342,7 +5375,7 @@ async def vendor_import(req: VendorScanReq):
 
 
 @app.post("/api/vendor/forget")
-async def vendor_forget():
+async def vendor_forget(user: dict = Depends(get_current_user)):
     r = _vendor_cli(["forget", "--all"], timeout=60)
     return {"success": r["rc"] == 0, "output": r["out"] or r["err"]}
 
@@ -5357,7 +5390,7 @@ IMMUTABLE_KIND_PREFIX = {"intrazone-default", "interzone-default", "lab-mgmt"}
 
 
 @app.get("/api/policy/rules")
-async def policy_list(show_hidden: bool = False, show_defaults: bool = True):
+async def policy_list(show_hidden: bool = False, show_defaults: bool = True, user: dict = Depends(get_current_user)):
     """
     Returns rules in evaluation order: user rules first (by position),
     then PAN-OS-style implicit defaults (intrazone-default, then
@@ -5756,7 +5789,7 @@ def _get_arp_table():
 
 
 @app.get("/api/network/routes")
-async def network_routes():
+async def network_routes(user: dict = Depends(get_current_user)):
     return {"routes": _get_routes_from_system()}
 
 
@@ -5791,12 +5824,12 @@ async def network_delete_route(destination: str = Query(...), user: dict = Depen
 
 
 @app.get("/api/network/arp")
-async def network_arp():
+async def network_arp(user: dict = Depends(get_current_user)):
     return {"arp_table": _get_arp_table()}
 
 
 @app.get("/api/network/interfaces")
-async def network_interfaces_config():
+async def network_interfaces_config(user: dict = Depends(get_current_user)):
     """Real interface configuration from the system."""
     return {"interfaces": _discover_interfaces()}
 
@@ -6378,7 +6411,7 @@ async def iface_set_vr(iface: str, body: IfaceVrAssign,
 
 
 @app.get("/api/network/virtual-routers")
-async def vr_list():
+async def vr_list(user: dict = Depends(get_current_user)):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
@@ -6445,7 +6478,7 @@ async def _vr_fetch(db, name: str):
 
 
 @app.get("/api/network/virtual-routers/{name}")
-async def vr_get(name: str):
+async def vr_get(name: str, user: dict = Depends(get_current_user)):
     async with aiosqlite.connect(DB_PATH) as db:
         row = await _vr_fetch(db, name)
         if not row:
@@ -6598,7 +6631,7 @@ async def vr_set_routing(name: str, cfg: VrRoutingConfig, user: dict = Depends(g
 
 
 @app.get("/api/network/virtual-routers/{name}/routes")
-async def vr_routes_list(name: str):
+async def vr_routes_list(name: str, user: dict = Depends(get_current_user)):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         row = await _vr_fetch(db, name)
@@ -6684,7 +6717,7 @@ async def vr_route_delete(name: str, route_id: int,
 
 
 @app.get("/api/network/virtual-routers/{name}/fib")
-async def vr_fib(name: str):
+async def vr_fib(name: str, user: dict = Depends(get_current_user)):
     """Read the live FIB: prefer FRR (`show ip route vrf <name> json`),
     fall back to the kernel table (`ip route show table N`)."""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -6720,7 +6753,7 @@ async def vr_fib(name: str):
 
 
 @app.get("/api/network/virtual-routers/{name}/neighbors")
-async def vr_neighbors(name: str):
+async def vr_neighbors(name: str, user: dict = Depends(get_current_user)):
     """Read `ip neigh` scoped to this VR's member interfaces."""
     async with aiosqlite.connect(DB_PATH) as db:
         row = await _vr_fetch(db, name)
@@ -7044,7 +7077,7 @@ class LicenseStatusResponse(BaseModel):
 
 
 @app.get("/api/license/dna")
-async def license_get_dna():
+async def license_get_dna(user: dict = Depends(get_current_user)):
     """
     Return BOTH identities the operator may need to ship to HQ:
       * host (h1) BASE identity  — card-independent, always present.
@@ -7083,7 +7116,7 @@ async def license_get_dna():
 
 
 @app.get("/api/license/dna.txt")
-async def license_get_dna_txt():
+async def license_get_dna_txt(user: dict = Depends(get_current_user)):
     """Plain-text license-request blob (email to HQ)."""
     from fastapi.responses import PlainTextResponse
     host_info = fpga.device_host_dna_info()
@@ -7134,7 +7167,7 @@ async def license_get_dna_txt():
 
 
 @app.get("/api/license/status", response_model=LicenseStatusResponse)
-async def license_get_status():
+async def license_get_status(user: dict = Depends(get_current_user)):
     """
     Comprehensive licensing snapshot.  When a card is present the kernel
     (fpga.query_license) answers per-feature; cardless, the host-side
@@ -7342,7 +7375,7 @@ async def license_refresh(user: dict = Depends(get_current_user)):
 
 
 @app.get("/api/license/audit")
-async def license_get_audit(limit: int = 200):
+async def license_get_audit(limit: int = 200, user: dict = Depends(get_current_user)):
     """Return the last N audit-log entries (newest first)."""
     if not AUDIT_LOG.exists():
         return {"entries": [], "log_path": str(AUDIT_LOG)}
@@ -7398,7 +7431,7 @@ async def license_delete_file(kind: str, name: str,
 
 
 @app.get("/api/engines")
-async def engines_list():
+async def engines_list(user: dict = Depends(get_current_user)):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("SELECT * FROM engine_state")
@@ -7420,7 +7453,7 @@ async def engines_list():
 
 
 @app.get("/api/engines/emulator")
-async def engines_emulator():
+async def engines_emulator(user: dict = Depends(get_current_user)):
     """Software FPGA DPI offload emulator status (REWORK_CONTRACT §7).
 
     Surfaces the emulated AC (dpi_l7) / DFA (dpi_regex) offload engines so the
@@ -7455,7 +7488,7 @@ async def engines_emulator():
 # No license gating (per contract): status/score/update are always reachable.
 # ---------------------------------------------------------------------------
 @app.get("/api/ml/status")
-async def ml_status():
+async def ml_status(user: dict = Depends(get_current_user)):
     """Inline ML engine status (REWORK_CONTRACT §8).
 
     Reports kind, version, features_version, loaded, and verdict thresholds.
@@ -7583,7 +7616,7 @@ async def ml_update(payload: dict, user: dict = Depends(get_current_user)):
 # running (default in-proc/file-ring Channel). No license gating (per §4).
 # ---------------------------------------------------------------------------
 @app.get("/api/mpdp/status")
-async def mpdp_status():
+async def mpdp_status(user: dict = Depends(get_current_user)):
     """MP<->DP channel health (REWORK_CONTRACT §9).
 
     Reports transport, connected, sent/recv counts and last_seq. Drains any
@@ -7702,7 +7735,7 @@ async def mpdp_push(payload: dict, user: dict = Depends(get_current_user)):
 
 
 @app.get("/api/mpdp/telemetry")
-async def mpdp_telemetry():
+async def mpdp_telemetry(user: dict = Depends(get_current_user)):
     """Last parsed DP->MP EngineTelemetry / FlowEvent messages (§9).
 
     Drains the channel first, then returns the bounded telemetry ring split by
@@ -7762,7 +7795,7 @@ async def engine_disable(name: str, user: dict = Depends(get_current_user)):
 
 
 @app.get("/api/engines/{name}/stats")
-async def engine_stats(name: str):
+async def engine_stats(name: str, user: dict = Depends(get_current_user)):
     if name not in ENGINE_NAMES:
         raise HTTPException(status_code=404, detail="Engine not found")
     eid = ENGINE_NAMES.index(name)
@@ -7779,7 +7812,7 @@ async def engine_stats(name: str):
 
 
 @app.get("/api/engines/dpi/patterns")
-async def dpi_patterns_list():
+async def dpi_patterns_list(user: dict = Depends(get_current_user)):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("SELECT * FROM dpi_patterns ORDER BY id")
@@ -7799,7 +7832,7 @@ async def dpi_patterns_add(pat: DPIPattern, user: dict = Depends(get_current_use
 
 
 @app.get("/api/engines/url/categories")
-async def url_categories():
+async def url_categories(user: dict = Depends(get_current_user)):
     categories = [
         "malware", "phishing", "adult", "gambling", "social_media",
         "streaming", "vpn_proxy", "cryptomining", "ads", "custom",
@@ -7821,7 +7854,7 @@ async def url_blocklist_add(entry: URLBlockEntry, user: dict = Depends(get_curre
 # -- Security plugins (Objects > Security Profiles) ------------------------
 
 @app.get("/api/plugins")
-async def plugins_list():
+async def plugins_list(user: dict = Depends(get_current_user)):
     """Security plugins with live enable-state + DLP rule count for the panel."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -7855,7 +7888,7 @@ async def plugins_list():
 # Signature Database + host detection engines (post-pivot software stack).
 # ---------------------------------------------------------------------------
 @app.get("/api/sigdb/status")
-async def sigdb_status():
+async def sigdb_status(user: dict = Depends(get_current_user)):
     """Signature Database: version, counts by type/severity, recent updates."""
     try:
         from ffn_sigdb import SignatureDB
@@ -7894,7 +7927,7 @@ async def sigdb_update(user: dict = Depends(get_current_user)):
 
 
 @app.get("/api/crucible/status")
-async def crucible_status():
+async def crucible_status(user: dict = Depends(get_current_user)):
     """Live state of the Crucible unknown-object pipeline.
 
     Sourced from the same sqlite tables the data plane writes to, so the
@@ -8040,7 +8073,7 @@ async def crucible_status():
 
 
 @app.get("/api/detection/engines")
-async def detection_engines():
+async def detection_engines(user: dict = Depends(get_current_user)):
     """Live status of the host detection engines (sig DB, AV, anti-malware,
     inline IPS, cloud sandbox) -- the same engines the data plane runs."""
     return {"engines": _detection_live()}
@@ -8117,7 +8150,7 @@ async def detection_scan(body: dict, user: dict = Depends(get_current_user)):
 
 
 @app.get("/api/system/cpu-planes")
-async def cpu_planes_status():
+async def cpu_planes_status(user: dict = Depends(get_current_user)):
     """CPU proc-splitting: mgmt / ctrl / data plane core assignment, isolation
     (isolcpus / nohz_full), and scheduling capabilities."""
     try:
@@ -8129,7 +8162,7 @@ async def cpu_planes_status():
 
 
 @app.get("/api/engines/dlp/rules")
-async def dlp_rules_list():
+async def dlp_rules_list(user: dict = Depends(get_current_user)):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT * FROM dlp_rules ORDER BY id")
@@ -8175,7 +8208,7 @@ async def dlp_rules_delete(rule_id: int, user: dict = Depends(get_current_user))
 
 
 @app.get("/api/vpn/ipsec/tunnels")
-async def vpn_ipsec_list():
+async def vpn_ipsec_list(user: dict = Depends(get_current_user)):
     # Read from database (user-configured tunnels)
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -8210,7 +8243,7 @@ async def vpn_ipsec_add(tunnel: IPSecTunnel, user: dict = Depends(get_current_us
 
 
 @app.get("/api/vpn/zerotier/peers")
-async def vpn_zerotier_peers():
+async def vpn_zerotier_peers(user: dict = Depends(get_current_user)):
     """Try to read from zerotier-cli, otherwise return empty."""
     try:
         out = subprocess.check_output(
@@ -8232,7 +8265,7 @@ async def vpn_zerotier_peers():
 
 
 @app.get("/api/vpn/zerotier/networks")
-async def vpn_zerotier_networks():
+async def vpn_zerotier_networks(user: dict = Depends(get_current_user)):
     """Try to read from zerotier-cli, otherwise return empty."""
     try:
         out = subprocess.check_output(
@@ -8333,7 +8366,7 @@ async def ml_retrain(req: RetrainRequest = None, user: dict = Depends(get_curren
 
 
 @app.get("/api/system/copp")
-async def system_copp():
+async def system_copp(user: dict = Depends(get_current_user)):
     """CoPP status — per-class rate limits and drop counters."""
     classes = [
         {"id": 0, "name": "CRITICAL", "protocols": "BGP, OSPF, BFD",
@@ -8376,7 +8409,7 @@ async def system_copp():
 
 
 @app.get("/api/system/fpga")
-async def system_fpga():
+async def system_fpga(user: dict = Depends(get_current_user)):
     """FPGA detailed status."""
     if not fpga.sim_mode:
         return {
@@ -8511,7 +8544,7 @@ def _hugepage_snapshot() -> dict:
 
 
 @app.get("/api/dataplane/status")
-async def dataplane_status():
+async def dataplane_status(user: dict = Depends(get_current_user)):
     """Where packets are actually forwarded on this box.
 
     THREE dataplanes can exist, and this endpoint used to describe only two of
@@ -9167,7 +9200,7 @@ async def config_revert(user: dict = Depends(get_current_user)):
 
 
 @app.get("/api/config/lock")
-async def config_lock_status():
+async def config_lock_status(user: dict = Depends(get_current_user)):
     return config_mgr.lock_status()
 
 
@@ -10180,7 +10213,7 @@ def _dns_proxy_stats() -> dict:
 
 
 @app.get("/api/network/dns-proxy")
-async def dns_proxy_get():
+async def dns_proxy_get(user: dict = Depends(get_current_user)):
     return {"config": _read_dns_proxy(), "stats": _dns_proxy_stats()}
 
 
@@ -11962,7 +11995,7 @@ def _conntrack_entries(limit: int = 50, vsys_id: Optional[int] = None):
 
 
 @app.get("/api/logs/security")
-async def logs_security(limit: int = 50, offset: int = 0):
+async def logs_security(limit: int = 50, offset: int = 0, user: dict = Depends(get_current_user)):
     """
     Security events — when the FPGA dataplane is present, this reads from the
     hardware's threat/IDS log buffer. Otherwise surfaces kernel audit log and
@@ -11990,7 +12023,7 @@ async def logs_security(limit: int = 50, offset: int = 0):
 
 
 @app.get("/api/logs/traffic")
-async def logs_traffic(limit: int = 50, offset: int = 0, vsys: Optional[str] = None):
+async def logs_traffic(limit: int = 50, offset: int = 0, vsys: Optional[str] = None, user: dict = Depends(get_current_user)):
     """Real network flows via conntrack/ss. Real FPGA traffic log when present.
 
     `vsys` (name 'vsys2' or numeric id '2') scopes the flow list to that vsys's
@@ -12010,7 +12043,7 @@ async def logs_traffic(limit: int = 50, offset: int = 0, vsys: Optional[str] = N
 
 
 @app.get("/api/logs/system")
-async def logs_system(limit: int = 50, offset: int = 0):
+async def logs_system(limit: int = 50, offset: int = 0, user: dict = Depends(get_current_user)):
     """Real system journal entries."""
     entries = _journal_entries(limit=limit + offset)
     return {"logs": entries[offset:offset + limit],
@@ -12019,7 +12052,7 @@ async def logs_system(limit: int = 50, offset: int = 0):
 
 
 @app.get("/api/monitor/sessions")
-async def monitor_sessions(limit: int = 100, vsys: Optional[str] = None):
+async def monitor_sessions(limit: int = 100, vsys: Optional[str] = None, user: dict = Depends(get_current_user)):
     """
     Live session / connection browser. Prefers FPGA session table via
     controld, falls back to psutil net_connections.
