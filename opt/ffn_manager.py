@@ -30,6 +30,8 @@ import socket
 import sys
 import uuid
 import xml.etree.ElementTree as ET
+from defusedxml import ElementTree as SafeET
+from defusedxml.common import DefusedXmlException
 from xml.dom import minidom
 import psutil
 import uvicorn
@@ -226,6 +228,35 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("ffn-manager")
+
+
+def _public_error(exc):
+    """Return a stable API error without leaking paths, commands or credentials."""
+    incident = uuid.uuid4().hex
+    # Exception text can contain passwords and subprocess arguments. Log only
+    # its type and a correlation ID; never send the exception itself to clients.
+    logger.error("Operation failed (%s), incident %s", type(exc).__name__, incident)
+    return "Operation failed; incident " + incident
+
+
+def _store_path(directory: Path, filename: str) -> Path:
+    """Confine a plain filename to its store, including existing symlinks."""
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,199}", filename):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    root = directory.resolve()
+    target = root / filename
+    if target.is_symlink():
+        raise HTTPException(status_code=400, detail="Symlink files are not allowed")
+    resolved = target.resolve()
+    if os.path.commonpath([str(root), str(resolved)]) != str(root):
+        raise HTTPException(status_code=400, detail="File is outside its store")
+    return resolved
+
+
+def _snapshot_name(name: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", name):
+        raise HTTPException(status_code=400, detail="Snapshot name must contain 1-128 letters, digits, underscores or hyphens")
+    return name
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -1444,7 +1475,7 @@ class ConfigManager:
     # -- XML parsing --
 
     def _load(self, path: Path) -> ET.Element:
-        tree = ET.parse(str(path))
+        tree = SafeET.parse(str(path), forbid_dtd=True)
         return tree.getroot()
 
     def _save(self, root: ET.Element, path: Path):
@@ -1590,9 +1621,11 @@ class ConfigManager:
                 m.text = str(v)
         elif isinstance(value_or_xml, str) and value_or_xml.lstrip().startswith("<"):
             try:
-                frag = ET.fromstring(value_or_xml)
-            except ET.ParseError as exc:
-                return {"status": "error", "message": f"invalid XML: {exc}"}
+                if len(value_or_xml) > 1024 * 1024:
+                    return {"status": "error", "message": "XML fragment exceeds 1 MiB"}
+                frag = SafeET.fromstring(value_or_xml, forbid_dtd=True)
+            except (ET.ParseError, DefusedXmlException):
+                return {"status": "error", "message": "Invalid XML; DTDs and entities are not allowed"}
             existing = self._find_child(parent, leaf_step)
             if existing is not None:
                 parent.remove(existing)
@@ -1869,7 +1902,7 @@ class ConfigManager:
             xml_bytes = self.history.read_xml(int(version_or_alias))
             if xml_bytes is None:
                 return None
-            return self._collect_paths(ET.fromstring(xml_bytes))
+            return self._collect_paths(SafeET.fromstring(xml_bytes, forbid_dtd=True))
 
         old_paths = _paths_for(v_old)
         new_paths = _paths_for(v_new)
@@ -1898,9 +1931,9 @@ class ConfigManager:
         return {"status": "reverted", "user": user, "timestamp": datetime.utcnow().isoformat()}
 
     def snapshot_save(self, name: str, description: str = "") -> dict:
-        safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
-        path = SNAPSHOT_DIR / f"{safe_name}.xml"
-        meta_path = SNAPSHOT_DIR / f"{safe_name}.meta.json"
+        safe_name = _snapshot_name(name)
+        path = _store_path(SNAPSHOT_DIR, f"{safe_name}.xml")
+        meta_path = _store_path(SNAPSHOT_DIR, f"{safe_name}.meta.json")
         shutil.copy2(RUNNING_CONFIG, path)
         meta_path.write_text(json.dumps({
             "name": safe_name,
@@ -1921,8 +1954,8 @@ class ConfigManager:
         return out
 
     def snapshot_restore(self, name: str, user: str) -> dict:
-        safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
-        path = SNAPSHOT_DIR / f"{safe_name}.xml"
+        safe_name = _snapshot_name(name)
+        path = _store_path(SNAPSHOT_DIR, f"{safe_name}.xml")
         if not path.exists():
             return {"status": "error", "message": f"Snapshot '{name}' not found"}
         # Auto-snapshot current running before restore
@@ -1932,9 +1965,9 @@ class ConfigManager:
         return {"status": "restored-to-candidate", "name": safe_name, "message": "Commit to activate"}
 
     def snapshot_delete(self, name: str) -> dict:
-        safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
-        path = SNAPSHOT_DIR / f"{safe_name}.xml"
-        meta = SNAPSHOT_DIR / f"{safe_name}.meta.json"
+        safe_name = _snapshot_name(name)
+        path = _store_path(SNAPSHOT_DIR, f"{safe_name}.xml")
+        meta = _store_path(SNAPSHOT_DIR, f"{safe_name}.meta.json")
         if path.exists(): path.unlink()
         if meta.exists(): meta.unlink()
         return {"status": "deleted", "name": safe_name}
@@ -2081,8 +2114,8 @@ def _detection_live() -> dict:
         finally:
             sdb.close()
     except Exception as e:
-        live["sigdb"] = {"enabled": False, "error": str(e)[:160]}
-        live["antivirus"] = {"enabled": False, "error": str(e)[:160]}
+        live["sigdb"] = {"enabled": False, "error": _public_error(e)[:160]}
+        live["antivirus"] = {"enabled": False, "error": _public_error(e)[:160]}
     # --- Threat DB -> inline IPS + Anti-Malware + Cloud sandbox ---
     try:
         from ffn_threatdb import ThreatDB
@@ -2121,9 +2154,9 @@ def _detection_live() -> dict:
             except Exception:
                 pass
     except Exception as e:
-        live.setdefault("inline_ips", {"enabled": False, "error": str(e)[:160]})
-        live.setdefault("antimalware", {"enabled": False, "error": str(e)[:160]})
-        live.setdefault("cloud_det", {"enabled": False, "error": str(e)[:160]})
+        live.setdefault("inline_ips", {"enabled": False, "error": _public_error(e)[:160]})
+        live.setdefault("antimalware", {"enabled": False, "error": _public_error(e)[:160]})
+        live.setdefault("cloud_det", {"enabled": False, "error": _public_error(e)[:160]})
     return live
 
 
@@ -2948,14 +2981,14 @@ class _MpdpChannel:
             try:
                 raw = self.chan.recv()
             except Exception as exc:
-                self.last_error = str(exc)
+                self.last_error = _public_error(exc)
                 break
             if raw is None:
                 break
             try:
                 msg = self._wire.parse(raw)
             except Exception as exc:
-                self.last_error = str(exc)
+                self.last_error = _public_error(exc)
                 continue
             self.received += 1
             got += 1
@@ -3164,7 +3197,7 @@ def _bmfw_regen_reload() -> tuple:
             pass
         return True, "reloaded"
     except Exception as e:
-        return False, str(e)[:200]
+        return False, _public_error(e)[:200]
 
 
 def _engine_backend_view(eid: int, name: str, db_en: int, live: dict) -> dict:
@@ -3308,7 +3341,7 @@ async def _cli_auth_conn(reader, writer):
         await writer.drain()
     except Exception as e:
         try:
-            writer.write((json.dumps({"error": str(e)}) + _CLI_NL).encode())
+            writer.write((json.dumps({"error": _public_error(e)}) + _CLI_NL).encode())
             await writer.drain()
         except Exception:
             pass
@@ -3330,7 +3363,7 @@ async def _cli_auth_start():
         app.state._cli_auth_srv = srv
         print("[cli-auth] peercred socket ready at " + CLI_AUTH_SOCK)
     except Exception as e:
-        print("[cli-auth] not started: " + str(e))
+        print("[cli-auth] not started: " + _public_error(e))
 
 
 @app.on_event("startup")
@@ -3581,7 +3614,7 @@ async def system_fips_selftest(user: dict = Depends(get_current_user)):
     try:
         p = subprocess.run([FIPS_PY, FIPS_SELFTEST_BIN], capture_output=True, text=True, timeout=90)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"self-test run failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"self-test run failed: {_public_error(exc)}")
     out = _fips_status()
     out["exit_code"] = p.returncode
     return out
@@ -4348,7 +4381,7 @@ async def dos_protection_set(cfg: DosConfig, user: dict = Depends(get_current_us
         with open(path) as f:
             d = json.load(f)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"cannot read bmfw.json: {e}")
+        raise HTTPException(status_code=500, detail=f"cannot read bmfw.json: {_public_error(e)}")
     cur = d.get("dos") or {}
     upd = {k: v for k, v in cfg.dict(exclude_unset=True).items() if v is not None}
     cur.update(upd)
@@ -4364,7 +4397,7 @@ async def dos_protection_set(cfg: DosConfig, user: dict = Depends(get_current_us
         with open(path, "w") as f:
             json.dump(d, f, indent=2)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"cannot write bmfw.json: {e}")
+        raise HTTPException(status_code=500, detail=f"cannot write bmfw.json: {_public_error(e)}")
     ok, detail = _bmfw_regen_reload()
     if not ok:
         raise HTTPException(status_code=500, detail=f"config saved but reload failed: {detail}")
@@ -4396,7 +4429,7 @@ def _hw_inventory(refresh: bool = False) -> dict:
         import ffn_hwdetect
         data = ffn_hwdetect.detect()
     except Exception as e:
-        data = {"error": str(e)[:200]}
+        data = {"error": _public_error(e)[:200]}
     _HW_CACHE["t"] = now
     _HW_CACHE["data"] = data
     return data
@@ -4499,7 +4532,7 @@ class BcmPortLoopback(BaseModel):
 
 
 def _bcm_unavailable(exc):
-    return {"ok": False, "error": "bcm client unavailable", "detail": str(exc),
+    return {"ok": False, "error": "bcm client unavailable", "detail": _public_error(exc),
             "hint": "ffn_bcm_client.py must be importable by the manager "
                     "(deploy it beside ffn_manager.py or into /opt/ffn-ngfw)"}
 
@@ -4678,7 +4711,7 @@ async def system_cert_csr(req: CsrRequest, user: dict = Depends(get_current_user
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)[:200])
+        raise HTTPException(status_code=500, detail=_public_error(e)[:200])
 
 
 # ==========================================================================
@@ -4840,7 +4873,7 @@ async def ha_failover(user: dict = Depends(get_current_user)):
         with open(HA_FAILOVER_FLAG, "w") as f:
             f.write("suspend\n")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"cannot set failover flag: {e}")
+        raise HTTPException(status_code=500, detail=f"cannot set failover flag: {_public_error(e)}")
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             await audit(db, user["username"], "ha_failover", "manual suspend")
@@ -4857,7 +4890,7 @@ async def ha_resume(user: dict = Depends(get_current_user)):
         if os.path.exists(HA_FAILOVER_FLAG):
             os.remove(HA_FAILOVER_FLAG)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"cannot clear failover flag: {e}")
+        raise HTTPException(status_code=500, detail=f"cannot clear failover flag: {_public_error(e)}")
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             await audit(db, user["username"], "ha_resume", "manual resume")
@@ -5038,9 +5071,9 @@ async def _detect_offload_dp(max_age: float = 15.0) -> dict:
             inv = await _bcm_client().sys_inventory()
         except ImportError as exc:
             inv = {"ok": False, "error": "bcm client unavailable",
-                   "detail": str(exc)}
+                   "detail": _public_error(exc)}
         except Exception as exc:
-            inv = {"ok": False, "error": "inventory failed", "detail": str(exc)}
+            inv = {"ok": False, "error": "inventory failed", "detail": _public_error(exc)}
 
         if not inv.get("devices"):
             info["note"] = ("CP is answering but returned no inventory: %s"
@@ -5093,7 +5126,7 @@ async def _detect_offload_dp(max_age: float = 15.0) -> dict:
                 try:
                     st = await _bcm_client().dp_status()
                 except Exception as exc:
-                    st = {"error": str(exc)}
+                    st = {"error": _public_error(exc)}
                 if st.get("summary"):
                     mbox = st.get("mailbox") or {}
                     info["dp"]["liveness"] = st["summary"]
@@ -5158,7 +5191,7 @@ def _payload_cli(args, timeout=120):
                     text=True, timeout=timeout)
         return {"rc": r.returncode, "out": r.stdout, "err": r.stderr}
     except Exception as e:
-        return {"rc": -1, "out": "", "err": str(e)}
+        return {"rc": -1, "out": "", "err": _public_error(e)}
 
 
 @app.get("/api/system/updates")
@@ -5276,7 +5309,7 @@ def _vendor_cli(args, timeout=120):
                     text=True, timeout=timeout)
         return {"rc": r.returncode, "out": r.stdout, "err": r.stderr}
     except Exception as e:
-        return {"rc": -1, "out": "", "err": str(e)}
+        return {"rc": -1, "out": "", "err": _public_error(e)}
 
 
 def _removable_media():
@@ -5827,7 +5860,7 @@ async def network_add_route(route: StaticRoute, user: dict = Depends(get_current
     except FileNotFoundError:
         pass  # Windows/non-Linux: no-op
     except subprocess.CalledProcessError as exc:
-        raise HTTPException(status_code=400, detail=f"Route add failed: {exc}")
+        raise HTTPException(status_code=400, detail=f"Route add failed: {_public_error(exc)}")
     async with aiosqlite.connect(DB_PATH) as db:
         await audit(db, user["username"], "add_route", f"{route.destination} via {route.next_hop}")
     return {"status": "added"}
@@ -5840,7 +5873,7 @@ async def network_delete_route(destination: str = Query(...), user: dict = Depen
     except FileNotFoundError:
         pass
     except subprocess.CalledProcessError as exc:
-        raise HTTPException(status_code=400, detail=f"Route delete failed: {exc}")
+        raise HTTPException(status_code=400, detail=f"Route delete failed: {_public_error(exc)}")
     async with aiosqlite.connect(DB_PATH) as db:
         await audit(db, user["username"], "delete_route", destination)
     return {"status": "deleted"}
@@ -5881,7 +5914,7 @@ async def network_interface_update(iface_name: str, cfg: InterfaceConfig, user: 
     except FileNotFoundError:
         pass
     except subprocess.CalledProcessError as exc:
-        raise HTTPException(status_code=400, detail=f"Config failed: {exc}")
+        raise HTTPException(status_code=400, detail=f"Config failed: {_public_error(exc)}")
     async with aiosqlite.connect(DB_PATH) as db:
         await audit(db, user["username"], "update_interface", f"{iface_name}: {', '.join(actions)}")
     return {"status": "updated", "interface": iface_name, "applied": actions}
@@ -5917,7 +5950,25 @@ def _run_net_cmd(args, tag: str, timeout: int = 5):
     error; real command failures surface their non-zero rc. Shared by the
     `ip`/`sysctl` VRF applier and the `vtysh` FRR applier (contract §6).
     """
-    cmd = [str(a) for a in args]
+    # These helpers are not a general command runner. Validate every token
+    # before invocation, including commands interpreted by vtysh itself.
+    if not args or args[0] not in ("ip", "sysctl", "vtysh"):
+        raise HTTPException(status_code=400, detail="Unsupported network command")
+    cmd = [args[0]]
+    for index, value in enumerate(args[1:], 1):
+        arg = str(value)
+        if args[0] == "vtysh":
+            valid = arg == "-c" if index % 2 else re.fullmatch(r"[A-Za-z][A-Za-z0-9_.:/ -]{0,1023}", arg)
+        elif args[0] == "sysctl":
+            valid = arg == "-w" if index == 1 else arg in (
+                "net.ipv4.tcp_l3mdev_accept=1", "net.ipv4.udp_l3mdev_accept=1")
+        else:
+            valid = arg == "-j" or re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,254}", arg)
+        if not valid:
+            raise HTTPException(status_code=400, detail="Invalid network command argument")
+        cmd.append(arg)
+    if args[0] == "vtysh" and len(cmd) % 2 != 1:
+        raise HTTPException(status_code=400, detail="Missing routing command")
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         out = ((p.stdout or "") + (p.stderr or "")).strip()
@@ -5933,7 +5984,7 @@ def _run_net_cmd(args, tag: str, timeout: int = 5):
         return 124, "timeout"
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("%s error %s: %s", tag, exc, " ".join(cmd))
-        return 1, str(exc)
+        return 1, _public_error(exc)
 
 
 def _run_ip(args, timeout: int = 5):
@@ -6911,10 +6962,9 @@ def _lic_audit(action: str, user: str, **kw) -> None:
 
 def _lic_safe_filename(name: str) -> str:
     """Reject anything that isn't a plain filename (no slashes, no ..)."""
-    base = os.path.basename(name)
-    if not base or base.startswith(".") or not _LIC_SAFE_NAME.match(base):
-        raise HTTPException(status_code=400, detail=f"unsafe filename: {name!r}")
-    return base
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,199}", name):
+        raise HTTPException(status_code=400, detail="Invalid license filename")
+    return name
 
 
 def _lic_ensure_dirs():
@@ -6957,7 +7007,7 @@ async def _lic_run_verifier() -> dict:
     except OSError as exc:
         return {
             "ok": False, "exit": -1, "stdout": "",
-            "stderr": f"failed to spawn verifier: {exc}",
+            "stderr": f"failed to spawn verifier: {_public_error(exc)}",
             "tokens_accepted": 0, "tokens_total": 0,
         }
 
@@ -7263,8 +7313,8 @@ async def license_upload(file: UploadFile = File(...),
     if data[:8] != b"FFN-LIC1":
         raise HTTPException(status_code=400, detail="bad magic — not a FFN-LIC1 token")
 
-    dest = LIC_DIR / name
-    tmp  = LIC_DIR / (name + ".uploading")
+    dest = _store_path(LIC_DIR, name)
+    tmp = _store_path(LIC_DIR, name + ".uploading")
     tmp.write_bytes(data)
     os.replace(tmp, dest)
 
@@ -7296,8 +7346,8 @@ async def license_upload_vendor(file: UploadFile = File(...),
     if data[:8] != b"FFN-VND1":
         raise HTTPException(status_code=400, detail="bad magic — not a FFN-VND1 cert")
 
-    dest = VENDOR_DIR / name
-    tmp  = VENDOR_DIR / (name + ".uploading")
+    dest = _store_path(VENDOR_DIR, name)
+    tmp = _store_path(VENDOR_DIR, name + ".uploading")
     tmp.write_bytes(data)
     os.replace(tmp, dest)
 
@@ -7333,14 +7383,14 @@ async def license_upload_bundle(file: UploadFile = File(...),
             members = [(m.name, tf.extractfile(m).read())
                        for m in tf.getmembers() if m.isfile()]
         except (tarfile.TarError, OSError) as e:
-            raise HTTPException(status_code=400, detail=f"bad tarball: {e}")
+            raise HTTPException(status_code=400, detail=f"bad tarball: {_public_error(e)}")
     elif name.endswith(".zip"):
         try:
             zf = zipfile.ZipFile(io.BytesIO(data), "r")
             members = [(m.filename, zf.read(m))
                        for m in zf.infolist() if not m.is_dir()]
         except zipfile.BadZipFile as e:
-            raise HTTPException(status_code=400, detail=f"bad zip: {e}")
+            raise HTTPException(status_code=400, detail=f"bad zip: {_public_error(e)}")
     else:
         raise HTTPException(status_code=400,
             detail="bundle must be .tar, .tar.gz, .tgz, or .zip")
@@ -7355,13 +7405,13 @@ async def license_upload_bundle(file: UploadFile = File(...),
         if base.endswith(".lic"):
             if (LIC_TOKEN_MIN <= len(member_data) <= LIC_TOKEN_MAX
                     and member_data[:8] == b"FFN-LIC1"):
-                (LIC_DIR / base).write_bytes(member_data)
+                _store_path(LIC_DIR, base).write_bytes(member_data)
                 accepted.append({"name": base, "kind": "license"})
             else:
                 rejected.append({"name": base, "reason": "bad magic or size"})
         elif base.endswith(".vcert"):
             if len(member_data) == VND_CERT_SIZE and member_data[:8] == b"FFN-VND1":
-                (VENDOR_DIR / base).write_bytes(member_data)
+                _store_path(VENDOR_DIR, base).write_bytes(member_data)
                 accepted.append({"name": base, "kind": "vendor"})
             else:
                 rejected.append({"name": base, "reason": "bad magic or size"})
@@ -7414,7 +7464,7 @@ async def license_get_audit(limit: int = 200, user: dict = Depends(get_current_u
                 except json.JSONDecodeError:
                     continue
     except OSError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=_public_error(e))
     entries.reverse()
     return {"entries": entries[:limit], "log_path": str(AUDIT_LOG)}
 
@@ -7434,7 +7484,7 @@ async def license_delete_file(kind: str, name: str,
     if not safe.endswith(suffix):
         raise HTTPException(status_code=400,
             detail=f"filename must end with {suffix}")
-    target = d / safe
+    target = _store_path(d, safe)
     if not target.exists():
         raise HTTPException(status_code=404, detail="not found")
     target.unlink()
@@ -7503,7 +7553,7 @@ async def engines_emulator(user: dict = Depends(get_current_user)):
                           for (pat, path) in emu.dfa_paths()],
         }
     except Exception as exc:
-        return {"available": False, "hw_present": fpga_present(), "error": str(exc)}
+        return {"available": False, "hw_present": fpga_present(), "error": _public_error(exc)}
 
 
 # ---------------------------------------------------------------------------
@@ -7923,7 +7973,7 @@ async def sigdb_status(user: dict = Depends(get_current_user)):
             sdb.close()
         return {"available": True, **st, "recent_updates": ups}
     except Exception as e:
-        return {"available": False, "error": str(e)}
+        return {"available": False, "error": _public_error(e)}
 
 
 @app.post("/api/sigdb/update")
@@ -7940,7 +7990,7 @@ async def sigdb_update(user: dict = Depends(get_current_user)):
         finally:
             sdb.close()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=_public_error(e))
     # Realtime fan-out: push the content-package bump to a running DP (§9).
     wire_pushed = _mpdp_emit_threat_intel(v)
     async with aiosqlite.connect(DB_PATH) as db:
@@ -7994,7 +8044,7 @@ async def crucible_status(user: dict = Depends(get_current_user)):
         out["max_fidelity"] = max(
             [st.fidelity for st in eng.statuses() if st.available], default=0)
     except Exception as e:
-        out["chambers_error"] = str(e)[:160]
+        out["chambers_error"] = _public_error(e)[:160]
 
     if spec.startswith("relay"):
         url = spec.split(":", 1)[1] if ":" in spec else ""
@@ -8014,7 +8064,7 @@ async def crucible_status(user: dict = Depends(get_current_user)):
         from ffn_threatdb import ThreatDB
         tdb = ThreatDB()
     except Exception as e:
-        out["error"] = str(e)[:160]
+        out["error"] = _public_error(e)[:160]
         return out
     try:
         conn = tdb.conn
@@ -8086,7 +8136,7 @@ async def crucible_status(user: dict = Depends(get_current_user)):
                                else "allowed"),
                 })
     except Exception as e:
-        out["error"] = str(e)[:160]
+        out["error"] = _public_error(e)[:160]
     finally:
         try:
             tdb.close()
@@ -8142,7 +8192,7 @@ async def detection_scan(body: dict, user: dict = Depends(get_current_user)):
             except Exception:
                 pass
     except Exception as e:
-        out["inline"] = {"error": str(e)}
+        out["inline"] = {"error": _public_error(e)}
     # anti-malware fusion (hash reputation + AV + heuristics)
     try:
         from ffn_sigdb import SignatureDB, seed_baseline as seed_sigs
@@ -8168,7 +8218,7 @@ async def detection_scan(body: dict, user: dict = Depends(get_current_user)):
             except Exception:
                 pass
     except Exception as e:
-        out["antimalware"] = {"error": str(e)}
+        out["antimalware"] = {"error": _public_error(e)}
     return out
 
 
@@ -8182,7 +8232,7 @@ async def cpu_planes_status(user: dict = Depends(get_current_user)):
         cp = await asyncio.to_thread(CpuPlanes.from_system, inventory=inventory)
         return {"available": True, **cp.snapshot()}
     except Exception as e:
-        return {"available": False, "error": str(e)}
+        return {"available": False, "error": _public_error(e)}
 
 
 @app.get("/api/engines/dlp/rules")
@@ -8691,9 +8741,9 @@ async def dataplane_restart(req: DataplaneRestart, user: dict = Depends(get_curr
                         results["output"] = "PCIe function-level reset sent to Xilinx device"
                     except Exception as exc:
                         results["message"] = "PCIe reset via sysfs"
-                        results["output"] = f"Reset attempt: {exc}"
+                        results["output"] = f"Reset attempt: {_public_error(exc)}"
             except Exception as exc:
-                results["output"] = str(exc)
+                results["output"] = _public_error(exc)
 
     if req.target in ("dpdk", "dpdk-stop", "all"):
         # Detect whichever DPDK unit is actually installed on this box.
@@ -8724,7 +8774,7 @@ async def dataplane_restart(req: DataplaneRestart, user: dict = Depends(get_curr
                     + (f"\n{r.stderr.strip()}" if r.stderr.strip() else "")
                 )
             except Exception as exc:
-                results["output"] += f"\nDPDK {action} error: {exc}"
+                results["output"] += f"\nDPDK {action} error: {_public_error(exc)}"
                 # Fallback: kill whichever DPDK process is running by name
                 for name in ("dpdk-testpmd", "ffn_dpdk_fwd"):
                     try:
@@ -8796,7 +8846,7 @@ async def system_diagnostic(req: DiagnosticRequest, user: dict = Depends(get_cur
             out = f"Unknown command: {req.command}"
         return {"output": out, "command": req.command}
     except subprocess.CalledProcessError as exc:
-        return {"output": exc.output or str(exc), "command": req.command}
+        return {"output": _public_error(exc), "command": req.command}
     except FileNotFoundError:
         return {"output": f"Command '{req.command}' not found on this system", "command": req.command}
     except subprocess.TimeoutExpired:
@@ -9000,7 +9050,7 @@ def _apply_running_config():
         return None
 
     try:
-        root = ET.parse(str(RUNNING_CONFIG)).getroot()
+        root = SafeET.parse(str(RUNNING_CONFIG), forbid_dtd=True).getroot()
         sysn = find_dev_sys(root)
         if sysn is not None:
             hn = sysn.findtext("hostname")
@@ -9271,7 +9321,7 @@ async def config_apply_status(user: dict = Depends(get_current_user)):
     try:
         return json.loads(p.read_text())
     except Exception as exc:
-        return {"overall": "error", "error": str(exc)}
+        return {"overall": "error", "error": _public_error(exc)}
 
 
 def _platform_decl() -> dict:
@@ -9575,9 +9625,9 @@ def _dpd_call(method: str, *args, **kwargs) -> dict:
         return fn(*args, **kwargs) or {}
     except RuntimeError as exc:
         # controld returned ok=false — usually "ffn-dpd not running"
-        raise HTTPException(status_code=503, detail=str(exc))
+        raise HTTPException(status_code=503, detail=_public_error(exc))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"dpd proxy failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"dpd proxy failed: {_public_error(exc)}")
 
 
 @app.get("/api/dpd/status")
@@ -10020,9 +10070,9 @@ async def wireguard_status(user: dict = Depends(get_current_user)):
         out = subprocess.check_output(["wg", "show", "all", "dump"],
                                       text=True, timeout=5)
     except subprocess.CalledProcessError as exc:
-        return {"available": True, "error": exc.output or str(exc), "interfaces": []}
+        return {"available": True, "error": _public_error(exc), "interfaces": []}
     except Exception as exc:
-        return {"available": True, "error": str(exc), "interfaces": []}
+        return {"available": True, "error": _public_error(exc), "interfaces": []}
 
     # `wg show all dump` format:
     # iface private_key public_key listen_port fwmark                  (first line per iface)
@@ -10061,9 +10111,9 @@ async def tailscale_status(user: dict = Depends(get_current_user)):
         data = json.loads(out)
     except subprocess.CalledProcessError as exc:
         return {"available": True, "running": False,
-                "error": exc.output or str(exc), "peers": []}
+                "error": _public_error(exc), "peers": []}
     except Exception as exc:
-        return {"available": True, "running": False, "error": str(exc), "peers": []}
+        return {"available": True, "running": False, "error": _public_error(exc), "peers": []}
     self_node = (data.get("Self") or {})
     peers = []
     for _, p in (data.get("Peer") or {}).items():
@@ -10105,7 +10155,7 @@ async def lldp_neighbors(user: dict = Depends(get_current_user)):
                                       text=True, timeout=5)
         data = json.loads(out)
     except Exception as exc:
-        return {"available": True, "error": str(exc), "interfaces": []}
+        return {"available": True, "error": _public_error(exc), "interfaces": []}
 
     interfaces = []
     # lldpctl json0 shape: {"lldp": [{"interface": [...]}]}
@@ -10252,7 +10302,7 @@ async def dns_proxy_set(cfg: DnsProxyConfig, user: dict = Depends(get_current_us
         with open(DNS_PROXY_PATH, "w") as f:
             json.dump(cur, f, indent=2)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"cannot write dns-proxy config: {e}")
+        raise HTTPException(status_code=500, detail=f"cannot write dns-proxy config: {_public_error(e)}")
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             await audit(db, user["username"], "set_dns_proxy",
@@ -10380,7 +10430,7 @@ async def link_capabilities(user: dict = Depends(get_current_user)):
                 )
                 entry.update(_parse_ethtool(out))
             except Exception as exc:
-                entry["error"] = str(exc)
+                entry["error"] = _public_error(exc)
         # Always also fill in live link state from psutil (quick)
         try:
             st = psutil.net_if_stats().get(linux_name)
@@ -10790,7 +10840,7 @@ async def _faceplate_map(plane=None):
     except ImportError:
         reply = {"ok": False, "error": "bcm client unavailable"}
     except Exception as exc:                       # never fail the whole page
-        reply = {"ok": False, "error": str(exc)}
+        reply = {"ok": False, "error": _public_error(exc)}
 
     # Insertion order is faceplate order -- bp.faceplate_ports() returns the
     # numbered connectors in order and then the named ones. Callers iterate this
@@ -11930,10 +11980,15 @@ def _generate_log_entries(log_type: str, limit: int = 50, offset: int = 0):
 def _journal_entries(unit: Optional[str] = None, priority: Optional[str] = None,
                      limit: int = 50) -> list:
     """Read real entries from systemd journal."""
+    limit = max(1, min(int(limit), 10000))
     cmd = ["journalctl", "-n", str(limit), "-o", "json", "--no-pager"]
     if unit:
+        if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.@-]{0,255}", unit):
+            return []
         cmd += ["-u", unit]
     if priority:
+        if not re.fullmatch(r"[0-7](?:\.\.[0-7])?", priority):
+            return []
         cmd += ["-p", priority]
     try:
         out = subprocess.check_output(cmd, text=True, timeout=5)

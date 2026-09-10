@@ -200,6 +200,9 @@ jobs:
       - name: hardware API integration
         run: python tests/test_hardware_api.py
 
+      - name: management input security regressions
+        run: python tests/test_manager_security.py
+
   shell:
     name: shell syntax and shellcheck
     runs-on: ubuntu-latest
