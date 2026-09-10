@@ -38,17 +38,17 @@ to start because it could not resolve an address leaves an appliance with no
 way in at all. Binding wide and logging loudly is recoverable; failing closed on
 the management path is not.
 
-THE BUG THAT MOTIVATES THE WHOLE RESOLUTION ORDER. The live unit on the 5220
-carries `Environment=FFN_MGMT_IFACE=eno1np0`, and eno1np0 DOES NOT EXIST on that
-chassis:
+THE BUG THAT MOTIVATES THE WHOLE RESOLUTION ORDER. A unit can carry a build-host
+interface hint that DOES NOT EXIST on the deployed chassis. This illustrative
+example uses placeholder interface names and a documentation address:
 
-    # ip -br link show eno1np0
-    Device "eno1np0" does not exist.
+    # ip -br link show buildnic0
+    Device "buildnic0" does not exist.
     # cat /etc/ffn-ngfw/mgmt.conf
-    MGMT_IFACE=enp15s0
-    MGMT_IP=172.19.0.70/24
+    MGMT_IFACE=mgmt0
+    MGMT_IP=192.0.2.10/24
 
-eno1np0 is the BUILD HOST's NIC, harvested into the image. ffn_config_bridge's
+Here buildnic0 is the BUILD HOST's NIC, harvested into the image. ffn_config_bridge's
 _mgmt_ifaces() documents the same leak and was fixed for it; the systemd unit
 was not. So `--host $FFN_MGMT_IFACE` taken at face value would have bound to
 nothing and taken the appliance's management offline -- which is exactly the

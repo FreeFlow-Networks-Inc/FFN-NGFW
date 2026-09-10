@@ -45,7 +45,7 @@ no credentials:
 
 ```
 RE-VM -> MP:8443 /api/policy/rules : 200
-{"rules":[{"id":9,"name":"allow-lab-mgmt-eno1np0","src_ip":"0.0.0.0/0", ...
+{"rules":[{"id":9,"name":"example-management-rule","src_ip":"0.0.0.0/0", ...
 ```
 
 It was an omission rather than a policy: `Depends(get_current_user)` already
@@ -147,7 +147,7 @@ treat this as a configuration worth reviewing rather than a characterised hole.
 authentication is not the same as reachability:
 
 1. **Bind to the management interface** rather than `0.0.0.0`. The unit already
-   sets `FFN_MGMT_IFACE=eno1np0`; uvicorn's `--host` does not follow it.
+   sets `FFN_MGMT_IFACE` to an interface hint; uvicorn's `--host` does not follow it.
 2. **Filter 8443** to the management network. There is still no rule at all.
 
 **This is the repo, not the appliance.** `/opt/ffn-ngfw-v2/` on the MP still
