@@ -5245,7 +5245,10 @@ class UpdateServerCfg(BaseModel):
 
 @app.put("/api/system/updates/server")
 async def updates_set_server(cfg: UpdateServerCfg, user: dict = Depends(get_current_user)):
+    _require_admin(user)
     u = (cfg.url or "").strip()
+    if any(ord(c) < 32 for c in u):
+        raise HTTPException(400, "Invalid update server URL")
     if u and not u.startswith(("http://", "https://")):
         raise HTTPException(400, "url must start with http:// or https://")
     try:
@@ -5258,7 +5261,8 @@ async def updates_set_server(cfg: UpdateServerCfg, user: dict = Depends(get_curr
 
 
 @app.post("/api/system/updates/check")
-async def updates_check(insecure: bool = True, user: dict = Depends(get_current_user)):
+async def updates_check(insecure: bool = False, user: dict = Depends(get_current_user)):
+    _require_admin(user)
     url = _update_server_url()
     if not url:
         raise HTTPException(400, "no update server configured")
@@ -5271,7 +5275,7 @@ class UpdateInstall(BaseModel):
     kind: str
     apply: bool = False
     force: bool = False
-    insecure: bool = True
+    insecure: bool = False
 
 
 @app.post("/api/system/updates/install")
@@ -5281,6 +5285,7 @@ async def updates_install(req: UpdateInstall, user: dict = Depends(get_current_u
     An 'image' payload is written to the INACTIVE A/B root, never the running
     one, so a bad update is escaped by picking the other GRUB entry.
     """
+    _require_admin(user)
     if req.kind not in ("content", "software", "image"):
         raise HTTPException(400, "kind must be content, software or image")
     url = _update_server_url()
@@ -7921,6 +7926,7 @@ async def url_categories(user: dict = Depends(get_current_user)):
 
 @app.post("/api/engines/url/blocklist")
 async def url_blocklist_add(entry: URLBlockEntry, user: dict = Depends(get_current_user)):
+    _require_admin(user)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT INTO url_blocklist (url, category) VALUES (?, ?)",
@@ -8382,12 +8388,30 @@ class SetupConfig(BaseModel):
     timezone: Optional[str] = None
 
 
+@app.get("/api/system/setup")
+async def system_setup_get(user: dict = Depends(get_current_user)):
+    """Return editable candidate values; missing values are explicitly empty."""
+    base = "devices.entry[@name=localhost.localdomain].deviceconfig.system"
+    paths = {
+        "hostname": "hostname", "timezone": "timezone",
+        "dns_primary": "dns-setting.servers.primary",
+        "dns_secondary": "dns-setting.servers.secondary",
+        "ntp_server": "ntp-servers.primary-ntp-server.ntp-server-address",
+    }
+    values = {}
+    for key, suffix in paths.items():
+        node = config_mgr.get_xpath(f"{base}.{suffix}", source="candidate")
+        values[key] = (node.text or "") if node is not None else ""
+    return {"source": "candidate", "config": values}
+
+
 @app.post("/api/system/setup")
 async def system_setup(cfg: SetupConfig, user: dict = Depends(get_current_user)):
     """
     Write setup values to candidate-config.xml. Does NOT apply them to
     the system — requires an explicit commit via /api/config/commit.
     """
+    _require_admin(user)
     st = config_mgr.lock_status()
     if st["locked"] and st.get("holder") != user["username"]:
         raise HTTPException(status_code=423, detail=f"Config locked by {st['holder']}")
@@ -9777,6 +9801,7 @@ async def config_snapshots_list(user: dict = Depends(get_current_user)):
 
 @app.post("/api/config/snapshots")
 async def config_snapshot_save(req: SnapshotSave, user: dict = Depends(get_current_user)):
+    _require_admin(user)
     result = config_mgr.snapshot_save(req.name, req.description)
     async with aiosqlite.connect(DB_PATH) as db:
         await audit(db, user["username"], "snapshot_save", req.name)
@@ -9785,6 +9810,7 @@ async def config_snapshot_save(req: SnapshotSave, user: dict = Depends(get_curre
 
 @app.post("/api/config/snapshots/{name}/restore")
 async def config_snapshot_restore(name: str, user: dict = Depends(get_current_user)):
+    _require_admin(user)
     st = config_mgr.lock_status()
     if st["locked"] and st.get("holder") != user["username"]:
         raise HTTPException(status_code=423, detail=f"Config locked by {st['holder']}")
@@ -9796,6 +9822,7 @@ async def config_snapshot_restore(name: str, user: dict = Depends(get_current_us
 
 @app.delete("/api/config/snapshots/{name}")
 async def config_snapshot_delete(name: str, user: dict = Depends(get_current_user)):
+    _require_admin(user)
     result = config_mgr.snapshot_delete(name)
     async with aiosqlite.connect(DB_PATH) as db:
         await audit(db, user["username"], "snapshot_delete", name)
@@ -12275,6 +12302,9 @@ async def _extension_audit(username, action, detail):
 # Only an explicitly selected platform may register additional controls.
 from ffn_extensions import install as _install_extensions
 _install_extensions(app, get_current_user, _require_admin, _extension_audit)
+
+from ffn_patch_api import install as _install_patch_api
+_install_patch_api(app, get_current_user, _require_admin, _extension_audit, _update_server_url)
 
 
 if __name__ == "__main__":

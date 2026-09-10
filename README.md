@@ -1,5 +1,8 @@
 # FFN-NGFW
 
+Signed code updates: [Patch management](docs/patch-management.md) covers staging,
+installation, rollback, recovery, and building patch releases.
+
 A next-generation firewall for **ordinary x86-64 Linux**, with a DPDK datapath by
 default and optional hardware platform support you select at clone time.
 

@@ -59,7 +59,7 @@ PUB_PATH = os.environ.get("FFN_UPDATE_PUB", "/etc/ffn-ngfw/update.pub")
 SEED_PATH = os.environ.get("FFN_UPDATE_SEED", "/etc/ffn-ngfw/update-sign.key")
 STATE = os.environ.get("FFN_UPDATE_STATE", "/var/lib/ffn-ngfw/update-state.json")
 MANIFEST = "manifest.json"
-KINDS = ("content", "software", "image")
+KINDS = ("content", "software", "image", "patch")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -354,6 +354,9 @@ def ab_target():
 
 
 def cmd_update(a):
+    if a.kind == "patch":
+        print("Use ffn_patch.py to stage and install code patches", file=sys.stderr)
+        return 2
     key, pub = _client_keys(a)
     if not key and not pub:
         print("ERROR: no verification key (%s or %s)" % (PUB_PATH, a.key),
@@ -430,6 +433,29 @@ def cmd_update(a):
 
 
 def apply_payload(kind, local, meta):
+    if kind == 'software':
+        # Full software payloads and granular code patches share one writer lock.
+        from ffn_patch import PatchManager, PatchError, lock, read
+        manager = PatchManager()
+        try:
+            with lock(manager.state):
+                journal = read(manager.state / 'journal.json', {})
+                job = read(manager.state / 'job.json', {})
+                if journal.get('phase') not in (None, 'committed') or job.get('status') in ('queued', 'running'):
+                    raise PatchError('Finish or recover the pending patch before a full software update')
+                rc = _apply_payload(kind, local, meta)
+                if rc == 0:
+                    manager._state(installed=None, staged=None)
+                    if journal:
+                        (manager.state / 'journal.json').unlink()
+                return rc
+        except PatchError as exc:
+            print(exc.public_message, file=sys.stderr)
+            return 1
+    return _apply_payload(kind, local, meta)
+
+
+def _apply_payload(kind, local, meta):
     if kind == "content":
         print("  extracting content -> /var/lib/ffn-ngfw")
         r = subprocess.run(["tar", "xzf", local, "-C", "/var/lib/ffn-ngfw"],

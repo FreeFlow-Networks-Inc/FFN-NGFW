@@ -198,7 +198,7 @@ def page():
     pays = api_payloads()["payloads"]
 
     rows = ""
-    for kind in ("content", "software", "image"):
+    for kind in ("content", "software", "image", "patch"):
         p = next((x for x in pays if x["kind"] == kind), None)
         if not p:
             rows += ('<tr><td><b>%s</b></td><td colspan="4" class="empty">'

@@ -224,6 +224,37 @@ tbody tr.dragging{opacity:.4}
 .gap-16{gap:16px}
 .w-full{width:100%}
 .hidden{display:none!important}
+/* Navigation is keyboard accessible; groups reduce long configuration menus. */
+#sidebar .sb-item {display:block;width:100%;text-align:left;background:transparent;border:0;color:var(--text);font:inherit;cursor:pointer}
+#sidebar .sb-item.active {background:var(--card-hover);color:var(--accent)}
+.nav-search {padding:10px;position:sticky;top:0;background:var(--surface);z-index:1}
+.nav-search input {width:100%;min-width:0}
+.nav-group summary {cursor:pointer;list-style-position:inside}
+button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);outline-offset:-2px}
+.workflow-actions {display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+.nav-search input,.workflow-actions input,.workflow-actions select {padding:7px 10px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px}
+.content,.grid > * {min-width:0}
+.content > .card {margin-bottom:14px}
+.content > p {margin-bottom:14px}
+.nav-group summary {color:var(--text-dim)}
+@media (max-width:1100px) {
+  :root {--topnav-h:96px;--sidebar-w:190px}
+  .topnav {flex-wrap:wrap;align-content:center;gap:4px}
+  .topnav .brand {margin-right:8px}
+  .topnav .main-tabs {order:3;flex:0 0 100%;overflow-x:auto}
+  .topnav .main-tabs button {height:40px;padding:0 14px}
+  .content {padding:16px}
+  .grid-3,.grid-4,.grid-5,.grid-6,.grid-8 {grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media (max-width:650px) {
+  :root {--sidebar-w:150px}
+  .topnav {padding:0 8px}
+  .topnav .brand {font-size:12px}
+  .topnav .user-area {gap:4px}
+  .topnav .user-area .btn {padding:4px 6px}
+  .grid-2,.grid-3,.grid-4,.grid-5,.grid-6,.grid-8 {grid-template-columns:minmax(0,1fr)}
+  .workflow-actions input {width:100%}
+}
 </style>
 </head>
 <body>
@@ -337,28 +368,6 @@ tbody tr.dragging{opacity:.4}
     <div class="form-actions">
       <button class="btn" onclick="closeModal('modal-rule')">Cancel</button>
       <button class="btn btn-primary" onclick="saveRule()">Save</button>
-    </div>
-  </div>
-</div>
-
-<!-- NAT Rule Modal -->
-<div class="modal-overlay" id="modal-nat">
-  <div class="modal">
-    <h3>Add NAT Rule</h3>
-    <div class="form-group"><label>Type</label><select id="nat-type"><option value="snat">Source NAT</option><option value="dnat">Destination NAT</option></select></div>
-    <div class="form-row">
-      <div class="form-group"><label>Original Source</label><input type="text" id="nat-orig-src" value="0.0.0.0/0"></div>
-      <div class="form-group"><label>Original Destination</label><input type="text" id="nat-orig-dst" value="0.0.0.0/0"></div>
-    </div>
-    <div class="form-row">
-      <div class="form-group"><label>Translated Source</label><input type="text" id="nat-trans-src"></div>
-      <div class="form-group"><label>Translated Destination</label><input type="text" id="nat-trans-dst"></div>
-    </div>
-    <div class="form-group"><label>Service</label><input type="text" id="nat-service" value="any"></div>
-    <div class="form-group"><label>Description</label><input type="text" id="nat-desc"></div>
-    <div class="form-actions">
-      <button class="btn" onclick="closeModal('modal-nat')">Cancel</button>
-      <button class="btn btn-primary" onclick="saveNAT()">Save</button>
     </div>
   </div>
 </div>
@@ -591,9 +600,6 @@ const TAB_MENUS = {
     {id:'dash-throughput',label:'Throughput'},
     {id:'dash-sessions',label:'Sessions'},
     {id:'dash-ddos',label:'DDoS Heatmap'},
-    {id:'dash-system',label:'System Health'},
-    {id:'dash-hardware',label:'Hardware'},
-    {id:'dash-offload',label:'Dataplane Offload',needs:'offload_complex'},
   ],
   monitor: [
     {id:'traffic',label:'Traffic'},
@@ -610,11 +616,7 @@ const TAB_MENUS = {
   ],
   policy: [
     {id:'security',label:'Security'},
-    {id:'nat',label:'NAT'},
-    {id:'qos',label:'QoS'},
-    {id:'decryption',label:'Decryption'},
     {id:'ddos-protection',label:'DDoS Protection'},
-    {id:'sdwan',label:'SD-WAN'},
   ],
   objects: [
     {id:'addresses',label:'Addresses'},
@@ -649,7 +651,7 @@ const TAB_MENUS = {
     {id:'zt-tailscale',label:'Tailscale'},
     {id:'zt-zscaler',label:'ZScaler'},
     {section:'Traffic Shaping'},
-    {id:'qos',label:'QoS'},
+    {id:'network-qos',label:'QoS & Bandwidth'},
     {id:'lldp',label:'LLDP'},
     {section:'Network Profiles'},
     {id:'np-fp-ipsec-crypto',label:'FFN Protect IPSec Crypto'},
@@ -666,15 +668,19 @@ const TAB_MENUS = {
     {id:'sdwan-iface-profile',label:'SD-WAN Interface Profile'},
   ],
   device: [
-    {id:'setup',label:'Setup'},
+    {id:'setup',label:'General Settings'},
+    {id:'config-audit',label:'Configuration & Backups'},
+    {section:'Hardware & Runtime'},
+    {id:'dash-hardware',label:'Hardware Inventory'},
+    {id:'dash-system',label:'System Health'},
+    {id:'dash-offload',label:'Dataplane Offload',needs:'offload_complex'},
+    {id:'dataplane-engines',label:'Dataplane & Engines'},
     {id:'ha',label:'High Availability'},
-    {id:'config-audit',label:'Config Audit'},
     {id:'fips-cc',label:'FIPS-CC Mode'},
     {section:'Administrators'},
     {id:'pw-profiles',label:'Password Profiles'},
     {id:'administrators',label:'Administrators'},
     {id:'admin-roles',label:'Admin Roles'},
-    {id:'access-domain',label:'Access Domain'},
     {section:'Authentication'},
     {id:'auth-profile',label:'Authentication Profile'},
     {id:'auth-sequence',label:'Authentication Sequence'},
@@ -687,23 +693,19 @@ const TAB_MENUS = {
     {id:'device-quarantine',label:'Device Quarantine'},
     {id:'vm-info-sources',label:'VM Info Sources'},
     {section:'System'},
-    {id:'device-updates',label:'Software Updates'},
     {id:'vendor-fw',label:'Vendor Firmware',needs:'offload_complex'},
     {id:'troubleshooting',label:'Troubleshooting'},
-    {id:'dataplane-engines',label:'Dataplane & Engines'},
     {id:'virtual-systems',label:'Virtual Systems'},
     {id:'shared-gateways',label:'Shared Gateways'},
     {section:'Certificate Management'},
     {id:'certificates',label:'Certificates'},
     {id:'cert-profile',label:'Certificate Profile'},
     {id:'ocsp',label:'OCSP Responder'},
-    {id:'ssl-tls-profile',label:'SSL/TLS Service Profile'},
     {id:'scep',label:'SCEP'},
     {id:'ssl-exclusion',label:'SSL Decryption Exclusion'},
     {id:'ssh-profile',label:'SSH Service Profile'},
     {section:'Management'},
     {id:'response-pages',label:'Response Pages'},
-    {id:'log-settings',label:'Log Settings'},
     {id:'copp',label:'CoPP'},
     {section:'Server Profiles'},
     {id:'sp-snmp',label:'SNMP Trap'},
@@ -724,22 +726,13 @@ const TAB_MENUS = {
     {id:'local-groups',label:'User Groups'},
     {section:'Maintenance'},
     {id:'sched-log-export',label:'Scheduled Log Export'},
-    {id:'software',label:'Software'},
+    {id:'device-updates',label:'Software & Patches'},
     {id:'sslvpn-client',label:'SSLVPN Client'},
-    {id:'dynamic-updates',label:'Dynamic Updates'},
+    {id:'dynamic-updates',label:'Content Status'},
     {id:'plugins',label:'Plugins'},
     {id:'licenses',label:'Licenses'},
     {id:'support',label:'Support'},
-    {id:'master-key',label:'Master Key & Diagnostics'},
     {section:'Recommendations'},
-    {id:'rec-iot',label:'IoT Policy'},
-    {id:'rec-saas',label:'SaaS Policy'},
-  ],
-  acc: [
-    {id:'acc-dashboard',label:'ACC Dashboard'},
-    {id:'ml-inference',label:'ML Inference'},
-    {id:'crucible',label:'Crucible'},
-    {id:'iot-devices',label:'IoT Devices'},
   ],
 };
 
@@ -752,6 +745,23 @@ function api(path, opts = {}) {
     if (r.status === 404) return null;
     return r.json();
   }).catch(e => { if (e.message !== 'Unauthorized') console.warn('API error:', path, e); return null; });
+}
+
+async function consoleRequest(path, opts = {}) {
+  const response = await fetch(API + path, {...opts, headers:{'Content-Type':'application/json', Authorization:'Bearer '+token}});
+  if (response.status === 401) { doLogout(); throw new Error('Session expired. Sign in again.'); }
+  let data;
+  try { data = await response.json(); } catch (_) { throw new Error('The server returned an invalid response.'); }
+  if (!response.ok || data.status === 'error') throw new Error(
+    typeof data.detail === 'string' ? data.detail : data.message || `Request failed (HTTP ${response.status}).`);
+  return data;
+}
+let consoleRole = null;
+function consoleCanWrite() { return ['admin','superuser'].includes(consoleRole); }
+async function loadConsoleRole() {
+  consoleRole = null;
+  const user = await consoleRequest('/api/auth/me');
+  consoleRole = user.role;
 }
 
 function fmt(n) {
@@ -772,6 +782,16 @@ function fmtBytes(n) {
   return n+' B';
 }
 
+function liveTrafficRowHTML(log) {
+  const action = String(log.message || '').split(' ')[0] || '--';
+  const badge = ['allow','deny','drop','reset'].includes(action.toLowerCase()) ? action.toLowerCase() : 'info';
+  return `<td class="mono">${_escSP(String(log.timestamp || '').replace('T',' ').substring(0,19))}</td><td class="mono">--</td><td class="mono">--</td><td>--</td><td><span class="badge badge-${_escSP(badge)}">${_escSP(action)}</span></td><td>--</td><td>--</td>`;
+}
+function liveSystemLogHTML(log) {
+  const severity = String(log.severity || 'info');
+  const cls = ['info','warning','error','critical','debug'].includes(severity) ? severity : 'info';
+  return `<span class="ts">${_escSP(String(log.timestamp || '').replace('T',' ').substring(0,19))}</span><span class="sev sev-${cls}">[${_escSP(severity)}]</span> ${_escSP(log.message || '')}`;
+}
 function timeStr() { return new Date().toLocaleTimeString(); }
 function ts() { return new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
 
@@ -806,6 +826,7 @@ function doLogin() {
 }
 
 function doLogout() {
+  consoleRole = null;
   token='';localStorage.removeItem('ffn_token');
   if (refreshTimer) clearInterval(refreshTimer);
   if (wsConnection) wsConnection.close();
@@ -1161,15 +1182,47 @@ async function overrideLock() {
 }
 
 /* ---- Navigation ---- */
-function switchTab(tab) {
-  currentTab = tab;
-  document.querySelectorAll('#main-tabs button').forEach(b=>{
-    b.classList.toggle('active', b.dataset.tab===tab);
-  });
-  const menu = TAB_MENUS[tab];
-  renderSidebar(menu);
-  switchSubPage(menu[0].id);
+const PAGE_ALIASES = {software:'device-updates', qos:'network-qos', 'log-settings':'sp-syslog'};
+const UNAVAILABLE_PAGES = {
+  nat:'NAT policy editor', decryption:'Decryption policy', sdwan:'SD-WAN policy',
+  'policy-qos':'Per-application QoS policy', 'access-domain':'Access domains',
+  'ssl-tls-profile':'SSL/TLS service profiles', 'master-key':'Master key management',
+  'rec-iot':'IoT recommendations', 'rec-saas':'SaaS recommendations'
+};
+const lastTabPages = {};
+function renderPolicyNAT(c) { renderUnavailable(c, 'Workflow unavailable'); }
+function renderPolicyDecryption(c) { renderUnavailable(c, 'Workflow unavailable'); }
+function renderPolicySDWAN(c) { renderUnavailable(c, 'Workflow unavailable'); }
+function renderDeviceSSLProfile(c) { renderUnavailable(c, 'Workflow unavailable'); }
+function renderDeviceMasterKey(c) { renderUnavailable(c, 'Workflow unavailable'); }
+function renderDeviceAccessDomain(c) { renderUnavailable(c, 'Workflow unavailable'); }
+function renderUnavailable(c, label) {
+  c.innerHTML = `<div class="page-header"><h2>${_escSP(label)}</h2></div>
+    <div class="card"><p>This management workflow is not implemented in this build.</p>
+    <p class="text-dim">No configuration or operational status is reported here.</p></div>`;
 }
+function switchTab(tab) {
+  if (!TAB_MENUS[tab]) return;
+  const menu = TAB_MENUS[tab];
+  const previous = menu.find(it => it.id === lastTabPages[tab] && platformApplies(it.needs));
+  const first = previous || menu.find(it => it.id && platformApplies(it.needs));
+  currentTab = tab;
+  if (first) switchSubPage(first.id);
+}
+function navigationItems(query) {
+  const q = query.trim().toLowerCase();
+  if (!q) return TAB_MENUS[currentTab] || [];
+  return Object.entries(TAB_MENUS).flatMap(([tab, items]) => {
+    let section = '';
+    return items.flatMap(it => {
+      if (it.section) { section = it.section; return []; }
+      return `${tab} ${section} ${it.label}`.toLowerCase().includes(q) ?
+        [{...it, label:`${tab} / ${it.label}`}]:[];
+    });
+  });
+}
+function filterNavigation(query) { renderSidebar(navigationItems(query), query); }
+
 
 /* ===========================================================================
    PLATFORM ADAPTATION
@@ -1292,32 +1345,49 @@ function platformNotApplicable(c, label, feature) {
     </div>`;
 }
 
-function renderSidebar(items) {
+function renderSidebar(items, query = '') {
   const sb = document.getElementById('sidebar');
-  // Drop entries whose feature is not part of this hardware, then drop any
-  // section heading left with nothing under it -- an empty heading is worse
-  // than no heading, because it reads as a page that failed to load.
   const keep = items.filter(it => it.section || platformApplies(it.needs));
-  const pruned = keep.filter((it, i) => {
-    if (!it.section) return true;
-    const next = keep[i + 1];
-    return next && !next.section;
+  const pruned = keep.filter((it, i) => !it.section || (keep[i+1] && !keep[i+1].section));
+  let content = '', grouped = false;
+  pruned.forEach((it, i) => {
+    if (it.section) {
+      if (grouped) content += '</details>';
+      const end = pruned.findIndex((next, j) => j > i && next.section);
+      const active = pruned.slice(i+1, end < 0 ? undefined : end).some(next => next.id === currentSubPage);
+      content += `<details class="nav-group" ${active || query ? 'open':''}><summary class="sb-section">${_escSP(it.section)}</summary>`;
+      grouped = true;
+    } else {
+      content += `<button type="button" class="sb-item${it.id===currentSubPage?' active':''}" data-page="${_escSP(it.id)}" ${it.id===currentSubPage?'aria-current="page"':''}>${_escSP(it.label)}</button>`;
+    }
   });
-  sb.innerHTML = pruned.map(it => {
-    if (it.section) return `<div class="sb-section">${it.section}</div>`;
-    return `<div class="sb-item${it.id===currentSubPage?' active':''}" data-page="${it.id}" onclick="switchSubPage('${it.id}')">${it.label}</div>`;
-  }).join('');
+  if (grouped) content += '</details>';
+  sb.innerHTML = `<div class="nav-search"><input id="nav-search" aria-label="Find a page" placeholder="Find a page…" value="${_escSP(query)}"></div>` +
+    (content || '<p class="text-dim" style="padding:12px" role="status">No matching pages.</p>');
+  const input = document.getElementById('nav-search');
+  input.oninput = e => {
+    const caret = e.target.selectionStart;
+    filterNavigation(e.target.value);
+    const next = document.getElementById('nav-search'); next.focus(); next.setSelectionRange(caret,caret);
+  };
+  sb.onclick = e => { const item = e.target.closest('[data-page]'); if (item) switchSubPage(item.dataset.page); };
 }
 
 function switchSubPage(pageId) {
+  pageId = PAGE_ALIASES[pageId] || pageId;
+  const owner = Object.keys(TAB_MENUS).find(tab => TAB_MENUS[tab].some(it => it.id === pageId));
+  if (owner) currentTab = owner;
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer=null; }
   if (wsConnection) { wsConnection.close(); wsConnection=null; liveLogActive=false; }
+  for (const chart of Object.values(charts)) if (chart && chart.destroy) chart.destroy();
+  charts = {}; _dashChartInitialized = false;
   currentSubPage = pageId;
-  document.querySelectorAll('.sb-item').forEach(s=>{
-    s.classList.toggle('active', s.dataset.page===pageId);
-  });
+  lastTabPages[currentTab] = pageId;
+  document.querySelectorAll('#main-tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab===currentTab));
+  renderSidebar(TAB_MENUS[currentTab] || []);
   renderPage(pageId);
 }
+
 
 document.getElementById('main-tabs').addEventListener('click',e=>{
   if (e.target.dataset.tab) switchTab(e.target.dataset.tab);
@@ -1335,7 +1405,9 @@ const PAGE_NEEDS = {
 
 /* ---- Page Renderer ---- */
 function renderPage(pageId) {
+  pageId = PAGE_ALIASES[pageId] || pageId;
   const c = document.getElementById('content-area');
+  if (UNAVAILABLE_PAGES[pageId]) return renderUnavailable(c, UNAVAILABLE_PAGES[pageId]);
   if (extensionPages.has(pageId)) return extensionPages.get(pageId)(c);
   // Hiding a nav entry does not make its page unreachable -- a bookmark or an
   // internal link still lands here -- so the guard belongs at the router too,
@@ -1353,7 +1425,7 @@ function renderPage(pageId) {
     'dash-system': renderDashSystemHealth,
     'dash-hardware': renderDashHardware,
     'dash-offload': renderDPOffload,
-    'device-updates': renderUpdates,
+    'device-updates': renderPatchManagement,
     'vendor-fw': renderVendorFW,
     // Monitor tab
     'traffic': renderMonitorTraffic,
@@ -1369,7 +1441,7 @@ function renderPage(pageId) {
     // Policy tab
     'security': renderPolicySecurity,
     'nat': renderPolicyNAT,
-    'qos': renderPolicyQoS,
+    'policy-qos': renderPolicyQoS,
     'decryption': renderPolicyDecryption,
     'ddos-protection': renderPolicyDDoS,
     'sdwan': renderPolicySDWAN,
@@ -1405,7 +1477,7 @@ function renderPage(pageId) {
     'zt-tailscale': renderZTTailscale,
     'zt-zscaler': renderZTZScaler,
     // Traffic shaping
-    'qos': renderNetworkQoS,
+    'network-qos': renderNetworkQoS,
     'lldp': renderNetworkLLDP,
     // Network Profiles
     'np-fp-ipsec-crypto': renderNPFPIpsecCrypto,
@@ -1478,7 +1550,7 @@ function renderPage(pageId) {
     'rec-saas': renderDeviceRecommendations,
   };
   if (renderers[pageId]) renderers[pageId](c);
-  else c.innerHTML = `<div class="page-header"><h2>${pageId}</h2></div><div class="card"><p class="text-dim">Page content loading...</p></div>`;
+  else renderUnavailable(c, 'Page not found');
 }
 
 /* ===========================================================================
@@ -1532,16 +1604,9 @@ function renderDashOverview(c) {
       <div class="card"><h3>FPGA Resources</h3><div id="fpga-resources"></div></div>
       <div class="card"><h3>System</h3><div id="system-info" style="font-size:12px;line-height:2"></div></div>
     </div></div>
-    <div class="section"><div class="card">
-      <h3>DDoS Zone Heatmap (256 Zones)</h3>
-      <div class="heatmap" id="ddos-heatmap"></div>
-      <div style="display:flex;gap:14px;margin-top:6px;font-size:10px;color:var(--text-dim)">
-        <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#1a2332;vertical-align:middle"></span> Clear</span>
-        <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#1a4731;vertical-align:middle"></span> Low</span>
-        <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#5c4a00;vertical-align:middle"></span> Medium</span>
-        <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#8b2020;vertical-align:middle"></span> High</span>
-      </div>
-    </div></div>`;
+    <div class="workflow-actions"><button class="btn" onclick="switchSubPage('dash-ddos')">DDoS Detail</button>
+      <button class="btn" onclick="switchSubPage('dash-hardware')">Hardware Inventory</button>
+      <button class="btn" onclick="switchSubPage('interfaces')">Interface Ports</button></div>`;
   initDashboardCharts();
   refreshDashboard();
   refreshTimer = setInterval(refreshDashboard, 3000);
@@ -1600,16 +1665,19 @@ function _setPlaneWidget(prefix, info) {
 }
 
 async function refreshDashboard() {
-  const [tp, threats, sessions, ddos, status, resources, planes] = await Promise.all([
+  const marker = document.getElementById('dash-time');
+  if (!marker) return;
+  const overview = currentSubPage === 'dash-overview';
+  const [tp, threats, sessions, status, resources, planes] = await Promise.all([
     api('/api/dashboard/throughput'),
-    api('/api/dashboard/threats'),
-    api('/api/dashboard/sessions'),
-    api('/api/dashboard/ddos'),
-    api('/api/system/status'),
-    api('/api/system/resources'),
-    api('/api/system/plane-usage'),
+    overview ? api('/api/dashboard/threats') : null,
+    overview ? api('/api/dashboard/sessions') : null,
+    overview ? api('/api/system/status') : null,
+    overview ? api('/api/system/resources') : null,
+    overview ? api('/api/system/plane-usage') : null,
   ]);
-  if (!tp) return;
+  if (!marker.isConnected) return;
+  if (!tp || !Array.isArray(tp.ports)) { marker.textContent = 'Throughput unavailable'; return; }
 
   document.getElementById('dash-time').textContent = 'Updated: '+timeStr();
 
@@ -1691,9 +1759,9 @@ async function refreshDashboard() {
     _setPlaneWidget('mp', planes.management_plane);
     _setPlaneWidget('dp', planes.data_plane);
     const iso = document.getElementById('dash-dp-isolcpus');
-    if (iso) iso.textContent = planes.data_plane.isolcpus_detected
-      ? `isolcpus: ${planes.data_plane.cores.join(',')||'(none)'}`
-      : 'isolcpus: not configured — boot with isolcpus=X,Y for DPDK';
+    if (iso) iso.textContent = planes.data_plane?.isolcpus_detected
+      ? `isolcpus: ${(planes.data_plane.cores || []).join(',')||'(none)'}`
+      : 'CPU allocation: see Hardware Inventory';
   }
 
   // Resources
@@ -1726,15 +1794,6 @@ async function refreshDashboard() {
       <div>Kernel: ${status.kernel||'--'}</div>`;
   }
 
-  // DDoS heatmap
-  if (ddos && ddos.zones) {
-    let hmHTML = '';
-    ddos.zones.forEach((z,i) => {
-      const cls = ['z-clear','z-low','z-medium','z-high'][Math.min(z,3)];
-      hmHTML += `<div class="zone ${cls}" title="Zone ${i}: ${['Clear','Low','Medium','High'][Math.min(z,3)]}"></div>`;
-    });
-    document.getElementById('ddos-heatmap').innerHTML = hmHTML;
-  }
 }
 
 /* ---- Dashboard > Throughput (dedicated) ---- */
@@ -1812,6 +1871,78 @@ async function loadDDoSMap() {
 }
 
 /* ---- Device > Software Updates (FFN signed payload updater) ---- */
+let _patchData = null;
+function renderPatchManagement(c) {
+  c.innerHTML = `<div class="page-header"><h2>Patch Management</h2><button class="btn btn-sm" onclick="patchLegacyUpdates()">Full image / content updates</button></div>
+    <div id="patch-page"><p class="text-dim">Stage and review signed code updates before installation. Installing or rolling back briefly restarts management services. Configuration and dataplane firmware are outside the patch package.</p>
+    <div class="card"><div class="section-title">Update server</div><div style="display:flex;gap:8px;flex-wrap:wrap"><input id="patch-url" class="form-input" style="flex:1;min-width:260px" placeholder="https://updates.example/ffn"><button id="patch-save" class="btn btn-sm" onclick="patchSaveServer()">Save</button></div><div id="patch-notice" role="status" class="text-dim" style="margin-top:8px"></div></div>
+    <div id="patch-state">Loading patch state…</div></div>`;
+  _patchData = null;
+  loadPatches();
+  refreshTimer = setInterval(loadPatches, 2500);
+}
+function patchLegacyUpdates() {
+  clearInterval(refreshTimer);
+  renderUpdates(document.getElementById('patch-page').parentElement);
+}
+function patchStateHTML(d) {
+  const job = d.job || {}, installed = d.installed || {}, available = d.available || {}, staged = d.staged || {};
+  const busy = job.status === 'queued' || job.status === 'running';
+  const manage = d.can_manage && d.worker_available;
+  const disabled = !manage || busy || d.recovery_required;
+  const button = (label, action, off) => `<button class="btn btn-sm" ${off?'disabled':''} onclick="patchAction('${action}')">${label}</button>`;
+  const stamp = t => t ? _escSP(new Date(t*1000).toLocaleString()) : 'Never';
+  const fileRows = (staged.files || []).map(f => `<tr><td class="mono">${_escSP(f.path)}</td><td>${!f.before?'Add':!f.after?'Delete':'Replace'}</td></tr>`).join('');
+  return `<div class="card"><div class="section-title">Installed code patch</div><strong>${_escSP(installed.version || 'Baseline — no patch recorded')}</strong>
+    <div class="text-dim">Installed: ${stamp(installed.at)} · Verification: ${d.public_key_present?'Ed25519 public key installed':'Public key missing'}</div>
+    ${!d.worker_available?'<p class="text-dim">Patch installation requires Linux and systemd-run on the appliance.</p>':''}
+    <div style="margin-top:10px">${button('Check for patches','check',disabled || !d.public_key_present)} ${button('Roll back latest patch','rollback',disabled || !d.rollback_available)} ${button('Recover interrupted operation','recover',!manage || (!busy && !d.recovery_required))}</div></div>
+    <div class="grid grid-2"><div class="card"><div class="section-title">Available patch</div><strong>${_escSP(available.version || 'No verified release checked')}</strong><div class="text-dim">Last checked: ${stamp(d.checked_at)}</div><p>${_escSP(available.notes || '')}</p><div class="mono" style="overflow-wrap:anywhere">${_escSP(available.sha256 || '')}</div>${button('Download and validate','stage',disabled || !available.sha256 || available.sha256 === installed.sha256)}</div>
+    <div class="card"><div class="section-title">Staged patch</div><strong>${_escSP(staged.version || 'Nothing staged')}</strong><p class="text-dim">Signature, file hashes, installed baseline and dependencies are checked again before installation.</p>
+    ${fileRows?`<details><summary>Review ${(staged.files || []).length} file changes</summary><div class="table-wrap"><table><thead><tr><th>File</th><th>Change</th></tr></thead><tbody>${fileRows}</tbody></table></div></details>`:''}
+    <div class="text-dim">${_escSP(Object.entries(staged.requires || {}).map(([k,v])=>k+'=='+v).join(', '))}</div><div style="margin-top:10px">${button('Install staged patch','install',disabled || !staged.sha256)}</div></div></div>
+    <div class="card"><div class="section-title">Current operation</div><strong>${_escSP(job.status || 'Idle')}</strong><p>${_escSP(job.message || 'No patch operation has run')}</p>${d.recovery_required?'<p style="color:var(--orange)">An installation was interrupted. Recover its journal before starting another patch.</p>':''}<div class="text-dim">${_escSP(job.id || '')}</div></div>
+    <div class="card"><div class="section-title">Patch history</div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Action</th><th>Version</th><th>Requested by</th><th>Result</th></tr></thead><tbody>${(d.history || []).map(j=>`<tr><td>${stamp(j.finished_at)}</td><td>${_escSP(j.action)}</td><td>${_escSP(j.version || "—")}</td><td>${_escSP(j.actor)}</td><td>${_escSP(j.status)} — ${_escSP(j.message)}</td></tr>`).join('') || '<tr><td colspan="5">No operations recorded</td></tr>'}</tbody></table></div></div>`;
+}
+async function loadPatches() {
+  const el = document.getElementById('patch-state');
+  if (!el || loadPatches.pending) return;
+  loadPatches.pending = true;
+  try {
+    const d = await api('/api/system/patches');
+    if (document.getElementById('patch-state') !== el) return;
+    const notice = document.getElementById('patch-notice');
+    if (!d || d.detail) { notice.dataset.connection = 'lost'; notice.textContent = 'Manager unavailable. Reconnecting; the independent patch worker continues.'; return; }
+    if (notice.dataset.connection === 'lost') { notice.textContent = 'Connection restored.'; delete notice.dataset.connection; }
+    const input = document.getElementById('patch-url');
+    if (!input.dataset.loaded) { input.value = d.server || ''; input.dataset.loaded = '1'; }
+    input.disabled = !d.can_manage;
+    document.getElementById('patch-save').disabled = !d.can_manage;
+    if (JSON.stringify(d) !== JSON.stringify(_patchData)) {
+      const reviewOpen = !!el.querySelector('details[open]');
+      el.innerHTML = patchStateHTML(d);
+      if (reviewOpen && el.querySelector('details')) el.querySelector('details').open = true;
+    }
+    _patchData = d;
+  } finally { loadPatches.pending = false; }
+}
+async function patchSaveServer() {
+  const url = document.getElementById('patch-url').value;
+  const r = await api('/api/system/updates/server', {method:'PUT', body:JSON.stringify({url})});
+  document.getElementById('patch-notice').textContent = r && r.success ? 'Update server saved.' : (r && r.detail || 'Could not save update server.');
+}
+async function patchAction(action) {
+  const d = _patchData || {};
+  if (action === 'install' && !confirm('Install patch '+((d.staged || {}).version || '')+'?\nManagement services will restart. Review the staged file changes first.')) return;
+  if (action === 'rollback' && !confirm('Restore the code saved before the latest patch? Management services will restart.')) return;
+  if (action === 'recover' && !confirm('Recover the interrupted operation? Modified files will be restored from its journal.')) return;
+  const selected = action === 'stage' ? d.available : action === 'rollback' ? d.installed : d.staged;
+  const r = await api('/api/system/patches/'+action, {method:'POST', body:JSON.stringify({sha256:(selected || {}).sha256 || ''})});
+  const notice = document.getElementById('patch-notice');
+  if (notice) notice.textContent = r && r.job ? 'Operation queued. Status will update automatically.' : (r && r.detail || 'Could not queue operation.');
+  await loadPatches();
+}
+
 async function renderUpdates(c){
   c.innerHTML=`<div class="page-header"><h2>Software Updates</h2></div>
   <p class="text-dim" style="font-size:11px;margin-bottom:10px">FFN pulls updates from an FFN update server using its own signed-payload updater &mdash; no vendor infrastructure and no vendor content. Every payload must carry a valid manifest signature <em>and</em> match its SHA-256 before anything is written; verification failures apply nothing.</p>
@@ -2339,9 +2470,7 @@ function toggleTrafficWS() {
     if (liveLogPaused) return;
     const l = JSON.parse(evt.data);
     const tr = document.createElement('tr');
-    const parts = l.message.split(' ');
-    const action = parts[0]||'--';
-    tr.innerHTML = `<td class="mono">${l.timestamp.replace('T',' ').substring(0,19)}</td><td class="mono">--</td><td class="mono">--</td><td>--</td><td><span class="badge badge-${action.toLowerCase()}">${action}</span></td><td>--</td><td>--</td>`;
+    tr.innerHTML = liveTrafficRowHTML(l);
     if (tbody) { tbody.prepend(tr); while(tbody.children.length>200) tbody.removeChild(tbody.lastChild); }
   };
   wsConnection.onclose = ()=>{ liveLogActive=false; btn.textContent='Start Live'; btn.classList.remove('btn-danger'); };
@@ -2519,7 +2648,7 @@ function toggleSysLogWS() {
     const l = JSON.parse(evt.data);
     const div = document.createElement('div');
     div.className='log-entry';
-    div.innerHTML=`<span class="ts">${l.timestamp.replace('T',' ').substring(0,19)}</span><span class="sev sev-${l.severity}">[${l.severity}]</span> ${l.message}`;
+    div.innerHTML = liveSystemLogHTML(l);
     if (stream) { stream.prepend(div); while(stream.children.length>500) stream.removeChild(stream.lastChild); }
   };
   wsConnection.onclose = ()=>{ liveLogActive=false; btn.textContent='Start Live Stream'; btn.classList.remove('btn-danger'); };
@@ -2744,39 +2873,7 @@ async function deleteRule(id) {
 }
 
 /* ---- Policy > NAT ---- */
-function renderPolicyNAT(c) {
-  c.innerHTML = `
-    <div class="page-header"><h2>NAT Policy</h2>
-      <div class="actions"><button class="btn btn-primary" onclick="document.getElementById('modal-nat').classList.add('show')">+ Add NAT Rule</button></div>
-    </div>
-    <div class="section"><div class="section-title">Source NAT</div><div class="card"><div class="table-wrap">
-      <table><thead><tr><th>#</th><th>Original Source</th><th>Original Dest</th><th>Translated Source</th><th>Service</th><th>Description</th></tr></thead>
-      <tbody id="snat-body"></tbody></table>
-    </div></div></div>
-    <div class="section"><div class="section-title">Destination NAT</div><div class="card"><div class="table-wrap">
-      <table><thead><tr><th>#</th><th>Original Source</th><th>Original Dest</th><th>Translated Dest</th><th>Service</th><th>Description</th></tr></thead>
-      <tbody id="dnat-body"></tbody></table>
-    </div></div></div>`;
-  loadNAT();
-}
 
-async function loadNAT() {
-  // Real source: configured NAT policy. No fabricated sample rules — empty state
-  // until the backend returns configured source/destination NAT rules.
-  const d = await api('/api/policy/nat');
-  const snatData = (d && Array.isArray(d.source)) ? d.source : (d && Array.isArray(d.snat) ? d.snat : []);
-  const dnatData = (d && Array.isArray(d.destination)) ? d.destination : (d && Array.isArray(d.dnat) ? d.dnat : []);
-  const sb = document.getElementById('snat-body');
-  if (sb) sb.innerHTML = snatData.length
-    ? snatData.map(r=>`<tr><td>${_escSP(r.id)}</td><td class="mono">${_escSP(r.orig_src)}</td><td>${_escSP(r.orig_dst)}</td><td class="mono">${_escSP(r.trans_src)}</td><td>${_escSP(r.service)}</td><td>${_escSP(r.desc)}</td></tr>`).join('')
-    : '<tr><td colspan="6" class="text-dim">No source NAT rules configured.</td></tr>';
-  const db = document.getElementById('dnat-body');
-  if (db) db.innerHTML = dnatData.length
-    ? dnatData.map(r=>`<tr><td>${_escSP(r.id)}</td><td>${_escSP(r.orig_src)}</td><td class="mono">${_escSP(r.orig_dst)}</td><td class="mono">${_escSP(r.trans_dst)}</td><td>${_escSP(r.service)}</td><td>${_escSP(r.desc)}</td></tr>`).join('')
-    : '<tr><td colspan="6" class="text-dim">No destination NAT rules configured.</td></tr>';
-}
-
-function saveNAT() { closeModal('modal-nat'); if (currentSubPage==='nat') renderPolicyNAT(document.getElementById('content-area')); }
 
 /* ---- Policy > QoS ---- */
 function renderPolicyQoS(c) {
@@ -2810,22 +2907,7 @@ async function loadQoS() {
 }
 
 /* ---- Policy > Decryption ---- */
-function renderPolicyDecryption(c) {
-  c.innerHTML = `
-    <div class="page-header"><h2>Decryption Policy</h2></div>
-    <div class="section"><div class="section-title">Forward Proxy Rules</div><div class="card"><div class="table-wrap">
-      <table><thead><tr><th>#</th><th>Source</th><th>Destination</th><th>Service</th><th>Action</th><th>Description</th></tr></thead>
-      <tbody><tr><td colspan="6" class="text-dim">No forward-proxy decryption rules configured.</td></tr></tbody></table>
-    </div></div></div>
-    <div class="section"><div class="section-title">Inbound Inspection Rules</div><div class="card"><div class="table-wrap">
-      <table><thead><tr><th>#</th><th>Destination</th><th>Service</th><th>Certificate</th><th>Action</th></tr></thead>
-      <tbody><tr><td colspan="5" class="text-dim">No inbound inspection rules configured.</td></tr></tbody></table>
-    </div></div></div>
-    <div class="section"><div class="section-title">No-Decrypt Exceptions</div><div class="card"><div class="table-wrap">
-      <table><thead><tr><th>Category</th><th>Domains</th><th>Reason</th></tr></thead>
-      <tbody><tr><td colspan="3" class="text-dim">No no-decrypt exceptions configured.</td></tr></tbody></table>
-    </div></div></div>`;
-}
+
 
 /* ---- Policy > DDoS Protection ---- */
 function renderPolicyDDoS(c) {
@@ -2903,81 +2985,52 @@ async function saveDoS() {
 }
 
 /* ---- Policy > SD-WAN ---- */
-function renderPolicySDWAN(c) {
-  c.innerHTML = `
-    <div class="page-header"><h2>SD-WAN Policy</h2></div>
-    <div class="section"><div class="section-title">Per-Application Path Selection</div><div class="card"><div class="table-wrap">
-      <table><thead><tr><th>Application</th><th>Primary Path</th><th>Failover Path</th><th>SLA Latency (ms)</th><th>SLA Jitter (ms)</th><th>SLA Loss (%)</th><th>Status</th></tr></thead>
-      <tbody id="sdwan-path-body"><tr><td colspan="7" class="text-dim">No SD-WAN path-selection policy configured.</td></tr></tbody></table>
-    </div></div></div>
-    <div class="section"><div class="section-title">Link Health</div><div class="grid grid-4" id="sdwan-link-health">
-      <div class="card"><p class="text-dim" style="padding:14px;font-size:12px">No link telemetry available.</p></div>
-    </div></div>`;
-}
+
 
 /* ===========================================================================
    OBJECTS TAB
    =========================================================================== */
 
 /* ---- Objects > Addresses ---- */
-function renderObjectsAddresses(c) {
-  c.innerHTML = `
-    <div class="page-header"><h2>Address Objects</h2>
-      <div class="actions"><button class="btn btn-primary" onclick="addAddrPrompt()">+ Add Address</button></div>
-    </div>
-    <div class="section"><div class="section-title">Address Objects</div><div class="card"><div class="table-wrap">
-      <table><thead><tr><th>Name</th><th>Type</th><th>Value</th><th>Description</th></tr></thead>
-      <tbody id="addr-obj-body"></tbody></table>
-    </div></div></div>
-    <div class="section"><div class="section-title">Address Groups</div><div class="card"><div class="table-wrap">
-      <table><thead><tr><th>Group Name</th><th>Members</th><th>Description</th></tr></thead>
-      <tbody>
-        <tr><td>internal-servers</td><td>web-server, db-server, app-server</td><td>Internal server group</td></tr>
-        <tr><td>trusted-nets</td><td>corporate-lan, vpn-users</td><td>Trusted networks</td></tr>
-      </tbody></table>
-    </div></div></div>`;
-  const addrs = [
-    {name:'web-server',type:'IP',value:'10.0.0.50',desc:'Primary web server'},
-    {name:'db-server',type:'IP',value:'10.0.0.51',desc:'Database server'},
-    {name:'app-server',type:'IP',value:'10.0.0.52',desc:'Application server'},
-    {name:'corporate-lan',type:'Subnet',value:'10.0.0.0/24',desc:'Corporate LAN'},
-    {name:'vpn-users',type:'Range',value:'172.16.100.1-172.16.100.254',desc:'VPN user pool'},
-    {name:'dmz-net',type:'Subnet',value:'10.0.1.0/24',desc:'DMZ network'},
-  ];
-  document.getElementById('addr-obj-body').innerHTML = addrs.map(a=>`<tr><td>${a.name}</td><td>${a.type}</td><td class="mono">${a.value}</td><td>${a.desc}</td></tr>`).join('');
+function renderObjectsAddresses(c) { renderConfigObjects(c, 'address'); }
+function renderObjectsServices(c) { renderConfigObjects(c, 'service'); }
+function renderConfigObjects(c, kind) {
+  c.innerHTML = `<div class="page-header"><h2>${kind==='address'?'Address':'Service'} Objects</h2></div>
+    <p class="text-dim">Objects read from configuration XML, including shared and virtual-system scopes. This view does not modify objects.</p>
+    <div class="workflow-actions"><label for="object-source">Configuration</label>
+    <select id="object-source"><option value="candidate">Candidate</option><option value="running">Running</option></select>
+    <button id="object-refresh" class="btn">Refresh</button></div><div id="object-list" class="card">Loading…</div>`;
+  document.getElementById('object-source').onchange = () => loadConfigObjects(kind);
+  document.getElementById('object-refresh').onclick = () => loadConfigObjects(kind);
+  loadConfigObjects(kind);
 }
-
-function addAddrPrompt() {
-  document.getElementById('info-modal-title').textContent='Add Address Object';
-  document.getElementById('info-modal-body').innerHTML='<div class="form-group"><label>Name</label><input type="text" placeholder="my-server"></div><div class="form-group"><label>Type</label><select><option>IP</option><option>Subnet</option><option>Range</option></select></div><div class="form-group"><label>Value</label><input type="text" placeholder="10.0.0.1"></div><div class="form-group"><label>Description</label><input type="text"></div>';
-  document.getElementById('modal-info').classList.add('show');
-}
-
-/* ---- Objects > Services ---- */
-function renderObjectsServices(c) {
-  c.innerHTML = `
-    <div class="page-header"><h2>Service Objects</h2></div>
-    <div class="section"><div class="section-title">Services</div><div class="card"><div class="table-wrap">
-      <table><thead><tr><th>Name</th><th>Protocol</th><th>Port</th><th>Description</th></tr></thead>
-      <tbody>
-        <tr><td>service-http</td><td>TCP</td><td>80</td><td>HTTP</td></tr>
-        <tr><td>service-https</td><td>TCP</td><td>443</td><td>HTTPS</td></tr>
-        <tr><td>service-ssh</td><td>TCP</td><td>22</td><td>SSH</td></tr>
-        <tr><td>service-dns</td><td>UDP</td><td>53</td><td>DNS</td></tr>
-        <tr><td>service-ntp</td><td>UDP</td><td>123</td><td>NTP</td></tr>
-        <tr><td>service-rdp</td><td>TCP</td><td>3389</td><td>Remote Desktop</td></tr>
-        <tr><td>service-mysql</td><td>TCP</td><td>3306</td><td>MySQL</td></tr>
-        <tr><td>service-redis</td><td>TCP</td><td>6379</td><td>Redis</td></tr>
-      </tbody></table>
-    </div></div></div>
-    <div class="section"><div class="section-title">Service Groups</div><div class="card"><div class="table-wrap">
-      <table><thead><tr><th>Group Name</th><th>Members</th></tr></thead>
-      <tbody>
-        <tr><td>web-services</td><td>service-http, service-https</td></tr>
-        <tr><td>infrastructure</td><td>service-dns, service-ntp, service-ssh</td></tr>
-        <tr><td>database</td><td>service-mysql, service-redis</td></tr>
-      </tbody></table>
-    </div></div></div>`;
+let objectRequestId = 0;
+async function loadConfigObjects(kind) {
+  const id = ++objectRequestId, list = document.getElementById('object-list');
+  const source = document.getElementById('object-source').value;
+  list.textContent = 'Loading '+source+' objects…';
+  try {
+    const r = await consoleRequest('/api/config/'+source);
+    const xml = new DOMParser().parseFromString(r.xml, 'application/xml');
+    if (xml.querySelector('parsererror')) throw new Error('Configuration XML could not be read.');
+    if (!list.isConnected || id !== objectRequestId) return;
+    const rows = [];
+    for (const tag of [kind,kind+'-group']) for (const parent of xml.getElementsByTagName(tag)) {
+      // Object containers occur directly in shared or vsys entries, not rules.
+      const scope = parent.parentElement;
+      if (!(scope.tagName === 'shared' || (scope.tagName === 'entry' && scope.parentElement?.tagName === 'vsys'))) continue;
+      for (const entry of parent.children) {
+        if (entry.tagName !== 'entry') continue;
+        const description = Array.from(entry.children).find(n=>n.tagName==='description');
+        const value = Array.from(entry.children).filter(n=>!['description','tag'].includes(n.tagName))
+          .map(n=>n.tagName+': '+n.textContent.trim()).join('; ');
+        rows.push(`<tr><td>${_escSP(entry.getAttribute('name'))}</td><td>${_escSP(scope.tagName==='shared'?'Shared':scope.getAttribute('name'))}</td>
+          <td>${_escSP(tag)}</td><td>${_escSP(value)}</td><td>${_escSP(description?.textContent || '')}</td></tr>`);
+      }
+    }
+    list.innerHTML = rows.length ? `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Scope</th><th>Type</th><th>Value / Members</th><th>Description</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>` :
+      `<p class="text-dim">No ${_escSP(kind)} objects or groups in the ${_escSP(source)} configuration.</p>`;
+  } catch(e) { if (list.isConnected && id === objectRequestId) list.textContent = e.message; }
 }
 
 /* ---- Objects > Applications ---- */
@@ -3058,9 +3111,9 @@ function renderSigs(data) {
   const tbody = document.getElementById('sig-db-body');
   if (!tbody) return;
   tbody.innerHTML = data.map(s=>`<tr>
-    <td>${s.id}</td><td>${s.name}</td><td class="mono" style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${s.pattern}</td>
-    <td>${sevBadge(s.severity)}</td><td>${s.engine}</td>
-    <td><button class="toggle on" style="width:28px;height:16px" onclick="this.classList.toggle('on');this.classList.toggle('off')"></button></td>
+    <td>${s.id}</td><td>${_escSP(s.name)}</td><td class="mono" style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${_escSP(s.pattern)}</td>
+    <td>${sevBadge(s.severity)}</td><td>${_escSP(s.engine)}</td>
+    <td>${s.enabled == null ? 'Not reported' : (s.enabled ? 'Enabled' : 'Disabled')}</td>
   </tr>`).join('');
 }
 
@@ -3091,8 +3144,8 @@ function renderObjectsURLCategories(c) {
       </div></div></div>
       <div class="section"><div class="section-title">Custom URL Lists</div><div class="card">
         <div class="form-group"><label>Block List (one URL per line)</label><textarea id="url-blocklist" rows="8" style="font-family:monospace;font-size:11px" placeholder="evil-site.com&#10;phishing-page.net"></textarea></div>
-        <div class="form-group"><label>Allow List (one URL per line)</label><textarea id="url-allowlist" rows="4" style="font-family:monospace;font-size:11px" placeholder="trusted-site.com"></textarea></div>
-        <button class="btn btn-primary btn-sm" onclick="saveURLLists()">Save Lists</button>
+        <p class="text-dim">Adds entries to the stored custom blocklist. Existing entries are retained; runtime enforcement is not confirmed by this action.</p>
+        <button id="url-save" class="btn btn-primary btn-sm" onclick="saveURLLists()">Add Blocklist Entries</button><p id="url-save-msg" role="status"></p>
       </div></div>
     </div>`;
   loadURLCategories();
@@ -3110,15 +3163,27 @@ async function loadURLCategories() {
   tbody.innerHTML = cats.map(cat=>{
     const name = (typeof cat === 'string') ? cat : (cat.name || cat.category || '-');
     const entries = (cat && typeof cat === 'object' && cat.entries != null) ? fmt(cat.entries) : '—';
-    const action = (cat && typeof cat === 'object' && cat.action) ? cat.action : 'block';
-    return `<tr><td>${name}</td><td>${entries}</td><td><span class="badge badge-${name==='custom'?'info':'block'}">${action}</span></td></tr>`;
+    const action = (cat && typeof cat === 'object' && cat.action) ? cat.action : 'Not reported';
+    return `<tr><td>${_escSP(name)}</td><td>${entries}</td><td><span class="badge badge-${name==='custom'?'info':'block'}">${_escSP(action)}</span></td></tr>`;
   }).join('');
 }
 
-function saveURLLists() {
-  const urls = document.getElementById('url-blocklist').value.split('\n').filter(u=>u.trim());
-  urls.forEach(u=>api('/api/engines/url/blocklist',{method:'POST',body:JSON.stringify({url:u.trim(),category:'custom'})}));
+async function saveURLLists() {
+  const input = document.getElementById('url-blocklist'), msg = document.getElementById('url-save-msg');
+  const btn = document.getElementById('url-save');
+  const urls = [...new Set(input.value.split('\n').map(u=>u.trim()).filter(Boolean))];
+  if (!urls.length) { msg.textContent = 'Enter at least one URL or domain.'; return; }
+  btn.disabled = true; let saved = 0;
+  try {
+    for (const url of urls) {
+      await consoleRequest('/api/engines/url/blocklist', {method:'POST',body:JSON.stringify({url,category:'custom'})});
+      saved++;
+    }
+    input.value = ''; msg.textContent = `${saved} entries saved to the blocklist.`;
+  } catch(e) { input.value = urls.slice(saved).join('\n'); msg.textContent = `${saved} entries saved. ${e.message} Remaining entries are kept above.`; }
+  finally { btn.disabled = false; }
 }
+
 
 /* ---- Objects > Databases ---- */
 function renderObjectsSecurityProfiles(c) {
@@ -3364,10 +3429,10 @@ function dlpTypeChanged() {
 function renderObjectsDatabases(c) {
   c.innerHTML = `
     <div class="page-header"><h2>Databases</h2>
-      <div class="actions"><button class="btn btn-primary" onclick="updateAllDBs()">Update All</button></div>
+      <div class="actions"><button class="btn btn-primary" onclick="openPayloadUpdates()">Manage Content Packages</button></div>
     </div>
     <div class="card"><div class="table-wrap">
-      <table><thead><tr><th>Database</th><th>Type</th><th>Entries</th><th>Size</th><th>Last Loaded</th><th>Checksum</th><th>Actions</th></tr></thead>
+      <table><thead><tr><th>Database</th><th>Type</th><th>Entries</th><th>Size</th><th>Last Loaded</th><th>Checksum</th></tr></thead>
       <tbody id="db-table-body"></tbody></table>
     </div></div>`;
   loadDatabases();
@@ -3387,782 +3452,67 @@ async function loadDatabases() {
   tbody.innerHTML = dbs.map(d=>`<tr>
     <td><strong>${_escSP(d.name||'-')}</strong></td><td>${_escSP(d.type||'-')}</td><td>${d.entries!=null?fmt(d.entries):'--'}</td><td>${_escSP(d.size||'--')}</td>
     <td class="mono">${_escSP(d.loaded||'--')}</td><td class="mono">${_escSP(d.checksum||'--')}</td>
-    <td><button class="btn btn-xs" onclick="reloadDB('${_escSP(d.type||'')}')">Reload</button> <button class="btn btn-xs" onclick="uploadDB('${_escSP(d.type||'')}')">Upload</button></td>
   </tr>`).join('');
 }
 
-function reloadDB(type) { alert('Reloading database: '+type); }
-function uploadDB(type) { alert('Upload interface for: '+type); }
-function updateAllDBs() { alert('Triggering update for all databases...'); }
+function openPayloadUpdates() { switchSubPage('device-updates'); patchLegacyUpdates(); }
+
 
 /* ===========================================================================
    DEVICE TAB
    =========================================================================== */
 
-/* ---- Generic stub for unimplemented pages ---- */
-function renderDeviceStub(c) {
-  const label = currentSubPage.replace(/-/g,' ').replace(/\bsp\b/g,'Server Profile').replace(/\brec\b/g,'Recommendation');
-  const title = label.charAt(0).toUpperCase()+label.slice(1);
-  c.innerHTML = `<div class="page-header"><h2>${title}</h2></div>
-    <div class="card"><div class="table-wrap"><table><thead><tr><th>Name</th><th>Enabled</th><th></th></tr></thead>
-    <tbody><tr><td colspan="3" class="text-dim" style="padding:20px">No ${title} configured.</td></tr></tbody></table></div></div>`;
-}
-
-/* ---- Device > Setup ---- */
-const SETUP_TABS = [
-  {id:'s-mgmt',label:'Management'},
-  {id:'s-ops',label:'Operations',needs:['dpdk','fpga_card']},{id:'s-svc',label:'Services'},
-  {id:'s-iface',label:'Interfaces'},{id:'s-telem',label:'Telemetry'},{id:'s-cid',label:'Content-ID'},
-  {id:'s-wf',label:'Crucible'},{id:'s-sess',label:'Session'},{id:'s-hsm',label:'HSM'},
-  {id:'s-ace',label:'ACE'},{id:'s-dlp',label:'DLP'},
-];
-
+/* General settings edit only fields loaded from the candidate configuration. */
+const SETUP_FIELDS = {hostname:'Hostname', timezone:'Timezone', dns_primary:'Primary DNS',
+  dns_secondary:'Secondary DNS', ntp_server:'NTP Server'};
+let setupBaseline = null;
 function renderDeviceSetup(c) {
-  const tabs = SETUP_TABS.filter(t=>platformApplies(t.needs))
-    .map(t=>`<button data-sp="${t.id}" onclick="switchSetupPanel('${t.id}')">${t.label}</button>`).join('');
-  c.innerHTML = `
-    <div class="page-header"><h2>Setup</h2></div>
-    <div class="setup-tabs" id="setup-tab-bar">${tabs}</div>
-    <div id="setup-panels"></div>`;
-  switchSetupPanel('s-mgmt');
-}
-
-function switchSetupPanel(id) {
-  document.querySelectorAll('#setup-tab-bar button').forEach(b=>b.classList.toggle('active',b.dataset.sp===id));
-  const p = document.getElementById('setup-panels');
-  const r = {
-    's-mgmt': renderSetupMgmt, 's-ops': renderSetupOps, 's-svc': renderSetupServices,
-    's-iface': renderSetupInterfaces, 's-telem': renderSetupTelemetry, 's-cid': renderSetupContentID,
-    's-wf': renderSetupCrucible, 's-sess': renderSetupSession, 's-hsm': renderSetupHSM,
-    's-ace': renderSetupACE, 's-dlp': renderSetupDLP,
-  };
-  if (r[id]) r[id](p); else p.innerHTML='<div class="card"><p class="text-dim">Panel loading...</p></div>';
-}
-
-/* ---- Setup > Management ---- */
-function renderSetupMgmt(p) {
-  p.innerHTML = `
-    <div class="section"><div class="section-title">General Settings</div><div class="card">
-      <div class="grid grid-3">
-        <div class="form-group"><label>Hostname</label><input type="text" id="setup-hostname" value=""></div>
-        <div class="form-group"><label>Domain</label><input type="text" id="setup-domain" placeholder="corp.example.com"></div>
-        <div class="form-group"><label>Timezone</label><input type="text" id="setup-tz" placeholder="America/New_York"></div>
-        <div class="form-group"><label>Login Banner</label><input type="text" id="setup-banner" placeholder="Authorized access only"></div>
-        <div class="form-group"><label>Locale</label><select><option>en_US</option><option>ja_JP</option><option>zh_CN</option><option>ko_KR</option><option>es_ES</option></select></div>
-        <div class="form-group"><label>Auto-Commit on Config Change</label><select><option>No</option><option>Yes</option></select></div>
-      </div>
-      <button class="btn btn-primary btn-sm mt-8" onclick="saveSetup()">Save</button>
-      <span id="setup-msg" style="font-size:11px;margin-left:8px"></span>
-    </div></div>
-
-    <div class="section"><div class="section-title">Device Certificate</div><div class="card">
-      <div class="grid grid-2">
-        <div>
-          <div id="device-cert-info" style="font-size:12px;line-height:2.2">Loading...</div>
-          <div class="form-group mt-8"><label>Certificate Source</label>
-            <select id="cert-source"><option value="self">Self-Signed (auto)</option><option value="cloud">Cloud (FPGA DNA / Serial Hash)</option><option value="custom">Custom Upload</option></select>
-          </div>
-          <button class="btn btn-sm" onclick="generateDeviceCert()">Generate / Refresh</button>
-          <span id="cert-msg" style="font-size:11px;margin-left:8px"></span>
-        </div>
-        <div style="font-size:12px;line-height:2;color:var(--text-dim)">
-          <div><strong>Cloud Enrollment:</strong> Hash the FPGA device DNA or bitstream serial to derive a unique identity. The cloud CA issues a device certificate bound to this hardware fingerprint.</div>
-          <div style="margin-top:6px"><strong>DNA/Serial Flow:</strong></div>
-          <div>1. Read FPGA DNA via ioctl (SYSMON primitive)</div>
-          <div>2. SHA-256 hash → CSR common name</div>
-          <div>3. Submit CSR to FFN Cloud CA</div>
-          <div>4. Install signed certificate</div>
-        </div>
-      </div>
-    </div></div>
-
-    <div class="section"><div class="section-title">Secure Communication Settings</div><div class="card">
-      <div class="grid grid-3">
-        <div class="form-group"><label>SSL/TLS Min Version</label><select><option>TLS 1.2</option><option>TLS 1.3</option></select></div>
-        <div class="form-group"><label>SSL/TLS Max Version</label><select><option>TLS 1.3</option><option>TLS 1.2</option></select></div>
-        <div class="form-group"><label>Cipher Suite Group</label><select><option>Best Practice</option><option>High Security</option><option>Backward Compatible</option><option>Custom</option></select></div>
-      </div>
-    </div></div>
-
-    <div class="section"><div class="section-title">Authentication Settings</div><div class="card">
-      <div class="grid grid-2">
-        <div class="form-group"><label>Authentication Profile</label><select><option>Local Database</option><option>RADIUS</option><option>TACACS+</option><option>LDAP</option><option>SAML</option><option>Kerberos</option></select></div>
-        <div class="form-group"><label>Idle Timeout (min)</label><input type="number" value="60"></div>
-        <div class="form-group"><label>Failed Attempts Before Lockout</label><input type="number" value="5"></div>
-        <div class="form-group"><label>Lockout Duration (min)</label><input type="number" value="30"></div>
-      </div>
-    </div></div>
-
-    <div class="section"><div class="section-title">Banners and Messages</div><div class="card">
-      <div class="form-group"><label>Login Banner</label><textarea rows="2" style="width:100%" placeholder="Warning: Unauthorized access prohibited."></textarea></div>
-      <div class="form-group"><label>Message of the Day (MOTD)</label><textarea rows="2" style="width:100%" placeholder="Welcome to FFN NGFW"></textarea></div>
-    </div></div>
-
-    <div class="section"><div class="section-title">Policy Rulebase Settings</div><div class="card">
-      <div class="grid grid-3">
-        <div class="form-group"><label>Security Rule Limit</label><input type="number" value="10000"></div>
-        <div class="form-group"><label>NAT Rule Limit</label><input type="number" value="4000"></div>
-        <div class="form-group"><label>Rule Shadowing Check</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>Rulebase Audit on Commit</label><select><option>Yes</option><option>No</option></select></div>
-        <div class="form-group"><label>Hit Count Reset Interval</label><select><option>Never</option><option>Daily</option><option>Weekly</option><option>Monthly</option></select></div>
-        <div class="form-group"><label>Unused Rule Alert (days)</label><input type="number" value="90"></div>
-      </div>
-    </div></div>
-
-    <div class="section"><div class="section-title">Minimum Password Complexity</div><div class="card">
-      <div class="grid grid-3">
-        <div class="form-group"><label>Enabled</label><select id="pw-complex"><option>Yes</option><option>No</option></select></div>
-        <div class="form-group"><label>Minimum Length</label><input type="number" value="8"></div>
-        <div class="form-group"><label>Require Uppercase</label><select><option>Yes</option><option>No</option></select></div>
-        <div class="form-group"><label>Require Lowercase</label><select><option>Yes</option><option>No</option></select></div>
-        <div class="form-group"><label>Require Numeric</label><select><option>Yes</option><option>No</option></select></div>
-        <div class="form-group"><label>Require Special Char</label><select><option>Yes</option><option>No</option></select></div>
-        <div class="form-group"><label>Password History Count</label><input type="number" value="12"></div>
-        <div class="form-group"><label>Max Age (days)</label><input type="number" value="90"></div>
-        <div class="form-group"><label>Block Username in Password</label><select><option>Yes</option><option>No</option></select></div>
-      </div>
-    </div></div>
-
-    <div class="section"><div class="section-title">Logging and Reporting Settings</div><div class="card">
-      <div class="grid grid-3">
-        <div class="form-group"><label>Log to Disk</label><select><option>Yes</option><option>No</option></select></div>
-        <div class="form-group"><label>Max Log Disk Quota (GB)</label><input type="number" value="50"></div>
-        <div class="form-group"><label>Log Forwarding Default</label><select><option>None</option><option>All Logs</option><option>Critical Only</option></select></div>
-        <div class="form-group"><label>Config Log on Commit</label><select><option>Yes</option><option>No</option></select></div>
-        <div class="form-group"><label>System Log Level</label><select><option>Informational</option><option>Warning</option><option>Error</option><option>Critical</option></select></div>
-        <div class="form-group"><label>Report Generation Interval</label><select><option>Daily</option><option>Weekly</option><option>Monthly</option></select></div>
-      </div>
-    </div></div>
-
-    <div class="section"><div class="section-title">FFN-OS Edge Service Settings</div><div class="card">
-      <div class="grid grid-2">
-        <div class="form-group"><label>Edge Service Enabled</label><select><option>No</option><option>Yes</option></select></div>
-        <div class="form-group"><label>Service URL</label><input type="text" placeholder="https://edge.ffn-cloud.io"></div>
-      </div>
-    </div></div>
-
-    <div class="section"><div class="section-title">SSH Management Profile Setting</div><div class="card">
-      <div class="grid grid-3">
-        <div class="form-group"><label>SSH Enabled</label><select><option>Yes</option><option>No</option></select></div>
-        <div class="form-group"><label>SSH Port</label><input type="number" value="22"></div>
-        <div class="form-group"><label>Allowed Ciphers</label><select><option>aes256-gcm, chacha20-poly1305</option><option>All Secure</option><option>Custom</option></select></div>
-        <div class="form-group"><label>Key Exchange</label><select><option>curve25519-sha256</option><option>ecdh-sha2-nistp384</option><option>All</option></select></div>
-        <div class="form-group"><label>MACs</label><select><option>hmac-sha2-512-etm</option><option>All Secure</option></select></div>
-        <div class="form-group"><label>Permit Source IPs</label><input type="text" placeholder="0.0.0.0/0" value="0.0.0.0/0"></div>
-      </div>
-    </div></div>
-
-    <div class="section"><div class="section-title">Advanced DNS Security</div><div class="card">
-      <div class="grid grid-2">
-        <div class="form-group"><label>DNS Security Enabled</label><select><option>Yes</option><option>No</option></select></div>
-        <div class="form-group"><label>DNS Sinkhole IP (IPv4)</label><input type="text" value="72.5.65.111"></div>
-        <div class="form-group"><label>DNS Sinkhole IP (IPv6)</label><input type="text" value="2600:5200::1"></div>
-        <div class="form-group"><label>Passive DNS Logging</label><select><option>Yes</option><option>No</option></select></div>
-      </div>
-    </div></div>
-
-    <div class="section"><div class="section-title">Accounting Server Settings</div><div class="card">
-      <div class="grid grid-3">
-        <div class="form-group"><label>RADIUS Accounting</label><select><option>Disabled</option><option>Enabled</option></select></div>
-        <div class="form-group"><label>Accounting Server</label><input type="text" placeholder="10.0.0.50"></div>
-        <div class="form-group"><label>Accounting Port</label><input type="number" value="1813"></div>
-      </div>
-    </div></div>
-
-    <div style="margin-top:16px;display:flex;gap:8px;align-items:center;justify-content:flex-end">
-      <span id="setup-commit-hint" class="text-dim" style="font-size:11px">Changes are saved to candidate config. Commit to apply.</span>
-      <button class="btn" onclick="saveSetup()">Update Candidate</button>
-      <button class="btn btn-primary" onclick="saveSetup();setTimeout(openCommitModal,500)">Save & Commit</button>
-    </div>`;
+  setupBaseline = null;
+  c.innerHTML = `<div class="page-header"><h2>General Settings</h2></div>
+    <p class="text-dim">Changes are saved to the candidate configuration. Review and commit to activate them.</p>
+    <div class="card"><div class="grid grid-2">${Object.entries(SETUP_FIELDS).map(([key,label]) =>
+      `<div class="form-group"><label for="setup-${key}">${label}</label><input id="setup-${key}" disabled></div>`).join('')}</div>
+    <button id="setup-save" class="btn btn-primary" disabled onclick="saveSetup()">Save Candidate</button>
+    <p id="setup-msg" role="status">Loading candidate settings…</p></div>
+    <div class="workflow-actions"><button class="btn" onclick="switchSubPage('interfaces')">Interface Ports</button>
+    <button class="btn" onclick="switchSubPage('certificates')">Certificates</button>
+    <button class="btn" onclick="switchSubPage('config-audit')">Configuration & Backups</button></div>`;
   loadSetupInfo();
 }
-
-/* ---- Setup > Operations ---- */
-function renderSetupOps(p) {
-  p.innerHTML = `
-    <div class="section"><div class="section-title">Configuration Management</div><div class="card">
-      <div class="grid grid-2">
-        <div>
-          <h3>Running Configuration</h3>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0">
-            <button class="btn btn-primary btn-sm" onclick="alert('Committing candidate config...')">Commit</button>
-            <button class="btn btn-sm" onclick="alert('Validating candidate config...')">Validate</button>
-            <button class="btn btn-sm" onclick="alert('Config reverted to running')">Revert to Running</button>
-            <button class="btn btn-sm" onclick="alert('Showing config diff...')">Show Changes</button>
-          </div>
-          <div class="form-group"><label>Export Running Config</label>
-            <button class="btn btn-xs" onclick="alert('Downloading running-config.xml...')">Export XML</button>
-            <button class="btn btn-xs" onclick="alert('Downloading running-config.json...')">Export JSON</button>
-          </div>
-        </div>
-        <div>
-          <h3>Configuration Snapshots</h3>
-          <div class="table-wrap" style="max-height:200px;overflow-y:auto">
-            <table><thead><tr><th>Version</th><th>Date</th><th>Admin</th><th>Comment</th><th></th></tr></thead>
-            <tbody>
-              <tr><td>1</td><td>2026-04-19 03:30</td><td>admin</td><td>Initial config</td><td><button class="btn btn-xs">Restore</button></td></tr>
-            </tbody></table>
-          </div>
-          <div class="form-group mt-8"><label>Save Named Snapshot</label><input type="text" placeholder="pre-maintenance-2026"></div>
-          <button class="btn btn-sm">Save Snapshot</button>
-        </div>
-      </div>
-    </div></div>
-
-    <div class="section"><div class="section-title">Device Operations</div><div class="card">
-      <div class="grid grid-3">
-        <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px">
-          <h3>Restart</h3>
-          <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
-            <button class="btn btn-sm" onclick="if(confirm('Restart management plane?'))alert('Management plane restarting...')">Restart Management Plane</button>
-            <button class="btn btn-sm btn-danger" onclick="if(confirm('Restart dataplane? Traffic interrupted.'))alert('Dataplane restarting...')">Restart Dataplane</button>
-            <button class="btn btn-sm btn-danger" onclick="if(confirm('Full device reboot?'))alert('Rebooting...')">Reboot Device</button>
-          </div>
-        </div>
-        <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px">
-          <h3>Shutdown</h3>
-          <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
-            <button class="btn btn-sm btn-danger" onclick="if(confirm('Shut down the system?'))alert('Shutting down...')">Shutdown</button>
-            <button class="btn btn-sm" onclick="alert('Scheduling shutdown...')">Schedule Shutdown</button>
-          </div>
-        </div>
-        <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px">
-          <h3>Factory Reset</h3>
-          <p class="text-dim" style="font-size:11px;margin-bottom:8px">Erase all config and restore defaults</p>
-          <button class="btn btn-sm btn-danger" onclick="if(confirm('FACTORY RESET? All configuration will be lost!'))alert('Factory reset initiated')">Factory Reset</button>
-        </div>
-      </div>
-    </div></div>
-
-    <div class="section"><div class="section-title">FPGA / Dataplane</div><div class="card">
-      <div class="grid grid-3">
-        <div><h3>Firmware</h3><div id="fpga-firmware" style="font-size:12px;line-height:2.2">Loading...</div></div>
-        <div><h3>Resource Utilization</h3><div id="fpga-res-detail">Loading...</div></div>
-        <div><h3>Thermal / Power</h3><div id="fpga-thermal" style="font-size:12px;line-height:2.2">Loading...</div></div>
-      </div>
-    </div></div>
-
-    <div class="section"><div class="section-title">Dataplane Control</div><div class="card">
-      <div class="grid grid-3" style="gap:16px">
-        <div style="border:1px solid var(--border);border-radius:var(--radius);padding:16px">
-          <h3 style="margin-bottom:8px">FPGA Dataplane</h3>
-          <div id="dp-fpga-status" style="font-size:12px;line-height:2;margin-bottom:10px">Loading...</div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn btn-sm btn-danger" onclick="restartDataplane('fpga')">Restart FPGA (PCIe Reset)</button>
-            <button class="btn btn-sm" onclick="restartDataplane('fpga-warm')">Warm Reset</button>
-          </div>
-          <p class="text-dim" style="font-size:10px;margin-top:6px">PCIe reset via kernel driver ioctl — triggers full FPGA reconfiguration</p>
-        </div>
-        <div style="border:1px solid var(--border);border-radius:var(--radius);padding:16px">
-          <h3 style="margin-bottom:8px">DPDK Fast-Path</h3>
-          <div id="dp-dpdk-status" style="font-size:12px;line-height:2;margin-bottom:10px">Loading...</div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn btn-sm btn-danger" onclick="restartDataplane('dpdk')">Restart DPDK</button>
-            <button class="btn btn-sm" onclick="restartDataplane('dpdk-stop')">Stop</button>
-          </div>
-          <p class="text-dim" style="font-size:10px;margin-top:6px">Restarts the live DPDK unit (ffn-dpdk-runtime or ffn-dpdk-fwd) — hugepages + isolcpus binding preserved</p>
-        </div>
-        <div style="border:1px solid var(--border);border-radius:var(--radius);padding:16px">
-          <h3 style="margin-bottom:8px">Full Dataplane</h3>
-          <div style="font-size:12px;line-height:2;margin-bottom:10px;color:var(--text-dim)">
-            <div>Restart both FPGA and DPDK simultaneously.</div>
-            <div>Traffic will be interrupted during restart.</div>
-          </div>
-          <button class="btn btn-sm btn-danger" onclick="if(confirm('Restart ALL dataplanes? Traffic will be interrupted.'))restartDataplane('all')">Restart All Dataplanes</button>
-        </div>
-      </div>
-      <div id="dp-restart-log" style="background:#0d1117;border:1px solid var(--border);border-radius:4px;padding:10px;margin-top:12px;font-family:monospace;font-size:11px;color:var(--green);max-height:150px;overflow-y:auto;display:none"></div>
-    </div></div>
-
-    <div class="section"><div class="section-title">Processing Engines</div><div class="card">
-      <div class="grid grid-6" id="engine-grid">Loading...</div>
-    </div></div>
-
-    <div class="section"><div class="section-title">Miscellaneous</div><div class="card">
-      <div class="grid grid-3">
-        <div class="form-group"><label>Maintenance Window</label><select><option>None</option><option>Daily 02:00-04:00</option><option>Weekly Sun 01:00-05:00</option><option>Custom</option></select></div>
-        <div class="form-group"><label>SNMP System Location</label><input type="text" placeholder="DC1 Rack 42U"></div>
-        <div class="form-group"><label>SNMP System Contact</label><input type="text" placeholder="noc@example.com"></div>
-      </div>
-    </div></div>`;
-
-  loadFPGAStatus();
-  loadDataplaneStatus();
-  refreshTimer = setInterval(()=>{loadFPGAStatus();loadDataplaneStatus()},10000);
-}
-
-/* ---- Setup > Services ---- */
-function renderSetupServices(p) {
-  p.innerHTML = `
-    <div class="section"><div class="section-title">DNS</div><div class="card">
-      <div class="grid grid-3">
-        <div class="form-group"><label>Primary DNS</label><input type="text" id="setup-dns1" value="8.8.8.8"></div>
-        <div class="form-group"><label>Secondary DNS</label><input type="text" id="setup-dns2" value="8.8.4.4"></div>
-        <div class="form-group"><label>DNS Proxy</label><select><option>Disabled</option><option>Enabled</option></select></div>
-      </div>
-    </div></div>
-    <div class="section"><div class="section-title">NTP</div><div class="card">
-      <div class="grid grid-3">
-        <div class="form-group"><label>NTP Server 1</label><input type="text" id="setup-ntp" value="pool.ntp.org"></div>
-        <div class="form-group"><label>NTP Server 2</label><input type="text" placeholder="time.google.com"></div>
-        <div class="form-group"><label>NTP Authentication</label><select><option>None</option><option>Symmetric Key</option><option>Autokey</option></select></div>
-      </div>
-    </div></div>
-    <div class="section"><div class="section-title">Service Route Configuration</div><div class="card">
-      <div class="table-wrap">
-        <table><thead><tr><th>Service</th><th>Source Interface</th><th>Source IP</th></tr></thead>
-        <tbody>
-          <tr><td>DNS</td><td>Management</td><td>(auto)</td></tr>
-          <tr><td>NTP</td><td>Management</td><td>(auto)</td></tr>
-          <tr><td>Syslog</td><td>Management</td><td>(auto)</td></tr>
-          <tr><td>RADIUS</td><td>Management</td><td>(auto)</td></tr>
-          <tr><td>LDAP</td><td>Management</td><td>(auto)</td></tr>
-          <tr><td>Crucible</td><td>Management</td><td>(auto)</td></tr>
-          <tr><td>Updates</td><td>Management</td><td>(auto)</td></tr>
-        </tbody></table>
-      </div>
-    </div></div>
-    <div class="section"><div class="section-title">Proxy Server</div><div class="card">
-      <div class="grid grid-3">
-        <div class="form-group"><label>HTTP Proxy</label><input type="text" placeholder="http://proxy:8080"></div>
-        <div class="form-group"><label>HTTPS Proxy</label><input type="text" placeholder="http://proxy:8080"></div>
-        <div class="form-group"><label>No Proxy</label><input type="text" placeholder="localhost,10.0.0.0/8"></div>
-      </div>
-    </div></div>`;
-}
-
-/* ---- Setup > Interfaces ---- */
-/* ---- Setup > Interfaces ----
-   The management-plane ports, by ROLE. On a PA-5220 these are the only ports
-   the host can see: MGT and the HA1 pair on RJ-45, AUX-1/AUX-2 on 10G SFP+, and
-   the internal backplane link to the dataplane complex. None of them is a data
-   port -- those sit behind the Octeon -- which is why this panel deliberately
-   does not offer to make them one.
-
-   Roles come from the platform's PCI layout, not from interface order. Reading
-   interfaces[0] and calling it "management" is what previously let the mgmt
-   config land on whichever port happened to enumerate first. */
-const MGMT_ROLE_META = {
-  'mgmt':        {label:'MGT',   kind:'RJ-45 1G',   note:'Management'},
-  'ha1-a':       {label:'HA1-A', kind:'RJ-45 1G',   note:'HA control'},
-  'ha1-b':       {label:'HA1-B', kind:'RJ-45 1G',   note:'HA control'},
-  'aux-1':       {label:'AUX-1', kind:'SFP+ 10G',   note:'Management-class'},
-  'aux-2':       {label:'AUX-2', kind:'SFP+ 10G',   note:'Management-class'},
-  'backplane-0': {label:'BP-0',  kind:'SFP+ 10G',   note:'Internal link to dataplane'},
-  'backplane-1': {label:'BP-1',  kind:'SFP+ 10G',   note:'Internal link to dataplane'},
-};
-const MGMT_ROLE_ORDER = ['mgmt','ha1-a','ha1-b','aux-1','aux-2','backplane-0','backplane-1'];
-
-function renderSetupInterfaces(p) {
-  p.innerHTML = `
-    <div class="section"><div class="section-title">Management Interfaces</div><div class="card">
-      <p class="text-dim" style="font-size:11px;margin:0 0 8px">Identified by the chassis PCI layout, so these stay correct across any interface renaming. On this platform every host-visible port is management-class or the internal dataplane link &mdash; the data ports are behind the offload NPU.</p>
-      <div id="setup-if-table"><div class="text-dim">Loading&hellip;</div></div>
-    </div></div>
-
-    <div class="section"><div class="section-title">Management Interface Configuration</div><div class="card">
-      <div class="text-dim" style="font-size:11px;margin-bottom:8px">Applies to <span class="mono" id="setup-mgmt-which">(detecting)</span>.</div>
-      <div class="grid grid-3">
-        <div class="form-group"><label>IP Address</label><input type="text" id="setup-mgmt-ip"></div>
-        <div class="form-group"><label>Netmask</label><input type="text" id="setup-mgmt-mask" value="255.255.255.0"></div>
-        <div class="form-group"><label>Default Gateway</label><input type="text" id="setup-mgmt-gw"></div>
-        <div class="form-group"><label>IPv6 Address</label><input type="text" placeholder="::1/128"></div>
-        <div class="form-group"><label>Speed/Duplex</label><select><option>Auto</option><option>1000/Full</option><option>100/Full</option></select></div>
-        <div class="form-group"><label>MTU</label><input type="number" value="1500"></div>
-      </div>
-      <div class="form-group"><label>Permitted IPs</label><input type="text" id="setup-mgmt-acl" placeholder="0.0.0.0/0" value="0.0.0.0/0"></div>
-      <button class="btn btn-primary btn-sm mt-8" onclick="saveMgmtInterface()">Save</button>
-      <span id="setup-mgmt-msg" style="font-size:11px;margin-left:8px"></span>
-    </div></div>
-
-    <div class="section"><div class="section-title">Management Services</div><div class="card">
-      <div class="grid grid-4">
-        <div class="form-group"><label>HTTPS</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>SSH</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>SNMP</label><select><option>Disabled</option><option>Enabled</option></select></div>
-        <div class="form-group"><label>Ping</label><select><option>Enabled</option><option>Disabled</option></select></div>
-      </div>
-    </div></div>`;
-  loadSetupInterfaces();
-}
-
-async function loadSetupInterfaces() {
-  const el = document.getElementById('setup-if-table');
-  if (!el) return;
-  const vend = await api('/api/vendor/status');
-  const sys  = await api('/api/system/interfaces');
-
-  const roles = (vend && vend.chassis && vend.chassis.port_roles) || {};
-  const byName = {};
-  ((sys && sys.interfaces) || []).forEach(function(i){ byName[i.name] = i; });
-
-  const present = MGMT_ROLE_ORDER.filter(function(r){ return roles[r]; });
-  if (!present.length) {
-    el.innerHTML = '<div class="text-dim" style="font-size:12px">This chassis has no known port-role map, so management ports cannot be identified by role here. Use Network &rsaquo; Interfaces.</div>';
-    return;
-  }
-
-  const rows = present.map(function(role){
-    const r = roles[role];
-    const meta = MGMT_ROLE_META[role] || {label:role, kind:'', note:''};
-    const s = byName[r.iface] || {};
-    const up = r.carrier === '1';
-    const link = up
-      ? '<span class="badge badge-up">up</span>'
-      : '<span class="badge">no link</span>';
-    return '<tr>'
-      + '<td><strong>' + _escSP(meta.label) + '</strong><div class="text-dim" style="font-size:10px">' + _escSP(meta.note) + '</div></td>'
-      + '<td class="mono">' + _escSP(r.iface || '(absent)') + '</td>'
-      + '<td>' + _escSP(meta.kind) + '</td>'
-      + '<td class="mono" style="font-size:10px">' + _escSP(r.pci || '') + '</td>'
-      + '<td>' + link + '</td>'
-      + '<td class="mono" style="font-size:10px">' + _escSP(s.mac_address || s.mac || '') + '</td>'
-      + '<td class="mono" style="font-size:11px">' + _escSP(s.ip_address || '&mdash;') + '</td>'
-      + '</tr>';
-  }).join('');
-
-  // Faceplate connectors that belong to the DEVICE rather than to the
-  // firewall. On a PA-5200 that is HSCI, the HA data link (HA2/HA3): it is on
-  // the front of the chassis, which is why it used to be listed among the
-  // firewall's interfaces, but it carries session sync and active/active
-  // forwarding between HA peers and is configured with the HA settings. It
-  // sits on the switch ASIC, not on a host NIC, so it has no PCI address, MAC
-  // or address of its own to show here.
-  const chassis = ((sys && sys.interfaces) || [])
-    .filter(function(i){ return i.type === 'chassis'; });
-  const chassisRows = chassis.map(function(i){
-    const up = i.link_state === true;
-    const link = i.link_state === null || i.link_state === undefined
-      ? '<span class="badge">unknown</span>'
-      : (up ? '<span class="badge badge-up">up</span>'
-            : '<span class="badge">no link</span>');
-    return '<tr>'
-      + '<td><strong>' + _escSP(i.role || 'chassis') + '</strong>'
-        + '<div class="text-dim" style="font-size:10px">front-panel connector '
-        + _escSP(i.faceplate || '') + ', ' + _escSP(i.media || '') + '</div></td>'
-      + '<td class="mono">' + _escSP(i.name) + '</td>'
-      + '<td>' + _escSP((i.speed_gbps || 0) + 'G') + '</td>'
-      + '<td class="text-dim" style="font-size:10px">switch ASIC '
-        + '<span class="mono">' + _escSP(i.chip_port || '') + '</span></td>'
-      + '<td>' + link + '</td>'
-      + '<td class="text-dim">&mdash;</td>'
-      + '<td class="text-dim">&mdash;</td>'
-      + '</tr>';
-  }).join('');
-
-  el.innerHTML = '<table class="data-table"><thead><tr>'
-    + '<th>Role</th><th>Interface</th><th>Type</th><th>PCI</th><th>Link</th><th>MAC</th><th>Address</th>'
-    + '</tr></thead><tbody>' + rows + chassisRows + '</tbody></table>'
-    + (chassis.length
-        ? '<div class="text-dim" style="font-size:11px;margin-top:6px">The HA'
-          + ' data link is a faceplate connector but not a firewall interface:'
-          + ' it is configured with the high-availability settings of the device and'
-          + ' never appears in a security policy.</div>'
-        : '');
-
-  // Bind the MGT form to the interface that actually holds the mgmt role.
-  const mg = roles['mgmt'];
-  const which = document.getElementById('setup-mgmt-which');
-  if (which) which.textContent = mg ? (mg.iface + '  (' + mg.pci + ')') : 'unknown';
-  if (mg) {
-    const s = byName[mg.iface] || {};
-    const ip = document.getElementById('setup-mgmt-ip');
-    if (ip && !ip.value) ip.value = s.ip_address || '';
-    const mk = document.getElementById('setup-mgmt-mask');
-    if (mk && s.netmask) mk.value = s.netmask;
-    const gw = document.getElementById('setup-mgmt-gw');
-    if (gw && !gw.value) gw.value = s.gateway || '';
-  }
-}
-
-
-/* ---- Setup > Telemetry ---- */
-function renderSetupTelemetry(p) {
-  p.innerHTML = `
-    <div class="section"><div class="section-title">Telemetry</div><div class="card">
-      <div class="grid grid-2">
-        <div class="form-group"><label>Telemetry Enabled</label><select><option>Yes</option><option>No</option></select></div>
-        <div class="form-group"><label>Telemetry Destination</label><input type="text" placeholder="https://telemetry.ffn-cloud.io"></div>
-        <div class="form-group"><label>Collection Interval (sec)</label><input type="number" value="300"></div>
-        <div class="form-group"><label>Include Threat Data</label><select><option>Yes</option><option>No</option></select></div>
-        <div class="form-group"><label>Include App Data</label><select><option>Yes</option><option>No</option></select></div>
-        <div class="form-group"><label>Include Device Health</label><select><option>Yes</option><option>No</option></select></div>
-      </div>
-    </div></div>
-    <div class="section"><div class="section-title">Streaming Telemetry (gRPC)</div><div class="card">
-      <div class="grid grid-3">
-        <div class="form-group"><label>gRPC Export</label><select><option>Disabled</option><option>Enabled</option></select></div>
-        <div class="form-group"><label>Collector Address</label><input type="text" placeholder="10.0.0.100:50051"></div>
-        <div class="form-group"><label>Update Interval (ms)</label><input type="number" value="5000"></div>
-      </div>
-    </div></div>`;
-}
-
-/* ---- Setup > Content-ID ---- */
-function renderSetupContentID(p) {
-  p.innerHTML = `
-    <div class="section"><div class="section-title">Content-ID Settings</div><div class="card">
-      <div class="grid grid-2">
-        <div class="form-group"><label>Content Inspection Mode</label><select><option>Full Inspection</option><option>Header Only</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>Max File Scan Size (MB)</label><input type="number" value="10"></div>
-        <div class="form-group"><label>Allow Forwarding of Decrypted Content</label><select><option>No</option><option>Yes</option></select></div>
-        <div class="form-group"><label>X-Forwarded-For Header</label><select><option>Strip</option><option>Preserve</option><option>Append</option></select></div>
-      </div>
-    </div></div>
-    <div class="section"><div class="section-title">URL Filtering</div><div class="card">
-      <div class="grid grid-2">
-        <div class="form-group"><label>URL Filtering Engine</label><select><option>FFN Cloud (Real-Time)</option><option>Local DB Only</option></select></div>
-        <div class="form-group"><label>Safe Search Enforcement</label><select><option>Yes</option><option>No</option></select></div>
-        <div class="form-group"><label>Inline ML for URL</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>Credential Phishing Detection</label><select><option>Block</option><option>Alert</option><option>Disabled</option></select></div>
-      </div>
-    </div></div>`;
-}
-
-/* ---- Setup > Crucible ---- */
-function renderSetupCrucible(p) {
-  p.innerHTML = `
-    <div class="section"><div class="section-title">General Settings</div><div class="card">
-      <div class="grid grid-2">
-        <div class="form-group"><label>Crucible</label>
-          <select id="wf-cloud" onchange="toggleWfCustomEndpoint()">
-            <option value="public">FFN Public Cloud</option>
-            <option value="private">Private (On-Prem)</option>
-            <option value="hybrid">Hybrid</option>
-            <option value="disabled">Disabled</option>
-          </select>
-        </div>
-        <div class="form-group"><label>File Size Limit (MB)</label><input type="number" value="10"></div>
-        <div class="form-group"><label>Report Benign Files</label><select><option>No</option><option>Yes</option></select></div>
-        <div class="form-group"><label>Report Grayware</label><select><option>Yes</option><option>No</option></select></div>
-      </div>
-
-      <div id="wf-custom-endpoint" style="display:none;margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg)">
-        <h4 style="margin-bottom:8px;font-size:12px;color:var(--accent)">Custom Endpoint (Private / Hybrid)</h4>
-        <div class="grid grid-2">
-          <div class="form-group"><label>Sandbox Server URL or IP</label><input type="text" id="wf-custom-url" placeholder="https://sandbox.corp.local or 10.0.0.50"></div>
-          <div class="form-group"><label>Port</label><input type="number" id="wf-custom-port" value="443"></div>
-          <div class="form-group"><label>API Key / Registration Token</label><input type="password" id="wf-custom-key" placeholder="(optional)"></div>
-          <div class="form-group"><label>Verify TLS Certificate</label><select><option>Yes</option><option>No (self-signed)</option></select></div>
-          <div class="form-group"><label>Fallback to Public Cloud (Hybrid only)</label><select id="wf-fallback-public"><option>No</option><option>Yes</option></select></div>
-          <div class="form-group"><label>Connection Timeout (sec)</label><input type="number" value="30"></div>
-        </div>
-        <button class="btn btn-sm mt-8" onclick="alert('Testing connectivity to sandbox endpoint...')">Test Connection</button>
-      </div>
-    </div></div>
-
-    <div class="section"><div class="section-title">File Types for Forwarding</div><div class="card">
-      <div class="grid grid-4">
-        <div class="form-group"><label>PE (exe/dll)</label><select><option>Forward</option><option>Skip</option></select></div>
-        <div class="form-group"><label>PDF</label><select><option>Forward</option><option>Skip</option></select></div>
-        <div class="form-group"><label>MS Office</label><select><option>Forward</option><option>Skip</option></select></div>
-        <div class="form-group"><label>APK</label><select><option>Forward</option><option>Skip</option></select></div>
-        <div class="form-group"><label>Archive (zip/rar)</label><select><option>Forward</option><option>Skip</option></select></div>
-        <div class="form-group"><label>Script (js/vbs/ps1)</label><select><option>Forward</option><option>Skip</option></select></div>
-        <div class="form-group"><label>Linux ELF</label><select><option>Forward</option><option>Skip</option></select></div>
-        <div class="form-group"><label>MacOS</label><select><option>Forward</option><option>Skip</option></select></div>
-      </div>
-    </div></div>
-
-    <div class="section"><div class="section-title">Session Information Settings</div><div class="card">
-      <p class="text-dim" style="font-size:11px;margin-bottom:10px">Metadata to include when forwarding files to the cloud sandbox for analysis.</p>
-      <div class="grid grid-4">
-        <div class="form-group"><label>Source IP</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>Source Port</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>Destination IP</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>Destination Port</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>Virtual System</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>Application</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>User</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>URL</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>File Name</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>Email Sender</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>Email Recipient</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>Email Subject</label><select><option>Enabled</option><option>Disabled</option></select></div>
-      </div>
-    </div></div>
-
-    <div class="section"><div class="section-title">Inline Session Information Settings</div><div class="card">
-      <p class="text-dim" style="font-size:11px;margin-bottom:10px">Metadata to include for inline (real-time) ML verdicts — added to streaming telemetry sent to the cloud sandbox inline inference engine.</p>
-      <div class="grid grid-4">
-        <div class="form-group"><label>Source IP</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>Source Port</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>Destination IP</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>Destination Port</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>Virtual System</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>Application</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>User</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>URL</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>File Name</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>Email Sender</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>Email Recipient</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>Email Subject</label><select><option>Enabled</option><option>Disabled</option></select></div>
-      </div>
-    </div></div>
-
-    <div class="section"><div class="section-title">On-Device ML (BNN Inference)</div><div class="card">
-      <div class="grid grid-2">
-        <div class="form-group"><label>Inline ML Classification</label><select><option>Enabled</option><option>Disabled</option></select></div>
-        <div class="form-group"><label>ML Model Update Interval</label><select><option>Hourly</option><option>Daily</option><option>Manual</option></select></div>
-      </div>
-    </div></div>
-
-    <div style="margin-top:16px;text-align:right"><button class="btn btn-primary" onclick="alert('Crucible settings saved')">Save Cloud Sandbox Settings</button></div>`;
-
-  toggleWfCustomEndpoint();
-}
-
-function toggleWfCustomEndpoint() {
-  const sel = document.getElementById('wf-cloud');
-  const box = document.getElementById('wf-custom-endpoint');
-  const fb = document.getElementById('wf-fallback-public');
-  if (!sel || !box) return;
-  const v = sel.value;
-  box.style.display = (v === 'private' || v === 'hybrid') ? 'block' : 'none';
-  if (fb) {
-    fb.disabled = (v !== 'hybrid');
-    fb.style.opacity = (v === 'hybrid') ? '1' : '0.5';
-  }
-}
-
-/* ---- Setup > Session ---- */
-function renderSetupSession(p) {
-  p.innerHTML = `
-    <div class="section"><div class="section-title">Session Settings</div><div class="card">
-      <div class="grid grid-3">
-        <div class="form-group"><label>Session Timeout TCP (sec)</label><input type="number" value="3600"></div>
-        <div class="form-group"><label>Session Timeout UDP (sec)</label><input type="number" value="30"></div>
-        <div class="form-group"><label>Session Timeout ICMP (sec)</label><input type="number" value="6"></div>
-        <div class="form-group"><label>Discard TCP Timeout (sec)</label><input type="number" value="90"></div>
-        <div class="form-group"><label>TCP Half-Closed Timeout</label><input type="number" value="120"></div>
-        <div class="form-group"><label>TCP Time-Wait Timeout</label><input type="number" value="15"></div>
-        <div class="form-group"><label>Captive Portal Timeout</label><input type="number" value="300"></div>
-        <div class="form-group"><label>Session Table Size</label><input type="number" value="2000000"></div>
-        <div class="form-group"><label>FPGA Session Table Depth</label><input type="number" value="65536"></div>
-      </div>
-    </div></div>
-    <div class="section"><div class="section-title">TCP Settings</div><div class="card">
-      <div class="grid grid-3">
-        <div class="form-group"><label>Asymmetric Path</label><select><option>Drop</option><option>Bypass</option><option>Global Protect</option></select></div>
-        <div class="form-group"><label>TCP Reject Non-SYN</label><select><option>Yes</option><option>No</option></select></div>
-        <div class="form-group"><label>SYN Flood Action</label><select><option>SYN Cookie</option><option>RED</option><option>Drop</option></select></div>
-      </div>
-    </div></div>
-    <div class="section"><div class="section-title">Decryption Settings</div><div class="card">
-      <div class="grid grid-2">
-        <div class="form-group"><label>Forward Proxy Enabled</label><select><option>No</option><option>Yes</option></select></div>
-        <div class="form-group"><label>Inbound Inspection</label><select><option>No</option><option>Yes</option></select></div>
-        <div class="form-group"><label>Certificate for Forward Proxy</label><select><option>ffn-fwd-proxy</option><option>(none)</option></select></div>
-        <div class="form-group"><label>SSL Decryption Session Cache</label><input type="number" value="100000"></div>
-      </div>
-    </div></div>`;
-}
-
-/* ---- Setup > HSM ---- */
-function renderSetupHSM(p) {
-  p.innerHTML = `
-    <div class="section"><div class="section-title">Hardware Security Module</div><div class="card">
-      <div style="font-size:12px;line-height:2;color:var(--text-dim);margin-bottom:12px">
-        <div>HSM integration provides hardware-backed private key storage for SSL/TLS decryption and VPN operations.</div>
-        <div>Supported providers: SafeNet Luna, Thales nShield, PKCS#11 compatible</div>
-      </div>
-      <div class="grid grid-2">
-        <div class="form-group"><label>HSM Enabled</label><select><option>No</option><option>Yes</option></select></div>
-        <div class="form-group"><label>HSM Provider</label><select><option>None</option><option>SafeNet Luna Network</option><option>Thales nShield</option><option>SoftHSM (testing)</option><option>PKCS#11 Custom</option></select></div>
-        <div class="form-group"><label>HSM Server Address</label><input type="text" placeholder="10.0.0.200"></div>
-        <div class="form-group"><label>HSM Partition</label><input type="text" placeholder="ffn-ngfw-partition"></div>
-      </div>
-    </div></div>`;
-}
-
-/* ---- Setup > ACE ---- */
-function renderSetupACE(p) {
-  p.innerHTML = `
-    <div class="section"><div class="section-title">Application Content Engine (ACE)</div><div class="card">
-      <div style="font-size:12px;line-height:2;color:var(--text-dim);margin-bottom:12px">
-        ACE handles deep application content inspection, file type identification, and data pattern matching used by Content-ID and the cloud sandbox.
-      </div>
-      <div class="grid grid-2">
-        <div class="form-group"><label>ACE Offload to FPGA</label><select><option>Enabled</option><option>Disabled (CPU fallback)</option></select></div>
-        <div class="form-group"><label>Max Concurrent Inspections</label><input type="number" value="100000"></div>
-        <div class="form-group"><label>DPI Engine Parallelism</label><input type="number" value="8"></div>
-        <div class="form-group"><label>Regex Engine</label><select><option>FPGA Aho-Corasick</option><option>CPU Hyperscan</option></select></div>
-      </div>
-    </div></div>`;
-}
-
-/* ---- Setup > DLP ---- */
-function renderSetupDLP(p) {
-  p.innerHTML = `
-    <div class="section"><div class="section-title">Data Loss Prevention</div><div class="card">
-      <div class="grid grid-2">
-        <div class="form-group"><label>DLP Enabled</label><select><option>Yes</option><option>No</option></select></div>
-        <div class="form-group"><label>Inspection Mode</label><select><option>Inline (Block)</option><option>Monitor Only</option></select></div>
-        <div class="form-group"><label>FPGA DLP Engine</label><select><option>Enabled</option><option>Disabled (CPU only)</option></select></div>
-        <div class="form-group"><label>Max Document Size (MB)</label><input type="number" value="25"></div>
-      </div>
-    </div></div>
-    <div class="section"><div class="section-title">Built-in Data Patterns</div><div class="card">
-      <div class="table-wrap">
-        <table><thead><tr><th>Pattern</th><th>Type</th><th>FPGA Accelerated</th><th>Enabled</th></tr></thead>
-        <tbody>
-          <tr><td>Credit Card Numbers</td><td>Luhn + Regex</td><td><span class="text-green">Yes</span></td><td><select><option>Yes</option><option>No</option></select></td></tr>
-          <tr><td>Social Security Numbers</td><td>Regex + Validation</td><td><span class="text-green">Yes</span></td><td><select><option>Yes</option><option>No</option></select></td></tr>
-          <tr><td>Email Addresses (PII)</td><td>Regex</td><td><span class="text-green">Yes</span></td><td><select><option>Yes</option><option>No</option></select></td></tr>
-          <tr><td>IBAN Numbers</td><td>Regex + Checksum</td><td><span class="text-dim">No (CPU)</span></td><td><select><option>Yes</option><option>No</option></select></td></tr>
-          <tr><td>Medical Record Numbers</td><td>Regex</td><td><span class="text-dim">No (CPU)</span></td><td><select><option>No</option><option>Yes</option></select></td></tr>
-          <tr><td>Custom Pattern 1</td><td>User Regex</td><td><span class="text-dim">No</span></td><td><select><option>No</option><option>Yes</option></select></td></tr>
-        </tbody></table>
-      </div>
-    </div></div>`;
-}
-
 async function loadSetupInfo() {
-  const [status, fpga] = await Promise.all([api('/api/system/status'), api('/api/system/fpga')]);
-  if (status) {
-    const h=document.getElementById('setup-hostname');if(h)h.value=status.hostname;
+  const msg = document.getElementById('setup-msg');
+  try {
+    const [result] = await Promise.all([consoleRequest('/api/system/setup'), loadConsoleRole()]);
+    if (!msg.isConnected) return;
+    setupBaseline = result.config;
+    for (const key of Object.keys(SETUP_FIELDS)) {
+      const el = document.getElementById('setup-'+key); el.value = setupBaseline[key] || ''; el.disabled = !consoleCanWrite();
+    }
+    document.getElementById('setup-save').disabled = !consoleCanWrite();
+    msg.textContent = 'Candidate settings loaded.';
+  } catch (e) { if (msg.isConnected) msg.textContent = e.message; }
+}
+async function saveSetup() {
+  if (!setupBaseline || !consoleCanWrite()) return;
+  const msg = document.getElementById('setup-msg'), btn = document.getElementById('setup-save');
+  const changes = {};
+  for (const key of Object.keys(SETUP_FIELDS)) {
+    const value = document.getElementById('setup-'+key).value.trim();
+    if (value !== (setupBaseline[key] || '')) changes[key] = value;
   }
-  const certEl = document.getElementById('device-cert-info');
-  if (certEl) {
-    const fpgaInfo = fpga && fpga.detected ? `<div><strong>FPGA DNA:</strong> <span class="mono">${fpga.device_dna||'Read via ioctl'}</span></div>` : '<div><strong>FPGA:</strong> <span class="text-dim">Not detected — using software serial</span></div>';
-    const cert = (status && status.cert) ? status.cert : {};
-    certEl.innerHTML = `
-      <div><strong>Hostname:</strong> ${status?_escSP(status.hostname):'--'}</div>
-      ${fpgaInfo}
-      <div><strong>Serial Hash:</strong> <span class="mono">${fpga && fpga.device_dna ? _escSP(fpga.device_dna) : '--'}</span></div>
-      <div><strong>Current Cert:</strong> ${_escSP(cert.type || '--')}</div>
-      <div><strong>Expires:</strong> ${_escSP(cert.expires || '--')}</div>
-      <div><strong>Issuer:</strong> ${_escSP(cert.issuer || '--')}</div>`;
-  }
+  if (!Object.keys(changes).length) { msg.textContent = 'No changes to save.'; return; }
+  btn.disabled = true; msg.textContent = 'Saving…';
+  try {
+    const r = await consoleRequest('/api/system/setup', {method:'POST', body:JSON.stringify(changes)});
+    if (r.status !== 'candidate-updated') throw new Error('Candidate update was not confirmed.');
+    if (!msg.isConnected) return;
+    Object.assign(setupBaseline, changes);
+    msg.textContent = 'Saved to candidate — review and commit to apply.';
+    refreshCommitIndicator();
+  } catch(e) { if (msg.isConnected) msg.textContent = e.message; }
+  finally { if (btn.isConnected) btn.disabled = !consoleCanWrite(); }
 }
 
-function saveSetup() {
-  const msg = document.getElementById('setup-msg');
-  const hn=document.getElementById('setup-hostname');
-  const d1=document.getElementById('setup-dns1');
-  const d2=document.getElementById('setup-dns2');
-  const ntp=document.getElementById('setup-ntp');
-  const tz=document.getElementById('setup-tz');
-  api('/api/system/setup',{method:'POST',body:JSON.stringify({
-    hostname:hn?hn.value:'',dns_primary:d1?d1.value:'',dns_secondary:d2?d2.value:'',
-    ntp_server:ntp?ntp.value:'',timezone:tz?tz.value:'',
-  })}).then(r=>{
-    if(msg){
-      if(r && r.status==='candidate-updated'){
-        msg.textContent='Saved to candidate — commit to apply';msg.style.color='var(--orange)';
-      } else {
-        msg.textContent='Saved';msg.style.color='var(--green)';
-      }
-    }
-    refreshCommitIndicator();
-  });
-}
-function saveMgmtInterface() { alert('Management interface configuration applied'); }
-function generateDeviceCert() {
-  const msg = document.getElementById('cert-msg');
-  if(msg){msg.textContent='Certificate generation requested...';msg.style.color='var(--orange)'}
-  setTimeout(()=>{if(msg){msg.textContent='Certificate generated';msg.style.color='var(--green)'}},2000);
-}
 
 async function changePassword() {
   const cur=document.getElementById('set-cur-pw').value;
@@ -4965,7 +4315,7 @@ async function loadZonesVsysList() {
   const sel = document.getElementById('zones-vsys-select');
   if (!sel) return;
   const entries = (d && d.entries) || [{name:'vsys1'}];
-  sel.innerHTML = entries.map(v=>`<option value="${v.name}" ${v.name===_zonesVsys?'selected':''}>${v.name} (${v.display_name||v.name})</option>`).join('');
+  sel.innerHTML = entries.map(v=>`<option value="${_escSP(v.name)}" ${v.name===_zonesVsys?'selected':''}>${_escSP(v.name)} (${_escSP(v.display_name||v.name)})</option>`).join('');
 }
 
 async function loadZones() {
@@ -4976,22 +4326,28 @@ async function loadZones() {
   if (!tbody) return;
   const entries = (d && d.entries) || [];
   if (!entries.length) {
-    tbody.innerHTML = `<tr><td colspan="8" class="text-dim">No zones in ${_zonesVsys}. Click <strong>+ Add Zone</strong> to create one.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="text-dim">No zones in ${_escSP(_zonesVsys)}. Click <strong>+ Add Zone</strong> to create one.</td></tr>`;
     return;
   }
-  tbody.innerHTML = entries.map(z=>`<tr>
-    <td><strong>${z.name}</strong></td>
-    <td><span class="badge" style="background:#1a4f9e;color:#fff">${z.zone_type}</span></td>
-    <td class="mono" style="font-size:10px">${(z.interfaces||[]).join(', ')||'--'}</td>
+  tbody.innerHTML = entries.map((z,i)=>`<tr>
+    <td><strong>${_escSP(z.name)}</strong></td>
+    <td><span class="badge" style="background:#1a4f9e;color:#fff">${_escSP(z.zone_type)}</span></td>
+    <td class="mono" style="font-size:10px">${_escSP((z.interfaces||[]).join(', ')||'--')}</td>
     <td>${z.enable_user_identification?'<span class="badge badge-up">on</span>':'<span class="text-dim">off</span>'}</td>
-    <td>${z.zone_protection_profile||'--'}</td>
-    <td>${z.log_setting||'--'}</td>
-    <td class="text-dim" style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${z.comment||''}</td>
+    <td>${_escSP(z.zone_protection_profile||'--')}</td>
+    <td>${_escSP(z.log_setting||'--')}</td>
+    <td class="text-dim" style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${_escSP(z.comment||'')}</td>
     <td>
-      <button class="btn btn-xs" onclick='editZone(${JSON.stringify(z).replace(/"/g,"&quot;")})'>Edit</button>
-      <button class="btn btn-xs btn-danger" onclick="deleteZone('${z.name}')">Del</button>
+      <button class="btn btn-xs" data-zone="${i}" data-action="edit">Edit</button>
+      <button class="btn btn-xs btn-danger" data-zone="${i}" data-action="delete">Del</button>
     </td>
   </tr>`).join('');
+  tbody.onclick = event => {
+    const button = event.target.closest('[data-zone]'); if (!button) return;
+    const zone = entries[Number(button.dataset.zone)]; if (!zone) return;
+    if (button.dataset.action === 'edit') editZone(zone);
+    else if (button.dataset.action === 'delete') deleteZone(zone.name);
+  };
 }
 
 function openZoneModal(existing) {
@@ -5133,20 +4489,20 @@ async function loadVirtualRouters() {
 
 function vrGridRow(vr, i) {
   const name = _escSP(vr.name);
-  const nameJs = (vr.name || '').replace(/'/g, "\\'");
+  const nameAttr = _escSP(vr.name || '');
   const ifaces = (vr.interfaces || vr.members || []);
   const ifHtml = ifaces.length ? _escSP(ifaces.join(', ')) : '<span class="text-dim">none</span>';
   const down = (vr.admin_up === false) ? ' <span class="badge badge-down" style="font-size:9px">admin down</span>' : '';
   return `<tr>
-    <td style="vertical-align:top"><strong class="mono" style="cursor:pointer;color:var(--accent)" title="Configure routing" onclick="openVrRouting('${nameJs}')">${name}</strong>${down}
+    <td style="vertical-align:top"><strong class="mono" style="cursor:pointer;color:var(--accent)" title="Configure routing" data-vr="${nameAttr}" onclick="openVrRouting(this.dataset.vr)">${name}</strong>${down}
       <div class="text-dim" style="font-size:10px">table ${_escSP(vr.table_id != null ? vr.table_id : '?')}</div></td>
     <td style="font-size:11px;vertical-align:top">${ifHtml}</td>
     <td id="vr-cfg-${i}" style="font-size:11px;vertical-align:top" class="text-dim">&hellip;</td>
     <td style="white-space:nowrap;vertical-align:top">
-      <button class="btn btn-xs btn-primary" onclick="openVrRouting('${nameJs}')">Routing</button>
-      <button class="btn btn-xs" onclick="openVrFibModal('${nameJs}')">Runtime</button>
-      <button class="btn btn-xs" onclick="editVR('${nameJs}')">Edit</button>
-      <button class="btn btn-xs btn-danger" onclick="deleteVR('${nameJs}')">Del</button>
+      <button class="btn btn-xs btn-primary" data-vr="${nameAttr}" onclick="openVrRouting(this.dataset.vr)">Routing</button>
+      <button class="btn btn-xs" data-vr="${nameAttr}" onclick="openVrFibModal(this.dataset.vr)">Runtime</button>
+      <button class="btn btn-xs" data-vr="${nameAttr}" onclick="editVR(this.dataset.vr)">Edit</button>
+      <button class="btn btn-xs btn-danger" data-vr="${nameAttr}" onclick="deleteVR(this.dataset.vr)">Del</button>
     </td>
   </tr>`;
 }
@@ -5361,7 +4717,7 @@ async function saveVrRouting() {
 
 function vrCardHtml(vr) {
   const name = _escSP(vr.name);
-  const nameJs = (vr.name || '').replace(/'/g, "\\'");
+  const nameAttr = _escSP(vr.name || '');
   const ifaces = (vr.interfaces || vr.members || []);
   const ifHtml = ifaces.length
     ? ifaces.map(i => `<span class="badge badge-info" style="font-size:10px">${_escSP(i)}</span>`).join(' ')
@@ -5383,11 +4739,11 @@ function vrCardHtml(vr) {
         ${protoBadge} ${up} ${vsys} ${rid} ${asn}
       </div>
       <div style="display:flex;gap:6px">
-        <button class="btn btn-xs" onclick="loadVRFib('${nameJs}')">Show FIB</button>
-        <button class="btn btn-xs btn-primary" onclick="openVRouteModal('${nameJs}')">+ Route</button>
-        <button class="btn btn-xs" onclick="openVrRouting('${nameJs}')">Routing</button>
-        <button class="btn btn-xs" onclick="editVR('${nameJs}')">Edit</button>
-        <button class="btn btn-xs btn-danger" onclick="deleteVR('${nameJs}')">Del</button>
+        <button class="btn btn-xs" data-vr="${nameAttr}" onclick="loadVRFib(this.dataset.vr)">Show FIB</button>
+        <button class="btn btn-xs btn-primary" data-vr="${nameAttr}" onclick="openVRouteModal(this.dataset.vr)">+ Route</button>
+        <button class="btn btn-xs" data-vr="${nameAttr}" onclick="openVrRouting(this.dataset.vr)">Routing</button>
+        <button class="btn btn-xs" data-vr="${nameAttr}" onclick="editVR(this.dataset.vr)">Edit</button>
+        <button class="btn btn-xs btn-danger" data-vr="${nameAttr}" onclick="deleteVR(this.dataset.vr)">Del</button>
       </div>
     </div>
     <div style="margin:8px 0;font-size:11px"><span class="text-dim">Members:</span> ${ifHtml}</div>
@@ -5415,15 +4771,15 @@ async function loadVRRoutes(vrName) {
     tbody.innerHTML = '<tr><td colspan="5" class="text-dim">No static routes.</td></tr>';
     return;
   }
-  const nameJs = (vrName || '').replace(/'/g, "\\'");
+  const nameAttr = _escSP(vrName || '');
   tbody.innerHTML = routes.map(r => {
-    const rid = String(_routeId(r)).replace(/'/g, "\\'");
+    const routeAttr = _escSP(String(_routeId(r)));
     return `<tr>
       <td class="mono">${_escSP(_routeDest(r))}</td>
       <td class="mono">${_escSP(_routeNh(r))}</td>
       <td>${_escSP(_routeDev(r) || '--')}</td>
       <td>${_escSP(r.metric != null ? r.metric : '--')}</td>
-      <td><button class="btn btn-xs btn-danger" onclick="deleteVRoute('${nameJs}','${rid}')">Del</button></td>
+      <td><button class="btn btn-xs btn-danger" data-vr="${nameAttr}" data-route="${routeAttr}" onclick="deleteVRoute(this.dataset.vr,this.dataset.route)">Del</button></td>
     </tr>`;
   }).join('');
 }
@@ -5699,6 +5055,7 @@ async function loadZeroTier() {
 }
 
 /* ---- Network > DHCP ---- */
+const NET_PAGES = {};
 const _CTX_DHCP = netRegister({
   kind: 'dhcp-scopes',
   title: 'DHCP Server',
@@ -5823,7 +5180,6 @@ function _netTable(headers, rows, emptyMsg) {
    netSaveEntry(ctx), netDeleteEntry(ctx,id), netEditEntry(ctx,id)
    --------------------------------------------------------------------------- */
 
-const NET_PAGES = {};
 let _netCurrentCtx = null;
 
 function netRegister(ctx) { NET_PAGES[ctx.kind] = ctx; return ctx; }
@@ -5834,6 +5190,7 @@ function netPageHTML(ctx) {
     <div class="page-header"><h2>${ctx.title}</h2>
       <div class="actions"><button class="btn btn-primary btn-sm" onclick="netOpenAddModal('${ctx.kind}')">+ Add</button></div>
     </div>
+    <p class="text-dim">Saved resource definitions. Saving a definition does not confirm that a runtime service has applied it.</p>
     ${ctx.desc ? `<p class="text-dim" style="font-size:11px;margin-bottom:10px">${ctx.desc}</p>` : ''}
     <div class="card"><div class="table-wrap">
       <table>
@@ -5845,7 +5202,9 @@ function netPageHTML(ctx) {
 
 async function netRenderList(ctx) {
   _netCurrentCtx = ctx;
-  const data = await api(`/api/network-resources/${ctx.kind}`);
+  let data;
+  try { data = await consoleRequest(`/api/network-resources/${ctx.kind}`); }
+  catch(e) { const body = document.getElementById('net-tbody-'+ctx.kind); if (body) body.innerHTML = `<tr><td colspan="99">${_netEscape(e.message)}</td></tr>`; return; }
   const tbody = document.getElementById('net-tbody-' + ctx.kind);
   if (!tbody) return;
   const entries = (data && data.entries) || [];
@@ -5874,8 +5233,8 @@ async function netRenderList(ctx) {
 
 function _netEscape(v) {
   if (v == null) return '';
-  if (Array.isArray(v)) return v.join(', ');
-  if (typeof v === 'object') return JSON.stringify(v);
+  if (Array.isArray(v)) v = v.join(', ');
+  else if (typeof v === 'object') v = JSON.stringify(v);
   return String(v).replace(/[<>&"']/g, s=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[s]));
 }
 
@@ -5894,13 +5253,13 @@ function _netFieldInput(f, value) {
     return `<textarea id="${name}" rows="3" style="width:100%">${_netEscape(value)}</textarea>`;
   }
   if (f.type === 'number') {
-    return `<input id="${name}" type="number" value="${value}" style="width:100%" ${f.placeholder?'placeholder="'+f.placeholder+'"':''}>`;
+    return `<input id="${name}" type="number" value="${_netEscape(value)}" style="width:100%" ${f.placeholder?'placeholder="'+f.placeholder+'"':''}>`;
   }
   if (f.type === 'password') {
     return `<input id="${name}" type="password" value="${_netEscape(value)}" style="width:100%" ${f.placeholder?'placeholder="'+f.placeholder+'"':''}>`;
   }
   if (f.type === 'list') {
-    return `<input id="${name}" type="text" value="${Array.isArray(value)?value.join(', '):_netEscape(value)}" style="width:100%" placeholder="${f.placeholder||'Comma-separated'}">`;
+    return `<input id="${name}" type="text" value="${_netEscape(Array.isArray(value)?value.join(', '):value)}" style="width:100%" placeholder="${f.placeholder||'Comma-separated'}">`;
   }
   return `<input id="${name}" type="text" value="${_netEscape(value)}" style="width:100%" ${f.placeholder?'placeholder="'+f.placeholder+'"':''}>`;
 }
@@ -5944,6 +5303,7 @@ async function netSaveEntry(id) {
     let v = el.value;
     if (f.type === 'number') v = v === '' ? null : Number(v);
     else if (f.type === 'list') v = v.split(',').map(s=>s.trim()).filter(Boolean);
+    if (f.required && (v == null || v === '' || (Array.isArray(v) && !v.length))) { document.getElementById('net-save-msg').textContent = f.label + ' is required'; return; }
     config[f.key] = v;
   }
   const body = {name, enabled, config};
@@ -5951,10 +5311,10 @@ async function netSaveEntry(id) {
   if (msg) { msg.textContent = 'Saving...'; msg.style.color = 'var(--orange)'; }
   try {
     if (id == null) {
-      const r = await api(`/api/network-resources/${ctx.kind}`, {method:'POST', body: JSON.stringify(body)});
+      const r = await consoleRequest(`/api/network-resources/${ctx.kind}`, {method:'POST', body: JSON.stringify(body)});
       if (!r || r.detail) throw new Error((r && r.detail) || 'create failed');
     } else {
-      const r = await api(`/api/network-resources/${ctx.kind}/${id}`, {method:'PUT', body: JSON.stringify(body)});
+      const r = await consoleRequest(`/api/network-resources/${ctx.kind}/${id}`, {method:'PUT', body: JSON.stringify(body)});
       if (!r || r.detail) throw new Error((r && r.detail) || 'update failed');
     }
     closeModal('modal-info');
@@ -5975,7 +5335,8 @@ async function netEditEntry(kind, id) {
 
 async function netDeleteEntry(kind, id) {
   if (!confirm('Delete this entry?')) return;
-  await api(`/api/network-resources/${kind}/${id}`, {method:'DELETE'});
+  try { await consoleRequest(`/api/network-resources/${kind}/${id}`, {method:'DELETE'}); }
+  catch(e) { alert(e.message); return; }
   const ctx = NET_PAGES[kind];
   if (ctx) netRenderList(ctx);
   refreshCommitIndicator();
@@ -6195,44 +5556,103 @@ async function renderDevicePlugins(c) {
 }
 
 /* ---- Device > Config Audit (config change history) ---- */
-async function renderDeviceConfigAudit(c) {
-  c.innerHTML = `<div class="page-header"><h2>Config Audit</h2></div>
-    <p class="text-dim" style="font-size:11px;margin-bottom:10px">Configuration change history (candidate commits and administrative actions).</p>
-    <div class="card"><div class="table-wrap"><table><thead><tr><th>Version</th><th>Time</th><th>Admin</th><th>Action / Description</th></tr></thead>
-    <tbody id="audit-tbody"><tr><td colspan="4" class="text-dim">Loading...</td></tr></tbody></table></div></div>`;
-  let r = await api('/api/config/history');
-  const rows = (r && (r.history || r.entries || r.versions)) || (Array.isArray(r) ? r : []);
-  const tb = document.getElementById('audit-tbody');
-  tb.innerHTML = rows.length ? rows.map(function(h){
-    return `<tr><td>${_netEscape(h.version||h.id||'')}</td><td class="text-dim">${_netEscape(h.timestamp||h.time||h.created_at||'')}</td>`
-      + `<td>${_netEscape(h.user||h.admin||'')}</td><td>${_netEscape(h.description||h.action||h.summary||'')}</td></tr>`;
-  }).join('') : '<tr><td colspan="4" class="text-dim" style="padding:20px">No configuration changes recorded yet.</td></tr>';
+function renderDeviceConfigAudit(c) {
+  c.innerHTML = `<div class="page-header"><h2>Configuration & Backups</h2></div>
+    <div class="card"><h3>Candidate and Running Configuration</h3>
+      <p class="text-dim">Running is the committed configuration. Restoring a snapshot replaces candidate changes and requires a commit.</p>
+      <div class="workflow-actions"><button class="btn" onclick="openCommitModal()">Review Changes / Commit</button>
+      <button class="btn" onclick="openHistoryModal()">Version History</button><button class="btn" onclick="openLockInfo()">Configuration Lock</button>
+      <button class="btn" onclick="exportConfiguration('running')">Export Running XML</button>
+      <button class="btn" onclick="exportConfiguration('candidate')">Export Candidate XML</button></div></div>
+    <div class="card"><h3>Saved Running Snapshots</h3>
+      <div class="workflow-actions"><input id="snapshot-name" aria-label="Snapshot name" placeholder="Snapshot name" maxlength="128">
+      <input id="snapshot-description" aria-label="Snapshot description" placeholder="Description">
+      <button id="snapshot-save" class="btn btn-primary" ${consoleCanWrite()?'':'disabled'} onclick="saveSnapshot()">Save Running Snapshot</button>
+      <button class="btn" onclick="loadSnapshots()">Refresh</button></div>
+      <p id="config-notice" role="status"></p><div id="snapshot-list">Loading snapshots…</div></div>`;
+  loadSnapshots();
 }
+async function loadSnapshots() {
+  const list = document.getElementById('snapshot-list'); if (!list) return;
+  try {
+    const [r] = await Promise.all([consoleRequest('/api/config/snapshots'), loadConsoleRole()]);
+    if (!list.isConnected) return;
+    document.getElementById('snapshot-save').disabled = !consoleCanWrite();
+    const rows = r.snapshots || [];
+    list.innerHTML = rows.length ? `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Created (UTC)</th><th>Description</th><th>Actions</th></tr></thead><tbody>${rows.map((r,i) =>
+      `<tr><td>${_escSP(r.name)}</td><td>${_escSP(r.created_at)}</td><td>${_escSP(r.description)}</td><td>
+      <button class="btn btn-xs" data-snapshot="${i}" data-action="restore" ${consoleCanWrite()?'':'disabled'}>Restore to Candidate</button>
+      <button class="btn btn-xs btn-danger" data-snapshot="${i}" data-action="delete" ${consoleCanWrite()?'':'disabled'}>Delete</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="text-dim">No snapshots saved.</p>';
+    list.onclick = e => {
+      const button = e.target.closest('[data-snapshot]');
+      if (button && !button.disabled) snapshotAction(button.dataset.action, rows[Number(button.dataset.snapshot)].name);
+    };
+  } catch(e) { if (list.isConnected) list.textContent = e.message; }
+}
+async function saveSnapshot() {
+  if (!consoleCanWrite()) return;
+  const name = document.getElementById('snapshot-name').value.trim();
+  const msg = document.getElementById('config-notice'), btn = document.getElementById('snapshot-save');
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(name)) { msg.textContent = 'Use 1–128 letters, numbers, underscores or hyphens.'; return; }
+  btn.disabled = true;
+  try {
+    const existing = await consoleRequest('/api/config/snapshots');
+    if ((existing.snapshots || []).some(s => s.name === name) && !confirm('Replace the saved snapshot '+name+'?')) return;
+    await consoleRequest('/api/config/snapshots', {method:'POST', body:JSON.stringify({name, description:document.getElementById('snapshot-description').value})});
+    if (msg.isConnected) { msg.textContent = 'Running snapshot saved.'; await loadSnapshots(); }
+  } catch(e) { if (msg.isConnected) msg.textContent = e.message; }
+  finally { if (btn.isConnected) btn.disabled = !consoleCanWrite(); }
+}
+async function snapshotAction(action, name) {
+  if (!consoleCanWrite() || !['restore','delete'].includes(action)) return;
+  if (!confirm(action === 'restore' ? 'Replace candidate changes with snapshot '+name+'? Commit is required to activate it.' : 'Delete saved snapshot '+name+'?')) return;
+  const msg = document.getElementById('config-notice');
+  try {
+    await consoleRequest('/api/config/snapshots/'+encodeURIComponent(name)+(action==='restore'?'/restore':''), {method:action==='restore'?'POST':'DELETE'});
+    if (msg.isConnected) { msg.textContent = action==='restore'?'Restored to candidate — review and commit to activate.':'Snapshot deleted.'; await loadSnapshots(); }
+    refreshCommitIndicator();
+  } catch(e) { if (msg.isConnected) msg.textContent = e.message; }
+}
+async function exportConfiguration(source) {
+  if (!['running','candidate'].includes(source)) return;
+  const msg = document.getElementById('config-notice');
+  try {
+    const r = await consoleRequest('/api/config/'+source);
+    if (typeof r.xml !== 'string') throw new Error('Configuration XML unavailable.');
+    const url = URL.createObjectURL(new Blob([r.xml], {type:'application/xml'}));
+    const a = document.createElement('a'); a.href=url; a.download=source+'-config.xml'; a.click();
+    setTimeout(() => URL.revokeObjectURL(url),1000);
+    if (msg.isConnected) msg.textContent = 'Configuration exported.';
+  } catch(e) { if (msg.isConnected) msg.textContent = e.message; }
+}
+
+
 
 /* ---- Device > Dynamic Updates (content/signature versions) ---- */
 async function renderDeviceDynamicUpdates(c) {
-  c.innerHTML = `<div class="page-header"><h2>Dynamic Updates</h2>
-      <div class="actions"><button class="btn btn-sm" onclick="checkDynamicUpdates(this)">Check Now</button></div></div>
+  c.innerHTML = `<div class="page-header"><h2>Content Status</h2>
+      <div class="actions"><button class="btn btn-sm" onclick="checkDynamicUpdates(this)">Refresh Status</button></div></div>
     <div class="card"><div id="dynupd-body" class="text-dim" style="padding:14px">Loading...</div></div>`;
   loadDynamicUpdates();
 }
 async function loadDynamicUpdates() {
-  const r = await api('/api/sigdb/status');
   const b = document.getElementById('dynupd-body'); if (!b) return;
-  if (!r) { b.innerHTML = 'Update status unavailable.'; return; }
-  const items = (r.databases || r.feeds || (Array.isArray(r)?r:[r]));
-  b.innerHTML = '<div class="table-wrap"><table><thead><tr><th>Content</th><th>Version</th><th>Released</th><th>Status</th></tr></thead><tbody>'
-    + (Array.isArray(items)?items:[items]).map(function(d){
-        return `<tr><td>${_netEscape(d.name||d.type||'signatures')}</td><td>${_netEscape(d.version||d.current_version||'')}</td>`
-          + `<td class="text-dim">${_netEscape(d.released||d.updated_at||d.last_update||'')}</td>`
-          + `<td>${_netEscape(d.status||'installed')}</td></tr>`;
-      }).join('') + '</tbody></table></div>';
+  try {
+    const r = await consoleRequest('/api/sigdb/status');
+    if (!b.isConnected) return;
+    if (!r.available) { b.textContent = 'Content database status unavailable.'; return; }
+    b.innerHTML = `<p>Local revision: <strong>${_escSP(r.version_string ?? r.version ?? 'Unknown')}</strong> · Signatures: ${_escSP(r.total ?? 'Unknown')}</p>
+      <p class="text-dim">Last update: ${_escSP(r.last_update || 'Not reported')}. Refresh reads local status; it does not download a feed.</p>
+      <div class="table-wrap"><table><thead><tr><th>Type</th><th>Entries</th></tr></thead><tbody>${Object.entries(r.by_type || {}).map(([type,count]) => `<tr><td>${_escSP(type)}</td><td>${_escSP(count)}</td></tr>`).join('')}</tbody></table></div>
+      <button class="btn" onclick="openPayloadUpdates()">Manage Content Packages</button>`;
+  } catch(e) { if (b.isConnected) b.textContent = e.message; }
 }
+
+
 async function checkDynamicUpdates(btn) {
   if (btn){ btn.disabled=true; btn.textContent='Checking...'; }
-  await api('/api/sigdb/update', {method:'POST'});
   await loadDynamicUpdates();
-  if (btn){ btn.disabled=false; btn.textContent='Check Now'; }
+  if (btn){ btn.disabled=false; btn.textContent='Refresh Status'; }
 }
 
 /* ---- Device > Recommendations (IoT / SaaS policy) ---- */
@@ -7224,54 +6644,11 @@ async function loadSsh() {
 }
 
 /* ---- Device > Syslog ---- */
-function renderDeviceSyslog(c) {
-  c.innerHTML = `
-    <div class="page-header"><h2>Syslog Configuration</h2>
-      <div class="actions"><button class="btn btn-primary btn-sm" onclick="netOpenAddModal('server-syslog')">+ Add Server</button></div>
-    </div>
-    <div class="card"><div class="table-wrap">
-      <table><thead><tr><th>Server</th><th>Port</th><th>Transport</th><th>Facility</th><th>Min Severity</th><th>Status</th></tr></thead>
-      <tbody>
-        <tr><td colspan="6" class="text-dim">No syslog servers configured. Logs are stored locally in /var/log/ffn-ngfw/</td></tr>
-      </tbody></table>
-    </div></div>
-    <div class="section"><div class="section-title">Log Settings</div><div class="card">
-      <div class="grid grid-3">
-        <div class="form-group"><label>Log Retention (days)</label><input type="number" value="90"></div>
-        <div class="form-group"><label>Max Log Size (GB)</label><input type="number" value="10"></div>
-        <div class="form-group"><label>Format</label><select><option>BSD (RFC 3164)</option><option>IETF (RFC 5424)</option><option>CEF</option></select></div>
-      </div>
-    </div></div>`;
-}
+function renderDeviceSyslog(c) { switchSubPage('sp-syslog'); }
 
 /* ---- Device > Software ---- */
 function renderDeviceSoftware(c) {
-  c.innerHTML = `
-    <div class="page-header"><h2>Software Updates</h2></div>
-    <div class="grid grid-2">
-      <div class="card">
-        <h3>Current Version</h3>
-        <div id="sw-version" style="font-size:12px;line-height:2.2">Loading...</div>
-      </div>
-      <div class="card">
-        <h3>Available Updates</h3>
-        <div style="font-size:12px;line-height:2.2;color:var(--text-dim)">
-          <div>Last check: Never</div>
-          <div>No updates available</div>
-        </div>
-        <button class="btn btn-sm mt-8">Check for Updates</button>
-      </div>
-    </div>
-    <div class="section"><div class="section-title">Installed Components</div><div class="card"><div class="table-wrap">
-      <table><thead><tr><th>Component</th><th>Version</th><th>Status</th></tr></thead>
-      <tbody>
-        <tr><td>ffn-ngfw-manager</td><td>1.0.0</td><td><span class="badge badge-up">Running</span></td></tr>
-        <tr><td>ffn-ngfw-driver</td><td>1.0.0</td><td><span class="badge badge-down">Not Loaded</span></td></tr>
-        <tr><td>libngfw</td><td>1.0.0</td><td><span class="badge badge-up">Installed</span></td></tr>
-        <tr><td>ngfwctl</td><td>1.0.0</td><td><span class="badge badge-up">Installed</span></td></tr>
-      </tbody></table>
-    </div></div></div>`;
-  loadSoftwareInfo();
+  renderPatchManagement(c);
 }
 
 async function loadSoftwareInfo() {
@@ -7959,33 +7336,7 @@ function runDiagAction(action) {
 }
 
 /* ---- Device > SSL/TLS Service Profile ---- */
-function renderDeviceSSLProfile(c) {
-  c.innerHTML = `
-    <div class="page-header"><h2>SSL/TLS Service Profile</h2>
-      <div class="actions"><button class="btn btn-primary btn-sm" onclick="alert('Add SSL/TLS profile')">+ Add</button></div>
-    </div>
-    <div class="card"><div class="table-wrap">
-      <table><thead><tr><th>Name</th><th>Certificate</th><th>Min Version</th><th>Max Version</th><th>Key Exchange</th><th>Cipher Suites</th><th></th></tr></thead>
-      <tbody>
-        <tr><td><strong>default</strong></td><td>Device Certificate</td><td>TLS 1.2</td><td>TLS 1.3</td><td>ECDHE</td><td>AES-256-GCM, CHACHA20-POLY1305</td><td><button class="btn btn-xs">Edit</button></td></tr>
-        <tr><td><strong>forward-proxy</strong></td><td>ffn-fwd-proxy</td><td>TLS 1.2</td><td>TLS 1.3</td><td>ECDHE, DHE</td><td>AES-128-GCM, AES-256-GCM</td><td><button class="btn btn-xs">Edit</button></td></tr>
-      </tbody></table>
-    </div></div>`;
-}
 
-/* ---- Device > Local Users ---- */
-function renderDeviceLocalUsers(c) {
-  c.innerHTML = `
-    <div class="page-header"><h2>Local User Database</h2>
-      <div class="actions"><button class="btn btn-primary btn-sm" onclick="alert('Add local user')">+ Add User</button></div>
-    </div>
-    <div class="card"><div class="table-wrap">
-      <table><thead><tr><th>Username</th><th>Role</th><th>Disabled</th><th>Last Login</th><th>Password Expires</th><th></th></tr></thead>
-      <tbody>
-        <tr><td><strong>admin</strong></td><td>superuser</td><td>No</td><td id="lu-last-login">--</td><td>Never</td><td><button class="btn btn-xs">Edit</button></td></tr>
-      </tbody></table>
-    </div></div>`;
-}
 
 /* ---- Device > Licenses (Axis 2: dual identity — host h1 + accelerator FPGA DNA) ---- */
 function renderDeviceLicenses(c) {
@@ -8140,12 +7491,12 @@ async function loadLicenses() {
     const files = s.licenses_on_disk || s.license_files || [];
     filesBody.innerHTML = files.length ? files.map(f => {
       const exp = f.expiry ? _escSP(f.expiry) + (f.expiry_days != null ? ` (${f.expiry_days}d)` : '') : 'permanent';
-      const nm = (f.name || '').replace(/'/g, "\\'");
+      const nameAttr = _escSP(f.name || '');
       return `<tr>
         <td class="mono">${_escSP(f.name || '--')}</td>
         <td class="mono">${_escSP(f.feature_id_hex || '?')}</td>
         <td>${exp}</td>
-        <td><button class="btn btn-xs btn-danger" onclick="licDelete('license','${nm}')">×</button></td>
+        <td><button class="btn btn-xs btn-danger" data-license="${nameAttr}" onclick="licDelete('license',this.dataset.license)">×</button></td>
       </tr>`;
     }).join('') : '<tr><td colspan="4" class="text-dim">No license tokens uploaded</td></tr>';
   }
@@ -8233,54 +7584,28 @@ function renderDeviceSupport(c) {
       <div class="card">
         <h3>Support Actions</h3>
         <div style="display:flex;flex-direction:column;gap:8px">
-          <button class="btn btn-sm" onclick="alert('Generating tech support file...')">Generate Tech Support File</button>
-          <button class="btn btn-sm" onclick="alert('Stats dump generated')">Generate Stats Dump</button>
-          <a class="btn btn-sm" href="https://github.com/FreeFlow-Networks-Inc/FFN-NGFW-FPGA/issues" target="_blank">Open Support Case</a>
+          <button class="btn btn-sm" onclick="switchSubPage('troubleshooting')">Open Diagnostics</button>
+          <button class="btn btn-sm" onclick="switchSubPage('dash-system')">System Health</button>
+          <a class="btn btn-sm" href="https://github.com/FreeFlow-Networks-Inc/FFN-NGFW/issues" target="_blank" rel="noopener noreferrer">Open Support Case</a>
         </div>
       </div>
     </div>`;
   api('/api/system/status').then(s=>{
     if (!s) return;
-    document.getElementById('support-info').innerHTML = `
-      <div><strong>Hostname:</strong> ${s.hostname}</div>
-      <div><strong>Platform:</strong> ${s.platform} ${s.kernel||''}</div>
-      <div><strong>CPU:</strong> ${s.cpu||'--'}</div>
-      <div><strong>Memory:</strong> ${s.memory_total_gb} GB</div>
-      <div><strong>FPGA:</strong> ${s.fpga_detected?'v'+s.fpga_version:'Not detected'}</div>
-      <div><strong>Uptime:</strong> ${s.uptime_human}</div>`;
+    const info = document.getElementById('support-info'); if (!info) return;
+    info.innerHTML = `
+      <div><strong>Hostname:</strong> ${_escSP(s.hostname)}</div>
+      <div><strong>Platform:</strong> ${_escSP(s.platform)} ${_escSP(s.kernel||'')}</div>
+      <div><strong>CPU:</strong> ${_escSP(s.cpu||'--')}</div>
+      <div><strong>Memory:</strong> ${_escSP(s.memory_total_gb)} GB</div>
+      <div><strong>FPGA:</strong> ${s.fpga_detected?'v'+_escSP(s.fpga_version):'Not detected'}</div>
+      <div><strong>Uptime:</strong> ${_escSP(s.uptime_human)}</div>`;
   });
 }
 
 /* ---- Device > Master Key & Diagnostics ---- */
-function renderDeviceMasterKey(c) {
-  c.innerHTML = `
-    <div class="page-header"><h2>Master Key & Diagnostics</h2></div>
-    <div class="grid grid-2">
-      <div class="card">
-        <h3>Master Key</h3>
-        <div style="font-size:12px;line-height:2;color:var(--text-dim);margin-bottom:10px">
-          <div>The master key encrypts all private keys and passwords stored in the configuration.</div>
-          <div><strong>Status:</strong> Default key in use</div>
-          <div><strong>Key Lifetime:</strong> Permanent</div>
-        </div>
-        <div class="form-group"><label>New Master Key</label><input type="password" placeholder="Enter new master key"></div>
-        <div class="form-group"><label>Confirm</label><input type="password" placeholder="Confirm master key"></div>
-        <button class="btn btn-danger btn-sm">Change Master Key</button>
-        <p class="text-dim" style="font-size:10px;margin-top:6px">Warning: Changing the master key requires all encrypted values to be re-encrypted.</p>
-      </div>
-      <div class="card">
-        <h3>Diagnostic Logs</h3>
-        <div style="display:flex;flex-direction:column;gap:8px">
-          <button class="btn btn-sm" onclick="alert('Downloading mp-log...')">Management Plane Log</button>
-          <button class="btn btn-sm" onclick="alert('Downloading dp-log...')">Data Plane Log</button>
-          <button class="btn btn-sm" onclick="alert('Downloading filter-log...')">Filter Acceleration Log</button>
-          <button class="btn btn-sm" onclick="alert('Downloading application-identification-log...')">Application Identification Log</button>
-        </div>
-      </div>
-    </div>`;
-}
 
-/* ---- Device > Virtual Systems (vsys) ---- */
+
 function renderDeviceVirtualSystems(c) {
   c.innerHTML = `
     <div class="page-header"><h2>Virtual Systems</h2>
@@ -8415,151 +7740,7 @@ async function deleteVsys(name) {
 }
 
 /* ---- Device > Access Domain ---- */
-function renderDeviceAccessDomain(c) {
-  c.innerHTML = `
-    <div class="page-header"><h2>Access Domains</h2>
-      <div class="actions"><button class="btn btn-primary btn-sm" onclick="openAccessDomainModal()">+ Add Access Domain</button></div>
-    </div>
-    <div class="section"><div class="card">
-      <p class="text-dim" style="font-size:11px;margin-bottom:10px">
-        Access Domains are role-scoped admin contexts that constrain which virtual systems,
-        device groups, templates, and commit scopes an administrator can see or modify.
-        Used with Admin Roles and RBAC to delegate multi-tenant management.
-      </p>
-      <div class="table-wrap">
-        <table><thead><tr>
-          <th>Name</th><th>Description</th><th>Allowed vsys</th><th>Device Groups</th>
-          <th>Templates</th><th>Shared Objects</th><th>Assigned Admins</th><th></th>
-        </tr></thead>
-        <tbody id="ad-table-body"></tbody></table>
-      </div>
-    </div></div>
-    <div class="section"><div class="section-title">Default Access Domain Settings</div><div class="card">
-      <div class="grid grid-2">
-        <div class="form-group"><label>Default Domain for New Admins</label><select><option>none</option><option>tenant-a-admins</option></select></div>
-        <div class="form-group"><label>Cross-Domain Object Visibility</label><select><option>Hidden</option><option>Read-Only</option></select></div>
-      </div>
-    </div></div>`;
-  loadAccessDomains();
-}
 
-function loadAccessDomains() {
-  const domains = [
-    {name:'superuser', desc:'Full access — all vsys', vsys:'all', dgs:'all', templates:'all', shared:'R/W', admins:['admin']},
-    {name:'tenant-a-admins', desc:'Tenant A operations', vsys:'vsys2', dgs:'tenant-a', templates:'tenant-a-tpl', shared:'Read', admins:['tenant_a_ops','tenant_a_ro']},
-    {name:'tenant-b-admins', desc:'Tenant B operations', vsys:'vsys3', dgs:'tenant-b', templates:'tenant-b-tpl', shared:'Read', admins:['tenant_b_ops']},
-    {name:'noc-readonly', desc:'NOC monitoring', vsys:'vsys1,vsys2', dgs:'all', templates:'(none)', shared:'Read', admins:['noc_user1','noc_user2']},
-    {name:'auditor', desc:'Compliance audit read-only', vsys:'all', dgs:'all', templates:'all', shared:'Read', admins:['auditor']},
-  ];
-  const tbody = document.getElementById('ad-table-body');
-  if (!tbody) return;
-  tbody.innerHTML = domains.map(d=>`<tr>
-    <td><strong>${d.name}</strong></td>
-    <td>${d.desc}</td>
-    <td class="mono">${d.vsys}</td>
-    <td class="mono">${d.dgs}</td>
-    <td class="mono">${d.templates}</td>
-    <td>${d.shared}</td>
-    <td class="mono" style="font-size:10px">${d.admins.join(', ')}</td>
-    <td>
-      <button class="btn btn-xs" onclick="editAccessDomain('${d.name}')">Edit</button>
-      <button class="btn btn-xs btn-danger" onclick="if(confirm('Delete ${d.name}?'))alert('delete')">Del</button>
-    </td>
-  </tr>`).join('');
-}
-
-function openAccessDomainModal() {
-  document.getElementById('info-modal-title').textContent='Create Access Domain';
-  document.getElementById('info-modal-body').innerHTML = `
-    <div class="form-group"><label>Name</label><input type="text" placeholder="tenant-c-admins" style="width:100%"></div>
-    <div class="form-group"><label>Description</label><input type="text" placeholder="Tenant C operations team" style="width:100%"></div>
-    <div class="form-group"><label>Allowed Virtual Systems</label><select multiple size="4" style="width:100%">
-      <option>vsys1</option><option>vsys2</option><option>vsys3</option>
-    </select></div>
-    <div class="form-group"><label>Device Groups</label><input type="text" placeholder="tenant-c, tenant-c-dmz" style="width:100%"></div>
-    <div class="form-group"><label>Templates</label><input type="text" placeholder="tenant-c-tpl" style="width:100%"></div>
-    <div class="form-group"><label>Shared Objects Access</label><select style="width:100%"><option>Read-Only</option><option>Read-Write</option><option>None</option></select></div>`;
-  document.getElementById('modal-info').classList.add('show');
-}
-function editAccessDomain(name) {
-  document.getElementById('info-modal-title').textContent='Edit Access Domain: '+name;
-  document.getElementById('info-modal-body').innerHTML = '<div class="text-dim">Xpath: <code>config.device.access-domain.entry[@name=\''+name+'\']</code></div>';
-  document.getElementById('modal-info').classList.add('show');
-}
-
-/* ---- Device > Shared Gateways ---- */
-function renderDeviceSharedGateways(c) {
-  c.innerHTML = `
-    <div class="page-header"><h2>Shared Gateways</h2>
-      <div class="actions"><button class="btn btn-primary btn-sm" onclick="openSgModal()">+ Add Shared Gateway</button></div>
-    </div>
-    <div class="section"><div class="card">
-      <p class="text-dim" style="font-size:11px;margin-bottom:10px">
-        Shared Gateways provide a common egress path and shared external interface for multiple
-        virtual systems — each vsys's traffic is independently inspected but routed through the
-        same shared infrastructure (typically the internet edge). Shared gateways have their
-        own NAT and virtual router, but no security policy.
-      </p>
-      <div class="table-wrap">
-        <table><thead><tr>
-          <th>Name</th><th>ID</th><th>External Interface</th><th>Virtual Router</th>
-          <th>NAT Enabled</th><th>Connected vsys</th><th>Sessions</th><th>Enabled</th><th></th>
-        </tr></thead>
-        <tbody id="sg-table-body"></tbody></table>
-      </div>
-    </div></div>
-    <div class="section"><div class="section-title">Traffic through Shared Gateways</div><div class="card">
-      <div class="grid grid-3">
-        <div class="form-group"><label>Default Egress Behavior</label><select><option>Per-vsys routing</option><option>Shared NAT pool</option></select></div>
-        <div class="form-group"><label>Default NAT Pool</label><input type="text" placeholder="10.200.0.0/24"></div>
-        <div class="form-group"><label>Session Quota per vsys</label><input type="number" value="50000"></div>
-      </div>
-    </div></div>`;
-  loadSharedGateways();
-}
-
-function loadSharedGateways() {
-  const gws = [
-    {name:'sg1', id:1, iface:'qsfp3', vr:'sg1-vr', nat:'yes', vsys:['vsys2','vsys3'], sessions:0, enabled:true},
-    {name:'sg-mgmt', id:2, iface:'ens33', vr:'mgmt-vr', nat:'no', vsys:['vsys1'], sessions:13, enabled:true},
-  ];
-  const tbody = document.getElementById('sg-table-body');
-  if (!tbody) return;
-  tbody.innerHTML = gws.map(g=>`<tr>
-    <td><strong>${g.name}</strong></td>
-    <td>${g.id}</td>
-    <td class="mono">${g.iface}</td>
-    <td class="mono">${g.vr}</td>
-    <td>${g.nat}</td>
-    <td class="mono" style="font-size:10px">${g.vsys.join(', ')}</td>
-    <td>${fmt(g.sessions)}</td>
-    <td>${g.enabled?'<span class="badge badge-up">Yes</span>':'<span class="badge badge-down">No</span>'}</td>
-    <td>
-      <button class="btn btn-xs" onclick="editSg('${g.name}')">Edit</button>
-      <button class="btn btn-xs btn-danger" onclick="if(confirm('Delete ${g.name}?'))alert('delete')">Del</button>
-    </td>
-  </tr>`).join('');
-}
-
-function openSgModal() {
-  document.getElementById('info-modal-title').textContent='Create Shared Gateway';
-  document.getElementById('info-modal-body').innerHTML = `
-    <div class="form-group"><label>Name</label><input type="text" placeholder="sg2" style="width:100%"></div>
-    <div class="form-group"><label>External Interface</label><select style="width:100%">
-      <option>qsfp0</option><option>qsfp1</option><option>qsfp2</option><option>qsfp3</option><option>ens33</option>
-    </select></div>
-    <div class="form-group"><label>Virtual Router</label><input type="text" placeholder="sg2-vr" style="width:100%"></div>
-    <div class="form-group"><label>Enable NAT</label><select style="width:100%"><option>Yes</option><option>No</option></select></div>
-    <div class="form-group"><label>Connected Virtual Systems</label><select multiple size="4" style="width:100%">
-      <option>vsys1</option><option>vsys2</option><option>vsys3</option>
-    </select></div>`;
-  document.getElementById('modal-info').classList.add('show');
-}
-function editSg(name) {
-  document.getElementById('info-modal-title').textContent='Edit Shared Gateway: '+name;
-  document.getElementById('info-modal-body').innerHTML = '<div class="text-dim">Xpath: <code>config.device.shared-gateway.entry[@name=\''+name+'\']</code></div>';
-  document.getElementById('modal-info').classList.add('show');
-}
 
 /* ===========================================================================
    ACC / ML TAB
@@ -8677,8 +7858,8 @@ function renderMLInference(c) {
       <div class="card"><h3>Inference Rate</h3><div class="big-num" id="ml-inf-rate">--</div><div class="sub">packets/sec</div></div>
       <div class="card"><h3>Verdict Distribution</h3><div class="chart-container chart-sm"><canvas id="chart-ml-verdict"></canvas></div></div>
       <div class="card"><h3>Actions</h3>
-        <button class="btn btn-primary btn-sm w-full mb-8" onclick="retrainModel()">Retrain Model</button>
-        <button class="btn btn-sm w-full mb-8" onclick="uploadModelWeights()">Upload Weights</button>
+        <p class="text-dim">Model retraining and manual weight upload are not available in this console.</p>
+
         <div id="ml-action-status" class="text-dim" style="font-size:11px"></div>
       </div>
     </div>
@@ -8802,19 +7983,7 @@ async function loadMLInference() {
   }
 }
 
-function retrainModel() {
-  document.getElementById('ml-action-status').textContent = 'Retrain triggered via the BNN agent...';
-  document.getElementById('ml-action-status').style.color = 'var(--orange)';
-  api('/api/ml/retrain',{method:'POST'});
-  setTimeout(()=>{
-    document.getElementById('ml-action-status').textContent = 'Model retrain request sent';
-    document.getElementById('ml-action-status').style.color = 'var(--green)';
-  },2000);
-}
 
-function uploadModelWeights() {
-  document.getElementById('ml-action-status').textContent = 'Weight upload interface - select .bin file';
-}
 
 /* ---- ACC > Crucible ---- */
 function renderCrucible(c) {
