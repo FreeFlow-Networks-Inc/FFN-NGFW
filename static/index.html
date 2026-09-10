@@ -2006,20 +2006,28 @@ async function loadDPOffload(){
 }
 function renderDashHardware(c) {
   c.innerHTML = `<div class="page-header"><h2>Hardware Inventory</h2>
-    <button class="btn btn-sm" onclick="loadHardware(true)">Re-detect</button></div>
+    <button id="hw-refresh" class="btn btn-sm" onclick="loadHardware(true)">Re-detect hardware</button></div>
     <div id="hw-body"><div class="text-dim">Detecting hardware&hellip;</div></div>`;
   loadHardware(false);
 }
 
 async function loadHardware(refresh) {
   const el = document.getElementById('hw-body'); if (!el) return;
+  const requestId = loadHardware.requestId = (loadHardware.requestId || 0) + 1;
   if (refresh) el.innerHTML = '<div class="text-dim">Re-detecting&hellip;</div>';
   const d = await api('/api/system/hardware' + (refresh ? '?refresh=1' : ''));
+  if (requestId !== loadHardware.requestId || document.getElementById('hw-body') !== el) return;
   if (!d) { el.innerHTML = '<div class="card text-dim">Hardware inventory unavailable</div>'; return; }
   if (d.error) { el.innerHTML = '<div class="card text-dim">Detection error: ' + _escSP(d.error) + '</div>'; return; }
   const sys = d.system || {}, cpu = d.cpu || {}, mem = d.memory || {}, dpu = d.dpu || {}, hp = d.hugepages || {};
+  const octeon = (d.specialized || {}).octeon || {};
+  const role = (d.cpu_role || {}).role || cpu.role || 'unknown';
+  const roleSummary = hardwareRoleSummary(role, (d.cpu_role || {}).reason, cpu.isolated_cpus, cpu.cores_logical);
+  const updated = d.collected_at && !isNaN(Date.parse(d.collected_at)) ? new Date(d.collected_at).toLocaleString() : 'Unavailable';
+  const diagnostics = (d.diagnostics || []).map(n => `<div>${_escSP(n.section)}: ${_escSP(n.message)} <span class="mono">${_escSP(n.source)}</span></div>`).join('');
+  const probeNotice = d.status && d.status !== 'ok' ? `<div class="card"><div class="section-title">Inventory ${_escSP(d.status)}</div><div>Some hardware could not be identified. Empty sections may be incomplete.</div>${diagnostics ? `<details><summary>Probe details</summary>${diagnostics}</details>` : ''}</div>` : '';
   const badge = (ok, t) => `<span class="badge ${ok ? 'badge-up' : 'badge'}">${t}</span>`;
-  const spd = m => m ? (m >= 1000 ? (m / 1000) + 'G' : m + 'M') : '&mdash;';
+  const spd = m => Number.isFinite(m) && m > 0 ? (m >= 1000 ? (m / 1000) + 'G' : m + 'M') : 'Unknown';
   const nicKind = k => /dpu|smartnic/.test(k) ? 'badge-up' : (/dpdk/.test(k) ? 'badge-warning' : (/overlay|virtual|control/.test(k) ? 'badge' : 'badge-info'));
   const nicRows = (d.nics || []).map(n => `<tr>
       <td class="mono">${_escSP(n.name)}</td>
@@ -2028,19 +2036,33 @@ async function loadHardware(refresh) {
       <td>${spd(n.speed_mbps)}</td>
       <td class="mono" style="font-size:10px">${_escSP(n.driver || '')}</td>
       <td class="mono" style="font-size:10px">${_escSP(n.pci || '')}</td>
+      <td>${Number.isInteger(n.numa_node) && n.numa_node >= 0 ? n.numa_node : '&mdash;'}</td>
+      <td>${Number.isInteger(n.iommu_group) ? n.iommu_group : '&mdash;'}</td>
+      <td>${_escSP(n.binding || 'Unknown')}${n.physical_function ? `<div class="text-dim">VF of ${_escSP(n.physical_function)}</div>` : ''}${n.sriov_totalvfs ? `<div class="text-dim">VFs: ${hwNumber(n.sriov_numvfs)} / ${hwNumber(n.sriov_totalvfs)}</div>` : ''}</td>
       <td class="mono" style="font-size:10px">${_escSP(n.mac || '')}</td>
     </tr>`).join('');
   const dimmRows = (mem.dimms || []).map(x => `<tr><td>${_escSP(x.locator || '')}</td><td>${_escSP(x.size || '')}</td><td>${_escSP(x.speed || '')}</td><td>${_escSP(x.manufacturer || '')}</td></tr>`).join('');
-  const diskRows = (d.storage || []).map(x => `<tr><td class="mono">${_escSP(x.name)}</td><td>${x.size_gb} GB</td><td>${_escSP(x.model || '')}</td><td>${x.rotational ? 'HDD' : 'SSD/NVMe'}</td></tr>`).join('');
+  const diskRows = (d.storage || []).map(x => `<tr><td class="mono">${_escSP(x.name)}</td><td>${hwNumber(x.size_gb, ' GB')}</td><td>${_escSP(x.model || 'Unknown')}</td><td>${x.rotational === true ? 'HDD' : x.rotational === false ? 'Non-rotational' : 'Unknown'}</td></tr>`).join('');
   const accel = (d.accelerators || []);
+  const accelRows = accel.map(a => `<tr><td><strong>${_escSP(a.role || a.kind || 'Unknown')}</strong><div class="text-dim">${_escSP(a.model || '')}</div></td>
+      <td>${a.bus === 'control-plane' ? 'Behind control plane' : a.bus === 'platform' ? 'Platform / SoC' : 'Host PCI'}<div class="mono">${_escSP(a.address || a.pci || '')}</div></td>
+      <td>${_escSP(a.driver || 'Unknown')}</td><td>${Number.isInteger(a.numa_node) && a.numa_node >= 0 ? a.numa_node : 'Unknown'}</td>
+      <td>${(a.managers || []).length ? a.managers.map(m => `<div>${_escSP(m.name || 'FPGA Manager')}: ${_escSP(m.state || 'Unknown')}</div>`).join('') : 'Not reported'}</td></tr>`).join('');
+  const pciRows = ((d.pci || {}).devices || []).map(p => `<tr><td class="mono">${_escSP(p.address)}</td><td class="mono">${_escSP(p.vendor_id || '????')}:${_escSP(p.device_id || '????')}</td><td>${_escSP(p.class_id || 'Unknown')}</td><td>${_escSP(p.driver || 'Unbound / unknown')}</td><td>${p.identity_complete === false ? 'Incomplete identity' : _escSP(p.source || 'Unknown')}</td></tr>`).join('');
   const dpuCard = dpu.present ? (dpu.devices || []).map(dv => `
       <div>${badge(true, 'present')} ${_escSP(dv.type || '')}</div>
       ${(dv.pci_devices || []).map(p => `<div class="mono" style="font-size:10px">${_escSP(p)}</div>`).join('')}
-      <div style="margin-top:4px">control: rshim ${badge(dv.control_channels.rshim, 'rshim')} mst ${badge(dv.control_channels.mst, 'mst')} tmfifo ${badge(dv.control_channels.tmfifo, 'tmfifo')}</div>
+      ${!dpu.control_channels && dv.control_channels ? `<div style="margin-top:4px">control: rshim ${badge(dv.control_channels.rshim, 'rshim')} mst ${badge(dv.control_channels.mst, 'mst')} tmfifo ${badge(dv.control_channels.tmfifo, 'tmfifo')}</div>` : ''}
       ${(dv.firmware && dv.firmware.psid) ? ('<div>PSID: ' + _escSP(dv.firmware.psid) + '</div>') : ''}
     `).join('') : '<div class="text-dim">No DPU / SmartNIC detected</div>';
 
-  el.innerHTML = `
+  const hostChannels = dpu.control_channels ? ['rshim', 'mst', 'tmfifo_ifaces'].flatMap(k => dpu.control_channels[k] || []) : [];
+  const octeonCard = octeon.present ? `<div class="card"><div class="section-title">OCTEON hardware</div>
+      <div>${octeon.host_cpu ? 'OCTEON host CPU / SoC' : 'OCTEON PCI functions observed'}</div>
+      ${(octeon.evidence || []).map(e => `<div>${_escSP(e.value)} <span class="text-dim">${_escSP(e.source)}</span></div>`).join('')}
+      ${(octeon.pci_functions || []).map(f => `<div>${_escSP(f.model)} <span class="mono">${_escSP(f.address)}</span></div>`).join('')}
+      <div class="text-dim">Hardware presence does not establish firmware or forwarding readiness.</div></div>` : '';
+  el.innerHTML = `<div class="text-dim" style="margin-bottom:12px">Last collected: ${_escSP(updated)} &middot; PCI source: ${_escSP((d.pci || {}).source || 'Unknown')}</div>${probeNotice}${roleSummary}${octeonCard}
   <div class="grid grid-3">
     <div class="card"><div class="section-title">System</div><div style="font-size:12px;line-height:1.9">
       <div><strong>${_escSP(sys.vendor)}</strong> ${_escSP(sys.product)}</div>
@@ -2052,30 +2074,83 @@ async function loadHardware(refresh) {
     </div></div>
     <div class="card"><div class="section-title">CPU</div><div style="font-size:12px;line-height:1.9">
       <div>${_escSP(cpu.model)}</div>
-      <div>${cpu.sockets} socket &middot; ${cpu.cores_physical} cores &middot; ${cpu.cores_logical} threads</div>
-      <div>NUMA nodes: ${cpu.numa_nodes} ${cpu.max_freq ? ('&middot; ' + _escSP(cpu.max_freq)) : ''}</div>
+      <div>${hwNumber(cpu.sockets)} sockets &middot; ${hwNumber(cpu.cores_physical)} cores &middot; ${hwNumber(cpu.cores_logical)} threads</div>
+      ${cpu.topology_complete === false ? '<div class="text-dim">Physical core topology is incomplete; core count is estimated.</div>' : ''}
+      <div>NUMA nodes: ${hwNumber(cpu.numa_nodes)} ${cpu.max_freq ? ('&middot; ' + _escSP(cpu.max_freq)) : ''}</div>
       <div>AES-NI ${badge(cpu.aes_ni, cpu.aes_ni ? 'yes' : 'no')} ${cpu.virtualization ? ('&middot; ' + _escSP(cpu.virtualization)) : ''}</div>
-      <div class="text-dim" style="font-size:10px">crypto: ${(cpu.crypto_ext || []).join(', ') || '&mdash;'}</div>
+      <div class="text-dim" style="font-size:10px">crypto: ${_escSP((cpu.crypto_ext || []).join(', ')) || '&mdash;'}</div>
       ${cpu.isolated_cpus ? ('<div style="font-size:10px">isolated cpus: <span class="mono">' + _escSP(cpu.isolated_cpus) + '</span></div>') : ''}
     </div></div>
     <div class="card"><div class="section-title">Memory</div><div style="font-size:12px;line-height:1.9">
-      <div><strong>${mem.total_gb} GB</strong> &middot; ${mem.dimm_count} DIMM(s)</div>
+      <div><strong>${hwNumber(mem.total_gb, ' GB')}</strong> &middot; ${hwNumber(mem.dimm_count)} DIMM(s) reported</div>
       ${dimmRows ? ('<div class="table-wrap"><table><thead><tr><th>Slot</th><th>Size</th><th>Speed</th><th>Mfr</th></tr></thead><tbody>' + dimmRows + '</tbody></table></div>') : ''}
     </div></div>
   </div>
   <div class="card"><div class="section-title">Network Interfaces (${(d.nics || []).length})</div>
-    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>State</th><th>Speed</th><th>Driver</th><th>PCI</th><th>MAC</th></tr></thead><tbody>${nicRows}</tbody></table></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>State</th><th>Speed</th><th>Driver</th><th>PCI</th><th>NUMA</th><th>IOMMU</th><th>Binding / SR-IOV</th><th>MAC</th></tr></thead><tbody>${nicRows || '<tr><td colspan="10" class="text-dim">No network interfaces reported</td></tr>'}</tbody></table></div></div>
   <div class="grid grid-2">
-    <div class="card"><div class="section-title">DPU / SmartNIC</div><div style="font-size:12px;line-height:1.9">${dpuCard}</div></div>
+    <div class="card"><div class="section-title">DPU / SmartNIC</div><div style="font-size:12px;line-height:1.9">${dpuCard}</div>
+      ${hostChannels.length ? `<div class="text-dim">Host control interfaces (not mapped to individual cards): ${hostChannels.map(_escSP).join(', ')}</div>` : ''}</div>
     <div class="card">
-      <div class="section-title">Accelerators</div>
-      <div style="font-size:12px;line-height:1.9">${accel.length ? accel.map(a => `<div>${_escSP(a.role)}${a.bus==='control-plane'?' <span class="badge" style="background:#243447;color:#fff;font-size:9px">behind CP</span>':''}${a.driver?` <span class="text-dim" style="font-size:10px">driver ${_escSP(a.driver)}</span>`:''} <span class="mono" style="font-size:10px">${_escSP(a.pci)}</span></div>`).join('') : '<div class="text-dim">None detected</div>'}</div>
+      <div class="section-title">Detected accelerators / co-processors</div>
+      <div class="table-wrap"><table><thead><tr><th>Hardware</th><th>Location</th><th>Driver</th><th>NUMA</th><th>Manager state</th></tr></thead><tbody>${accelRows || '<tr><td colspan="5" class="text-dim">None detected in this inventory</td></tr>'}</tbody></table></div>
+      <div class="text-dim" style="font-size:11px;margin-top:8px">Device presence and FPGA Manager state do not confirm forwarding readiness.</div>
       <div class="section-title" style="margin-top:10px">Hugepages</div>
       <div style="font-size:12px;line-height:1.9">${(hp.pools || []).length ? (hp.pools.map(p => `<div>${p.nr} &times; ${p.size_mb} MB = ${p.total_gb} GB <span class="text-dim">(free ${p.free})</span></div>`).join('') + (hp.mounted ? '<div class="text-dim" style="font-size:10px">hugetlbfs mounted</div>' : '')) : '<div class="text-dim">None</div>'}</div>
     </div>
   </div>
   <div class="card"><div class="section-title">Storage</div>
-    <div class="table-wrap"><table><thead><tr><th>Device</th><th>Size</th><th>Model</th><th>Type</th></tr></thead><tbody>${diskRows}</tbody></table></div></div>`;
+    <div class="table-wrap"><table><thead><tr><th>Device</th><th>Size</th><th>Model</th><th>Type</th></tr></thead><tbody>${diskRows || '<tr><td colspan="4" class="text-dim">No storage devices reported</td></tr>'}</tbody></table></div></div>
+    <details class="card"><summary>All PCI functions (${hwNumber((d.pci || {}).device_count)})</summary><div class="table-wrap"><table><thead><tr><th>Address</th><th>Vendor:device</th><th>Class</th><th>Driver</th><th>Source / status</th></tr></thead><tbody>${pciRows || '<tr><td colspan="5" class="text-dim">No PCI functions reported</td></tr>'}</tbody></table></div></details>`;
+}
+
+function hwNumber(value, suffix = '') {
+  return typeof value === 'number' && Number.isFinite(value) ? String(value) + suffix : 'Unknown';
+}
+
+function hardwareRoleSummary(role, reason, isolated, count) {
+  const management = role === 'management', shared = role === 'shared';
+  const label = management ? 'Management plane' : shared ? 'Shared host CPU' : 'Role not determined';
+  const allocation = management ? 'No host dataplane cores reserved' : shared ? 'Management, control and software dataplane' : 'CPU allocation deferred';
+  const mismatch = management && isolated && isolated !== 'none';
+  return `<div class="card"><div class="section-title">Detected CPU responsibility</div>
+    <div class="grid grid-3"><div><strong>${label}</strong><div class="text-dim">${hwNumber(count)} online CPUs</div></div>
+    <div><strong>${allocation}</strong><div class="text-dim">${management ? 'Host dataplane isolation is not requested' : shared ? 'Core allocation follows generic-host policy' : 'Complete hardware discovery before assigning cores'}</div></div>
+    <div>Running isolation: <code>${_escSP(isolated || 'none reported')}</code></div></div>
+    ${reason ? `<div class="text-dim" style="margin-top:10px">${_escSP(reason)}</div>` : ''}
+    ${mismatch ? '<div role="status" style="color:var(--orange);margin-top:10px">Isolation mismatch: the running kernel still isolates management CPUs. Correct the boot configuration and reboot to remove those restrictions.</div>' : ''}</div>`;
+}
+
+function detectedPortsHTML(hardware, faceplate = [], live = [], aliases = {}) {
+  const rows = [], seen = new Set();
+  const status = value => value === true ? '<span class="text-green">Up</span>' : value === false ? '<span class="text-red">Down</span>' : '<span class="text-dim">Unknown</span>';
+  const speed = value => Number.isFinite(value) && value > 0 ? hwNumber(value, ' Gbps') : 'Unknown';
+  const add = (name, alias, location, kind, state, gbps, driver, pci, media) => {
+    seen.add(name);
+    rows.push(`<tr><td><strong>${_escSP(name)}</strong>${alias && alias !== name ? `<div class="text-dim">${_escSP(alias)}</div>` : ''}</td><td>${_escSP(location)}</td><td>${_escSP(kind || 'Unknown')}</td><td>${status(state)}</td><td>${speed(gbps)}</td><td>${_escSP(media || 'Not reported')}</td><td>${_escSP(driver || 'Unknown')}</td><td class="mono">${_escSP(pci || 'Not reported')}</td></tr>`);
+  };
+  for (const f of faceplate) {
+    add(f.name, f.diag_name, 'Chassis faceplate', f.configurable === false ? 'Dedicated / reserved' : 'Data port',
+        f.live && typeof f.link === 'boolean' ? f.link : null, f.speed_gbps, f.driver, f.pci, f.media);
+    if (f.diag_name) seen.add(f.diag_name);
+  }
+  for (const n of (hardware || {}).nics || []) {
+    if (seen.has(n.name)) continue;
+    add(n.name, aliases[n.name], 'Host', n.kind, n.state === 'up' ? true : n.state === 'down' ? false : null,
+        Number.isFinite(n.speed_mbps) ? n.speed_mbps / 1000 : null, n.driver, n.pci, n.phys_port_name);
+  }
+  for (const n of live) {
+    if (seen.has(n.name)) continue;
+    add(n.name, aliases[n.name], n.type === 'fpga' ? 'FPGA' : 'Device', n.type,
+        typeof n.link_up === 'boolean' ? n.link_up : null, n.speed_gbps, n.driver, n.pci, n.media);
+  }
+  const partial = !hardware || hardware.error || hardware.status !== 'ok';
+  const collected = hardware && hardware.collected_at && !isNaN(Date.parse(hardware.collected_at)) ? new Date(hardware.collected_at).toLocaleString() : 'Unavailable';
+  return `<div class="section-title">Detected ports and interfaces (${rows.length})</div>
+    <div class="text-dim" style="margin-bottom:10px">Observed hardware and live interfaces. Discovery does not create configuration or assign a security zone.</div>
+    <div class="text-dim" style="margin-bottom:10px">Host inventory collected: ${_escSP(collected)}</div>
+    ${partial ? '<div role="status" style="color:var(--orange);margin-bottom:10px">Port inventory is incomplete; unavailable or missing ports are not assumed to be down.</div>' : ''}
+    <div class="table-wrap"><table><thead><tr><th>Port / interface</th><th>Location</th><th>Kind</th><th>Link</th><th>Reported speed</th><th>Media / port label</th><th>Driver</th><th>PCI</th></tr></thead><tbody>${rows.join('') || '<tr><td colspan="8" class="text-dim">No ports reported</td></tr>'}</tbody></table></div>`;
 }
 
 async function renderDashSystemHealth(c) {
@@ -2219,6 +2294,7 @@ function toggleTrafficWS() {
   btn.textContent='Stop Live'; btn.classList.add('btn-danger');
   const proto = location.protocol==='https:'?'wss':'ws';
   wsConnection = new WebSocket(`${proto}://${location.host}/api/logs/live`);
+  wsConnection.onopen = evt => evt.target.send(JSON.stringify({token}));
   const tbody = document.getElementById('traffic-log-body');
   wsConnection.onmessage = evt => {
     if (liveLogPaused) return;
@@ -2398,6 +2474,7 @@ function toggleSysLogWS() {
   btn.textContent='Stop Live Stream'; btn.classList.add('btn-danger');
   const proto = location.protocol==='https:'?'wss':'ws';
   wsConnection = new WebSocket(`${proto}://${location.host}/api/logs/live`);
+  wsConnection.onopen = evt => evt.target.send(JSON.stringify({token}));
   const stream = document.getElementById('syslog-stream');
   wsConnection.onmessage = evt => {
     const l = JSON.parse(evt.data);
@@ -4089,11 +4166,14 @@ function renderNetworkInterfaces(c) {
   c.innerHTML = `
     <div class="page-header"><h2>Interfaces</h2>
       <div class="actions">
+        <button class="btn btn-sm" onclick="loadInterfacesFull(true)">Re-detect ports</button>
         <button class="btn btn-sm" onclick="openJumboModal()">Global MTU</button>
         <button class="btn btn-sm" onclick="openAggregateModal()">+ Aggregate Ethernet</button>
       </div>
     </div>
 
+    <div id="iface-detected" class="card"><div class="text-dim">Detecting ports and interfaces&hellip;</div></div>
+    <div class="section-title">Interface configuration</div>
     <div class="setup-tabs" id="iface-kind-tabs">
       <button data-kind="ethernet" class="active" onclick="switchIfaceKind('ethernet')">Ethernet</button>
       <button data-kind="vlan"     onclick="switchIfaceKind('vlan')">VLAN</button>
@@ -4152,8 +4232,9 @@ function switchIfaceKind(kind) {
   _renderInterfaceGrid();
 }
 
-async function loadInterfacesFull() {
-  const [live, configured, caps, jumbo, aliases, aeStatus, enriched] = await Promise.all([
+async function loadInterfacesFull(refresh = false) {
+  const requestId = loadInterfacesFull.requestId = (loadInterfacesFull.requestId || 0) + 1;
+  const [live, configured, caps, jumbo, aliases, aeStatus, enriched, hardware] = await Promise.all([
     api('/api/system/interfaces'),
     api('/api/interfaces/configured'),
     api('/api/network/link-capabilities'),
@@ -4161,7 +4242,9 @@ async function loadInterfacesFull() {
     api('/api/interfaces/aliases'),
     api('/api/interfaces/aggregate-status'),
     api('/api/interfaces/enriched'),
+    api('/api/system/hardware' + (refresh === true ? '?refresh=1' : '')),
   ]);
+  if (requestId !== loadInterfacesFull.requestId || !document.getElementById('iface-grid-body')) return;
   // Build pan → linux and linux → pan maps
   const panToLinux = {};
   const linuxToPan = {};
@@ -4177,6 +4260,7 @@ async function loadInterfacesFull() {
     aliases: aliases || {aliases:[], linux_nics:[]},
     aeStatus: (aeStatus && aeStatus.aggregates) || [],
     enriched: enriched || {ethernet:[],vlan:[],loopback:[],tunnel:[],sdwan:[]},
+    hardware: hardware || {},
     panToLinux, linuxToPan,
   };
 
@@ -4188,6 +4272,8 @@ async function loadInterfacesFull() {
   const fpList = (enriched && enriched.faceplate) || [];
   _ifaceState.faceplate = {};
   for (const f of fpList) _ifaceState.faceplate[f.name] = f;
+  const detected = document.getElementById('iface-detected');
+  if (detected) detected.innerHTML = detectedPortsHTML(hardware, fpList, _ifaceState.live, linuxToPan);
 
   const src = document.getElementById('iface-source');
   if (src) {
@@ -4199,7 +4285,7 @@ async function loadInterfacesFull() {
         + (known ? ` &middot; ${linked} with link`
                  : ` &middot; <span class="text-dim">link state unavailable (control plane not answering)</span>`);
     } else {
-      origin = `${Object.keys(_ifaceState.caps).length} physical interface(s) auto-aliased from Linux`;
+      origin = `${((hardware || {}).nics || []).length} host interface(s) observed; configuration aliases are listed below`;
     }
     src.innerHTML = `Global MTU: <strong>${_ifaceState.jumbo.mtu}</strong>  |  `
       + `ethtool ${caps&&caps.ethtool_present?'available':'<span class="text-red">not installed</span>'}  |  `
@@ -4225,7 +4311,8 @@ function _renderInterfaceGrid() {
     for (const e of _ifaceState.enriched.ethernet||[]) enrichedByName[e.name] = e;
 
     // Auto-include aliased NICs that aren't yet configured
-    const panNames = new Set(Object.keys(_ifaceState.panToLinux||{}));
+    const faceplate = (_ifaceState.enriched && _ifaceState.enriched.faceplate) || [];
+    const panNames = new Set(faceplate.length ? faceplate.map(f => f.name) : Object.keys(_ifaceState.panToLinux||{}));
     for (const e of _ifaceState.enriched.ethernet||[]) panNames.add(e.parent || e.name);
 
     // Sort. When the server supplied a faceplate order, honour it: it is the
@@ -4273,10 +4360,11 @@ function _unconfiguredRow(name) {
   // fresh box is all of them -- showed a grey "unknown" dot next to a known
   // answer, and an operator plugging a cable in saw nothing change.
   const f = (_ifaceState.faceplate||{})[name];
+  const observed = ((_ifaceState.hardware || {}).nics || []).find(n => n.name === linux);
   return {
     name, parent:null, tag:null, kind:'ethernet',
     type:'', management_profile:'',
-    link_state: f ? (f.live ? !!f.link : null) : null,
+    link_state: f ? (f.live && typeof f.link === 'boolean' ? f.link : null) : observed ? (observed.state === 'up' ? true : observed.state === 'down' ? false : null) : null,
     linux_name:linux,
     ip_address:[], mtu:'', virtual_router:'', vlan_tag:'', vlan_or_vwire:'',
     virtual_system:'', security_zone:'', sdwan_interface_profile:'',
@@ -4301,13 +4389,14 @@ function _linkStateDot(state) {
 function _ifaceSubtitle(r) {
   const f = (_ifaceState.faceplate||{})[r.name];
   if (f) {
-    const pos = /^\d+$/.test(f.faceplate) ? `port ${f.faceplate}` : f.faceplate.toUpperCase();
+    const position = String(f.faceplate || '');
+    const pos = /^\d+$/.test(position) ? `port ${position}` : position.toUpperCase();
     return `<div class="text-dim" style="font-size:10px;margin-top:2px">`
-         + `${pos} &middot; ${f.media} ${f.speed_gbps}G &middot; `
-         + `<span class="mono">${f.diag_name}</span></div>`;
+         + `${_escSP(pos)} &middot; ${_escSP(f.media || '')} ${hwNumber(f.speed_gbps, 'G')} &middot; `
+         + `<span class="mono">${_escSP(f.diag_name)}</span></div>`;
   }
   return r.linux_name
-    ? `<div class="text-dim" style="font-size:10px;margin-top:2px">&harr; <span class="mono">${r.linux_name}</span></div>`
+    ? `<div class="text-dim" style="font-size:10px;margin-top:2px">&harr; <span class="mono">${_escSP(r.linux_name)}</span></div>`
     : '';
 }
 
@@ -7412,11 +7501,12 @@ async function loadCpuPlanes() {
   const box = document.getElementById('cpu-planes-card');
   if (!box) return;
   if (!d || !d.available) {
-    box.innerHTML = `<div class="text-dim">CPU-plane split not configured${d&&d.error?': '+_escSP(d.error):''}.
-      Data-plane cores run on the shared scheduler. Configure /etc/ffn-ngfw/cpu-planes.conf + isolcpus for line-rate determinism.</div>`;
+    box.innerHTML = `<div class="text-dim">CPU assignment unavailable${d&&d.error?': '+_escSP(d.error):''}. Hardware discovery must complete before the CPU role can be shown.</div>`;
     return;
   }
   const pl = d.planes||{};
+  const management = d.cpu_role === 'management';
+  const deferred = d.cpu_role === 'unknown';
   const meta = {
     mgmt: ['Management', 'ffn_manager / config / logging'],
     ctrl: ['Control',    'routing, NFQUEUE verdict, slow path'],
@@ -7424,17 +7514,19 @@ async function loadCpuPlanes() {
   };
   const cards = Object.keys(meta).map(k=>{
     const [name, role] = meta[k];
-    const cores = pl[k] || '(unset)';
+    const cores = pl[k] || (management || deferred ? 'not assigned on host' : 'none assigned');
+    const description = k === 'data' && management ? 'Specialized hardware selected; no host packet workers' : k === 'ctrl' && management ? 'No separate host CPU partition' : role;
     return `<div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px">
       <div style="display:flex;justify-content:space-between"><strong>${name} plane</strong>
         <span class="badge badge-info">cores ${_escSP(cores)}</span></div>
-      <div class="text-dim" style="font-size:11px;margin-top:4px">${role}</div></div>`;
+      <div class="text-dim" style="font-size:11px;margin-top:4px">${description}</div></div>`;
   }).join('');
   const caps = d.capabilities||{};
   const warns = (d.warnings||[]).map(w=>`<div style="color:var(--amber,#e0a030);font-size:11px">⚠ ${_escSP(w)}</div>`).join('');
   box.innerHTML = `
+    ${hardwareRoleSummary(d.cpu_role || 'unknown', d.role_reason, d.isolated, d.ncpu)}
     <div class="text-dim" style="font-size:11px;margin-bottom:8px">
-      ${d.ncpu} CPUs &middot; isolcpus: <code>${_escSP(d.isolated||'none')}</code> &middot; nohz_full: <code>${_escSP(d.nohz_full||'none')}</code>
+      Running kernel &middot; isolcpus: <code>${_escSP(d.isolated||'none')}</code> &middot; nohz_full: <code>${_escSP(d.nohz_full||'none')}</code>
       &middot; affinity=${caps.sched_setaffinity?'yes':'no'}, SCHED_FIFO=${caps.sched_fifo?'yes':'no'}</div>
     <div class="grid grid-3">${cards}</div>
     ${warns?`<div style="margin-top:8px">${warns}</div>`:''}`;

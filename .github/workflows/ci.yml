@@ -56,11 +56,22 @@ jobs:
       - name: ffn_ed25519 selftest
         run: python3 opt/ffn_ed25519.py --selftest
 
+      - name: hardware inventory and tuning regressions (no hardware required)
+        run: |
+          python3 tests/test_hwdetect.py
+          python3 opt/ffn_cpuisol.py selftest
+          python3 opt/ffn_cpu_planes.py selftest
+
       # Exercises the update trust model itself: wrong key, tampered payload,
       # unsigned manifest, and the hmac-to-ed25519 downgrade refusal. It rebinds
       # its key paths into a tmpdir, so it cannot touch real key material.
       - name: ffn_payload selftest
         run: python3 opt/ffn_payload.py selftest
+
+      # Fetch only the public engine, before any step reads its files. Keep the
+      # full history so a pinned gitlink behind the remote tip can be resolved.
+      - name: fetch the crucible submodule
+        run: git submodule update --init --checkout crucible
 
       # ffn_ed25519.py exists twice on purpose: the Crucible node cannot sign a
       # verdict without it, and a signing engine that needed this repository
@@ -86,6 +97,9 @@ jobs:
 
       - name: WebUI JavaScript parses
         run: python3 opt/ffn_jscheck.py static/index.html
+
+      - name: hardware inventory renderer
+        run: node tests/test_hardware_ui.cjs
 
       # HARD GATE as of the commit that took actionable to zero.
       #
@@ -114,9 +128,6 @@ jobs:
       # "reference is not a tree" -- which would turn this repository's CI red
       # the first time ffn-crucible moves ahead of the pin, for a change made
       # in the other repository.
-      - name: fetch the crucible submodule
-        run: git submodule update --init --checkout crucible
-
       # PYTHONPATH=crucible reproduces the appliance's FLAT layout: on a real
       # box the engine and cloud_det.py both sit in /opt/ffn-ngfw-v2, because
       # the image is built by tarring that directory. Only the git tree
@@ -185,6 +196,9 @@ jobs:
 
       - name: auth tests
         run: python tests/test_auth.py
+
+      - name: hardware API integration
+        run: python tests/test_hardware_api.py
 
   shell:
     name: shell syntax and shellcheck

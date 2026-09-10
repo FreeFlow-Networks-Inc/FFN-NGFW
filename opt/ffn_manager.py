@@ -2480,18 +2480,33 @@ async def get_current_user(
         token_str = authorization[7:]
     else:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    return await _authenticate_token(token_str, request.url.path)
+
+
+async def _authenticate_token(token_str: str, path: str):
+    """Share token and current-account checks between HTTP and WebSocket clients."""
     try:
-        payload = jwt.decode(token_str, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(token_str, JWT_SECRET, algorithms=[JWT_ALGORITHM],
+                             options={"require_exp": True, "require_sub": True})
         username = payload.get("sub")
-        role = payload.get("role", "viewer")
-        if username is None:
+        if not isinstance(username, str) or not username:
             raise HTTPException(status_code=401, detail="Invalid token")
-        if payload.get("pwc") and request.url.path not in PW_CHANGE_ALLOWED_PATHS:
+        # Roles and forced password changes can change during a token's lifetime.
+        # A deleted account must also lose access immediately.
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (await db.execute(
+                "SELECT role, must_change_pw FROM users WHERE username = ?",
+                (username,))).fetchone()
+        if row is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        pw_change_required = bool(payload.get("pwc") or row["must_change_pw"])
+        if pw_change_required and path not in PW_CHANGE_ALLOWED_PATHS:
             raise HTTPException(
                 status_code=403,
                 detail="Password change required before using this API")
-        return {"username": username, "role": role,
-                "pw_change_required": bool(payload.get("pwc"))}
+        return {"username": username, "role": row["role"],
+                "pw_change_required": pw_change_required}
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
@@ -4398,7 +4413,7 @@ async def system_hardware(refresh: int = 0, user: dict = Depends(get_current_use
     the packet processor, the front-end ASIC and the dataplane NPU sit behind
     the CP. Every row carries `bus`, so "host" and "control-plane" stay
     distinguishable rather than merging into one misleading list."""
-    inv = _hw_inventory(refresh=bool(refresh))
+    inv = dict(await asyncio.to_thread(_hw_inventory, refresh=bool(refresh)))
     try:
         far = await _detect_offload_dp()
     except Exception:
@@ -4430,6 +4445,9 @@ async def system_hardware(refresh: int = 0, user: dict = Depends(get_current_use
         })
     inv["accelerators"] = rows
     inv["offload"] = far
+    from ffn_hwdetect import classify_cpu_role
+    inv["cpu_role"] = classify_cpu_role(inv)
+    inv["cpu"] = dict(inv.get("cpu") or {}, role=inv["cpu_role"]["role"])
     return inv
 
 
@@ -4910,18 +4928,23 @@ def _probe_host_octeon():
         "forwarder": _sw_forwarder(),
     }
     try:
-        out = subprocess.run(["lspci", "-Dnn"], capture_output=True,
-                             text=True, timeout=5).stdout
-    except Exception:
-        out = ""
-    for ln in out.splitlines():
-        low = ln.lower()
-        if "177d:" in low or "cavium" in low:
-            info["pci"].append(ln.strip())
-            if "cn73" in low or "octeon iii" in low:
-                info["generation"] = "OCTEON III (CN73XX)"
-            elif "octeon ii" in low:
-                info["generation"] = "OCTEON II"
+        from ffn_hwdetect import detect_pci_summary, _octeon
+        snapshot = detect_pci_summary()
+        if not snapshot["available"]:
+            info["probe_status"] = "unavailable"
+            info["note"] = "Host PCI inventory unavailable; OCTEON presence is unknown."
+            return info
+        for device in snapshot["devices"]:
+            model = _octeon(device)
+            # The PA control-plane transport is a processor endpoint. A root
+            # complex, NVMe function or VF alone does not establish its presence.
+            if (model and not device["class_id"].startswith(("06", "0108"))
+                    and not device["physical_function"] and " VF" not in model):
+                info["pci"].append(device["description"])
+                info["generation"] = info["generation"] or model
+    except Exception as exc:
+        info["note"] = "Host PCI probe failed: %s" % exc
+        return info
     if not info["pci"]:
         info["note"] = ("No OCTEON complex on this host's PCI bus. FFN uses "
                         "its software dataplane here.")
@@ -8155,7 +8178,8 @@ async def cpu_planes_status(user: dict = Depends(get_current_user)):
     (isolcpus / nohz_full), and scheduling capabilities."""
     try:
         from ffn_cpu_planes import CpuPlanes
-        cp = CpuPlanes.from_system()
+        inventory = await system_hardware(user=user)
+        cp = await asyncio.to_thread(CpuPlanes.from_system, inventory=inventory)
         return {"available": True, **cp.snapshot()}
     except Exception as e:
         return {"available": False, "error": str(e)}
@@ -12108,7 +12132,21 @@ def _live_connections(limit: int) -> list:
 @app.websocket("/api/logs/live")
 async def logs_live(ws: WebSocket):
     await ws.accept()
+    # Browser WebSockets cannot set Authorization headers. Send the bearer in
+    # the first frame, never in a URL that proxies and access logs can retain.
+    try:
+        auth = await asyncio.wait_for(ws.receive_json(), timeout=5)
+        if not isinstance(auth, dict) or not isinstance(auth.get("token"), str):
+            raise ValueError("Missing token")
+        await _authenticate_token(auth["token"], ws.url.path)
+    except WebSocketDisconnect:
+        return
+    except (HTTPException, ValueError, TypeError, KeyError, asyncio.TimeoutError):
+        await ws.close(code=1008)
+        return
     proc = None
+    disconnect_task = None
+    line_task = None
     try:
         # journalctl -f in JSON — parse line by line
         proc = await asyncio.create_subprocess_exec(
@@ -12118,8 +12156,20 @@ async def logs_live(ws: WebSocket):
         )
         sev_map = {"0": "EMERG", "1": "ALERT", "2": "CRITICAL", "3": "ERROR",
                    "4": "WARNING", "5": "NOTICE", "6": "INFO", "7": "DEBUG"}
+        async def wait_disconnect():
+            while (await ws.receive())["type"] != "websocket.disconnect":
+                pass
+
+        disconnect_task = asyncio.create_task(wait_disconnect())
         while True:
-            line = await proc.stdout.readline()
+            # A quiet journal must not keep journalctl alive after the browser
+            # closes: wait for either a log line or the disconnect event.
+            line_task = asyncio.create_task(proc.stdout.readline())
+            done, _ = await asyncio.wait(
+                (line_task, disconnect_task), return_when=asyncio.FIRST_COMPLETED)
+            if disconnect_task in done:
+                break
+            line = line_task.result()
             if not line:
                 break
             try:
@@ -12140,6 +12190,10 @@ async def logs_live(ws: WebSocket):
     except Exception as exc:
         logger.warning("logs_live error: %s", exc)
     finally:
+        tasks = [task for task in (line_task, disconnect_task) if task is not None]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         if proc:
             try:
                 proc.terminate()

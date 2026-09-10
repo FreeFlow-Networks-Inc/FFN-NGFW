@@ -1,7 +1,23 @@
 # Unauthenticated routes in the manager API
 
-Found 2026-09-06 while fixing the WebUI controls. **Closed the same day**: every
-route now requires authentication except the two that cannot.
+Found 2026-09-06 while fixing the WebUI controls. The HTTP routes were closed the
+same day. A follow-up review on 2026-09-10 found that the earlier count omitted
+the live-log WebSocket; that endpoint now authenticates before starting a log
+reader or sending any logs.
+
+`/api/logs/live` accepts a WebSocket connection, then requires a first JSON frame
+of `{"token":"<access_token>"}` within five seconds. Invalid, expired, deleted-user
+and password-change-only sessions close with code 1008. The browser sends the
+token in a frame so credentials do not enter URL/access logs. Both live-log
+controls in the console use this protocol. Disconnecting also stops and reaps
+the journal reader even when no new logs are arriving.
+
+HTTP requests and new log streams resolve the current account role and forced
+password-change flag from the user database, rather than trusting stale role
+claims for the token's full lifetime. These checks happen at WebSocket
+authentication; an already-open stream is not periodically reauthenticated.
+
+The original HTTP-only counts were:
 
     before   189 routes, 129 guarded, 60 open
     after    190 routes, 188 guarded,  2 open
