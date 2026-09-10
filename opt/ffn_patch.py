@@ -189,7 +189,7 @@ def unpack(data):
                 raise PatchError('Expanded patch exceeds size limit')
             files[item.name] = archive.extractfile(item).read(item.size + 1)
     manifest = json.loads(files.pop('patch.json', b'{}'))
-    if manifest.get('schema') != 1 or not isinstance(manifest.get('files'), list) or not manifest['files']:
+    if manifest.get('schema') != 1 or not isinstance(manifest.get('files'), list) or not 0 < len(manifest['files']) < MAX_FILES:
         raise PatchError('Unsupported or empty patch manifest')
     seen = set()
     for entry in manifest['files']:
@@ -349,7 +349,10 @@ class PatchManager:
             entry = {k: v for k, v in item.items() if k != 'content'}
             if target.exists():
                 entry['old_mode'] = target.stat().st_mode & 0o777
-                atomic(confined(self.state / backup, item['path']), target.read_bytes())
+                original = target.read_bytes()
+                if digest(original) != entry['before']:
+                    raise PatchError('File changed while preparing backup: ' + item['path'])
+                atomic(confined(self.state / backup, item['path']), original)
             entries.append(entry)
         journal = {'phase': 'prepared', 'backup': backup, 'files': entries, 'services': services,
                    'previous': read(self.state / 'state.json', {}).get('installed'), 'release': meta}
