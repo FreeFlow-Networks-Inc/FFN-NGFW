@@ -5245,7 +5245,10 @@ class UpdateServerCfg(BaseModel):
 
 @app.put("/api/system/updates/server")
 async def updates_set_server(cfg: UpdateServerCfg, user: dict = Depends(get_current_user)):
+    _require_admin(user)
     u = (cfg.url or "").strip()
+    if any(ord(c) < 32 for c in u):
+        raise HTTPException(400, "Invalid update server URL")
     if u and not u.startswith(("http://", "https://")):
         raise HTTPException(400, "url must start with http:// or https://")
     try:
@@ -5258,7 +5261,8 @@ async def updates_set_server(cfg: UpdateServerCfg, user: dict = Depends(get_curr
 
 
 @app.post("/api/system/updates/check")
-async def updates_check(insecure: bool = True, user: dict = Depends(get_current_user)):
+async def updates_check(insecure: bool = False, user: dict = Depends(get_current_user)):
+    _require_admin(user)
     url = _update_server_url()
     if not url:
         raise HTTPException(400, "no update server configured")
@@ -5271,7 +5275,7 @@ class UpdateInstall(BaseModel):
     kind: str
     apply: bool = False
     force: bool = False
-    insecure: bool = True
+    insecure: bool = False
 
 
 @app.post("/api/system/updates/install")
@@ -5281,6 +5285,7 @@ async def updates_install(req: UpdateInstall, user: dict = Depends(get_current_u
     An 'image' payload is written to the INACTIVE A/B root, never the running
     one, so a bad update is escaped by picking the other GRUB entry.
     """
+    _require_admin(user)
     if req.kind not in ("content", "software", "image"):
         raise HTTPException(400, "kind must be content, software or image")
     url = _update_server_url()
@@ -12275,6 +12280,9 @@ async def _extension_audit(username, action, detail):
 # Only an explicitly selected platform may register additional controls.
 from ffn_extensions import install as _install_extensions
 _install_extensions(app, get_current_user, _require_admin, _extension_audit)
+
+from ffn_patch_api import install as _install_patch_api
+_install_patch_api(app, get_current_user, _require_admin, _extension_audit, _update_server_url)
 
 
 if __name__ == "__main__":

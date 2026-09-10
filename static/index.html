@@ -1353,7 +1353,7 @@ function renderPage(pageId) {
     'dash-system': renderDashSystemHealth,
     'dash-hardware': renderDashHardware,
     'dash-offload': renderDPOffload,
-    'device-updates': renderUpdates,
+    'device-updates': renderPatchManagement,
     'vendor-fw': renderVendorFW,
     // Monitor tab
     'traffic': renderMonitorTraffic,
@@ -1812,6 +1812,74 @@ async function loadDDoSMap() {
 }
 
 /* ---- Device > Software Updates (FFN signed payload updater) ---- */
+let _patchData = null;
+function renderPatchManagement(c) {
+  c.innerHTML = `<div class="page-header"><h2>Patch Management</h2><button class="btn btn-sm" onclick="clearInterval(refreshTimer);renderUpdates(document.getElementById('patch-page').parentElement)">Full image / content updates</button></div>
+    <div id="patch-page"><p class="text-dim">Stage and review signed code updates before installation. Installing or rolling back briefly restarts management services. Configuration and dataplane firmware are outside the patch package.</p>
+    <div class="card"><div class="section-title">Update server</div><div style="display:flex;gap:8px;flex-wrap:wrap"><input id="patch-url" class="form-input" style="flex:1;min-width:260px" placeholder="https://updates.example/ffn"><button id="patch-save" class="btn btn-sm" onclick="patchSaveServer()">Save</button></div><div id="patch-notice" role="status" class="text-dim" style="margin-top:8px"></div></div>
+    <div id="patch-state">Loading patch state…</div></div>`;
+  _patchData = null;
+  loadPatches();
+  refreshTimer = setInterval(loadPatches, 2500);
+}
+function patchStateHTML(d) {
+  const job = d.job || {}, installed = d.installed || {}, available = d.available || {}, staged = d.staged || {};
+  const busy = job.status === 'queued' || job.status === 'running';
+  const manage = d.can_manage && d.worker_available;
+  const disabled = !manage || busy || d.recovery_required;
+  const button = (label, action, off) => `<button class="btn btn-sm" ${off?'disabled':''} onclick="patchAction('${action}')">${label}</button>`;
+  const stamp = t => t ? _escSP(new Date(t*1000).toLocaleString()) : 'Never';
+  const fileRows = (staged.files || []).map(f => `<tr><td class="mono">${_escSP(f.path)}</td><td>${!f.before?'Add':!f.after?'Delete':'Replace'}</td></tr>`).join('');
+  return `<div class="card"><div class="section-title">Installed code patch</div><strong>${_escSP(installed.version || 'Baseline — no patch recorded')}</strong>
+    <div class="text-dim">Installed: ${stamp(installed.at)} · Verification: ${d.public_key_present?'Ed25519 public key installed':'Public key missing'}</div>
+    ${!d.worker_available?'<p class="text-dim">Patch installation requires Linux and systemd-run on the appliance.</p>':''}
+    <div style="margin-top:10px">${button('Check for patches','check',disabled || !d.public_key_present)} ${button('Roll back latest patch','rollback',disabled || !d.rollback_available)} ${button('Recover interrupted operation','recover',!manage || (!busy && !d.recovery_required))}</div></div>
+    <div class="grid grid-2"><div class="card"><div class="section-title">Available patch</div><strong>${_escSP(available.version || 'No verified release checked')}</strong><div class="text-dim">Last checked: ${stamp(d.checked_at)}</div><p>${_escSP(available.notes || '')}</p><div class="mono" style="overflow-wrap:anywhere">${_escSP(available.sha256 || '')}</div>${button('Download and validate','stage',disabled || !available.sha256 || available.sha256 === installed.sha256)}</div>
+    <div class="card"><div class="section-title">Staged patch</div><strong>${_escSP(staged.version || 'Nothing staged')}</strong><p class="text-dim">Signature, file hashes, installed baseline and dependencies are checked again before installation.</p>
+    ${fileRows?`<details><summary>Review ${(staged.files || []).length} file changes</summary><div class="table-wrap"><table><thead><tr><th>File</th><th>Change</th></tr></thead><tbody>${fileRows}</tbody></table></div></details>`:''}
+    <div class="text-dim">${_escSP(Object.entries(staged.requires || {}).map(([k,v])=>k+'=='+v).join(', '))}</div><div style="margin-top:10px">${button('Install staged patch','install',disabled || !staged.sha256)}</div></div></div>
+    <div class="card"><div class="section-title">Current operation</div><strong>${_escSP(job.status || 'Idle')}</strong><p>${_escSP(job.message || 'No patch operation has run')}</p>${d.recovery_required?'<p style="color:var(--orange)">An installation was interrupted. Recover its journal before starting another patch.</p>':''}<div class="text-dim">${_escSP(job.id || '')}</div></div>
+    <div class="card"><div class="section-title">Patch history</div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Action</th><th>Version</th><th>Requested by</th><th>Result</th></tr></thead><tbody>${(d.history || []).map(j=>`<tr><td>${stamp(j.finished_at)}</td><td>${_escSP(j.action)}</td><td>${_escSP(j.version || "—")}</td><td>${_escSP(j.actor)}</td><td>${_escSP(j.status)} — ${_escSP(j.message)}</td></tr>`).join('') || '<tr><td colspan="5">No operations recorded</td></tr>'}</tbody></table></div></div>`;
+}
+async function loadPatches() {
+  const el = document.getElementById('patch-state');
+  if (!el || loadPatches.pending) return;
+  loadPatches.pending = true;
+  try {
+    const d = await api('/api/system/patches');
+    if (document.getElementById('patch-state') !== el) return;
+    const notice = document.getElementById('patch-notice');
+    if (!d || d.detail) { notice.dataset.connection = 'lost'; notice.textContent = 'Manager unavailable. Reconnecting; the independent patch worker continues.'; return; }
+    if (notice.dataset.connection === 'lost') { notice.textContent = 'Connection restored.'; delete notice.dataset.connection; }
+    const input = document.getElementById('patch-url');
+    if (!input.dataset.loaded) { input.value = d.server || ''; input.dataset.loaded = '1'; }
+    input.disabled = !d.can_manage;
+    document.getElementById('patch-save').disabled = !d.can_manage;
+    if (JSON.stringify(d) !== JSON.stringify(_patchData)) {
+      const reviewOpen = !!el.querySelector('details[open]');
+      el.innerHTML = patchStateHTML(d);
+      if (reviewOpen && el.querySelector('details')) el.querySelector('details').open = true;
+    }
+    _patchData = d;
+  } finally { loadPatches.pending = false; }
+}
+async function patchSaveServer() {
+  const url = document.getElementById('patch-url').value;
+  const r = await api('/api/system/updates/server', {method:'PUT', body:JSON.stringify({url})});
+  document.getElementById('patch-notice').textContent = r && r.success ? 'Update server saved.' : (r && r.detail || 'Could not save update server.');
+}
+async function patchAction(action) {
+  const d = _patchData || {};
+  if (action === 'install' && !confirm('Install patch '+((d.staged || {}).version || '')+'?\nManagement services will restart. Review the staged file changes first.')) return;
+  if (action === 'rollback' && !confirm('Restore the code saved before the latest patch? Management services will restart.')) return;
+  if (action === 'recover' && !confirm('Recover the interrupted operation? Modified files will be restored from its journal.')) return;
+  const selected = action === 'stage' ? d.available : action === 'rollback' ? d.installed : d.staged;
+  const r = await api('/api/system/patches/'+action, {method:'POST', body:JSON.stringify({sha256:(selected || {}).sha256 || ''})});
+  const notice = document.getElementById('patch-notice');
+  if (notice) notice.textContent = r && r.job ? 'Operation queued. Status will update automatically.' : (r && r.detail || 'Could not queue operation.');
+  await loadPatches();
+}
+
 async function renderUpdates(c){
   c.innerHTML=`<div class="page-header"><h2>Software Updates</h2></div>
   <p class="text-dim" style="font-size:11px;margin-bottom:10px">FFN pulls updates from an FFN update server using its own signed-payload updater &mdash; no vendor infrastructure and no vendor content. Every payload must carry a valid manifest signature <em>and</em> match its SHA-256 before anything is written; verification failures apply nothing.</p>
@@ -7246,32 +7314,7 @@ function renderDeviceSyslog(c) {
 
 /* ---- Device > Software ---- */
 function renderDeviceSoftware(c) {
-  c.innerHTML = `
-    <div class="page-header"><h2>Software Updates</h2></div>
-    <div class="grid grid-2">
-      <div class="card">
-        <h3>Current Version</h3>
-        <div id="sw-version" style="font-size:12px;line-height:2.2">Loading...</div>
-      </div>
-      <div class="card">
-        <h3>Available Updates</h3>
-        <div style="font-size:12px;line-height:2.2;color:var(--text-dim)">
-          <div>Last check: Never</div>
-          <div>No updates available</div>
-        </div>
-        <button class="btn btn-sm mt-8">Check for Updates</button>
-      </div>
-    </div>
-    <div class="section"><div class="section-title">Installed Components</div><div class="card"><div class="table-wrap">
-      <table><thead><tr><th>Component</th><th>Version</th><th>Status</th></tr></thead>
-      <tbody>
-        <tr><td>ffn-ngfw-manager</td><td>1.0.0</td><td><span class="badge badge-up">Running</span></td></tr>
-        <tr><td>ffn-ngfw-driver</td><td>1.0.0</td><td><span class="badge badge-down">Not Loaded</span></td></tr>
-        <tr><td>libngfw</td><td>1.0.0</td><td><span class="badge badge-up">Installed</span></td></tr>
-        <tr><td>ngfwctl</td><td>1.0.0</td><td><span class="badge badge-up">Installed</span></td></tr>
-      </tbody></table>
-    </div></div></div>`;
-  loadSoftwareInfo();
+  renderPatchManagement(c);
 }
 
 async function loadSoftwareInfo() {

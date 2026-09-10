@@ -101,6 +101,11 @@ jobs:
       - name: hardware inventory renderer
         run: node tests/test_hardware_ui.cjs
 
+      - name: code patch lifecycle and renderer
+        run: |
+          python3 tests/test_patches.py
+          node tests/test_patch_ui.cjs
+
       # HARD GATE as of the commit that took actionable to zero.
       #
       # The audit separates borrowed feature brands in VISIBLE copy (actionable)
@@ -202,6 +207,9 @@ jobs:
 
       - name: management input security regressions
         run: python tests/test_manager_security.py
+
+      - name: patch management API permissions
+        run: python tests/test_patch_api.py
 
   shell:
     name: shell syntax and shellcheck
