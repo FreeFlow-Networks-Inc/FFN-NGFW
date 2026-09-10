@@ -1196,6 +1196,43 @@ function switchTab(tab) {
    the chassis does not change while someone is logged in.
    =========================================================================== */
 let _platform = null;
+const extensionPages = new Map();
+let extensionLoad = null;
+const extensionAllowed = new Set();
+window.ffnExtensions = {
+  register(id, label, render) {
+    if (!extensionAllowed.has(id) || extensionPages.has(id)) return;
+    const page = 'extension-' + id;
+    extensionPages.set(page, render);
+    TAB_MENUS.dashboard.push({id: page, label});
+  },
+  async request(path, options = {}) {
+    const response = await fetch(path, {...options, headers: {
+      'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token}});
+    if (response.status === 401) doLogout();
+    const data = await response.json();
+    if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Request rejected');
+    return data;
+  }
+};
+async function loadExtensions() {
+  if (!extensionLoad) extensionLoad = (async () => {
+    const info = await window.ffnExtensions.request('/api/system/extensions');
+    for (const ext of info.extensions || []) {
+      if (!/^[a-z][a-z0-9-]{0,31}$/.test(ext.id) ||
+          ext.script !== '/static/extensions/' + ext.id + '/ui.js') continue;
+      extensionAllowed.add(ext.id);
+      await new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = ext.script;
+        script.onload = resolve;
+        script.onerror = () => reject(new Error('Platform UI could not be loaded'));
+        document.head.appendChild(script);
+      });
+    }
+  })().catch(e => { console.warn('Platform extension:', e.message); extensionLoad = null; });
+  return extensionLoad;
+}
 
 async function loadPlatform() {
   try {
@@ -1203,6 +1240,7 @@ async function loadPlatform() {
   } catch (e) {
     _platform = null;
   }
+  await loadExtensions();
   // Re-render the current page so anything drawn before the profile arrived
   // picks it up, rather than staying in its unfiltered first paint.
   if (typeof currentSubPage === 'string' && currentSubPage) {
@@ -1298,6 +1336,7 @@ const PAGE_NEEDS = {
 /* ---- Page Renderer ---- */
 function renderPage(pageId) {
   const c = document.getElementById('content-area');
+  if (extensionPages.has(pageId)) return extensionPages.get(pageId)(c);
   // Hiding a nav entry does not make its page unreachable -- a bookmark or an
   // internal link still lands here -- so the guard belongs at the router too,
   // not only in the sidebar.
