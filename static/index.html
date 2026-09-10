@@ -1814,13 +1814,17 @@ async function loadDDoSMap() {
 /* ---- Device > Software Updates (FFN signed payload updater) ---- */
 let _patchData = null;
 function renderPatchManagement(c) {
-  c.innerHTML = `<div class="page-header"><h2>Patch Management</h2><button class="btn btn-sm" onclick="clearInterval(refreshTimer);renderUpdates(document.getElementById('patch-page').parentElement)">Full image / content updates</button></div>
+  c.innerHTML = `<div class="page-header"><h2>Patch Management</h2><button class="btn btn-sm" onclick="patchLegacyUpdates()">Full image / content updates</button></div>
     <div id="patch-page"><p class="text-dim">Stage and review signed code updates before installation. Installing or rolling back briefly restarts management services. Configuration and dataplane firmware are outside the patch package.</p>
     <div class="card"><div class="section-title">Update server</div><div style="display:flex;gap:8px;flex-wrap:wrap"><input id="patch-url" class="form-input" style="flex:1;min-width:260px" placeholder="https://updates.example/ffn"><button id="patch-save" class="btn btn-sm" onclick="patchSaveServer()">Save</button></div><div id="patch-notice" role="status" class="text-dim" style="margin-top:8px"></div></div>
     <div id="patch-state">Loading patch state…</div></div>`;
   _patchData = null;
   loadPatches();
   refreshTimer = setInterval(loadPatches, 2500);
+}
+function patchLegacyUpdates() {
+  clearInterval(refreshTimer);
+  renderUpdates(document.getElementById('patch-page').parentElement);
 }
 function patchStateHTML(d) {
   const job = d.job || {}, installed = d.installed || {}, available = d.available || {}, staged = d.staged || {};
