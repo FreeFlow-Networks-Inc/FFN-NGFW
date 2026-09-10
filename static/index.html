@@ -782,6 +782,16 @@ function fmtBytes(n) {
   return n+' B';
 }
 
+function liveTrafficRowHTML(log) {
+  const action = String(log.message || '').split(' ')[0] || '--';
+  const badge = ['allow','deny','drop','reset'].includes(action.toLowerCase()) ? action.toLowerCase() : 'info';
+  return `<td class="mono">${_escSP(String(log.timestamp || '').replace('T',' ').substring(0,19))}</td><td class="mono">--</td><td class="mono">--</td><td>--</td><td><span class="badge badge-${badge}">${_escSP(action)}</span></td><td>--</td><td>--</td>`;
+}
+function liveSystemLogHTML(log) {
+  const severity = String(log.severity || 'info');
+  const cls = ['info','warning','error','critical','debug'].includes(severity) ? severity : 'info';
+  return `<span class="ts">${_escSP(String(log.timestamp || '').replace('T',' ').substring(0,19))}</span><span class="sev sev-${cls}">[${_escSP(severity)}]</span> ${_escSP(log.message || '')}`;
+}
 function timeStr() { return new Date().toLocaleTimeString(); }
 function ts() { return new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
 
@@ -2460,9 +2470,7 @@ function toggleTrafficWS() {
     if (liveLogPaused) return;
     const l = JSON.parse(evt.data);
     const tr = document.createElement('tr');
-    const parts = l.message.split(' ');
-    const action = parts[0]||'--';
-    tr.innerHTML = `<td class="mono">${l.timestamp.replace('T',' ').substring(0,19)}</td><td class="mono">--</td><td class="mono">--</td><td>--</td><td><span class="badge badge-${action.toLowerCase()}">${_escSP(action)}</span></td><td>--</td><td>--</td>`;
+    tr.innerHTML = liveTrafficRowHTML(l);
     if (tbody) { tbody.prepend(tr); while(tbody.children.length>200) tbody.removeChild(tbody.lastChild); }
   };
   wsConnection.onclose = ()=>{ liveLogActive=false; btn.textContent='Start Live'; btn.classList.remove('btn-danger'); };
@@ -2640,7 +2648,7 @@ function toggleSysLogWS() {
     const l = JSON.parse(evt.data);
     const div = document.createElement('div');
     div.className='log-entry';
-    div.innerHTML=`<span class="ts">${l.timestamp.replace('T',' ').substring(0,19)}</span><span class="sev sev-${l.severity}">[${l.severity}]</span> ${l.message}`;
+    div.innerHTML = liveSystemLogHTML(l);
     if (stream) { stream.prepend(div); while(stream.children.length>500) stream.removeChild(stream.lastChild); }
   };
   wsConnection.onclose = ()=>{ liveLogActive=false; btn.textContent='Start Live Stream'; btn.classList.remove('btn-danger'); };
@@ -3021,7 +3029,7 @@ async function loadConfigObjects(kind) {
       }
     }
     list.innerHTML = rows.length ? `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Scope</th><th>Type</th><th>Value / Members</th><th>Description</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>` :
-      `<p class="text-dim">No ${kind} objects or groups in the ${source} configuration.</p>`;
+      `<p class="text-dim">No ${_escSP(kind)} objects or groups in the ${_escSP(source)} configuration.</p>`;
   } catch(e) { if (list.isConnected && id === objectRequestId) list.textContent = e.message; }
 }
 
@@ -4307,7 +4315,7 @@ async function loadZonesVsysList() {
   const sel = document.getElementById('zones-vsys-select');
   if (!sel) return;
   const entries = (d && d.entries) || [{name:'vsys1'}];
-  sel.innerHTML = entries.map(v=>`<option value="${v.name}" ${v.name===_zonesVsys?'selected':''}>${v.name} (${v.display_name||v.name})</option>`).join('');
+  sel.innerHTML = entries.map(v=>`<option value="${_escSP(v.name)}" ${v.name===_zonesVsys?'selected':''}>${_escSP(v.name)} (${_escSP(v.display_name||v.name)})</option>`).join('');
 }
 
 async function loadZones() {
@@ -4318,22 +4326,28 @@ async function loadZones() {
   if (!tbody) return;
   const entries = (d && d.entries) || [];
   if (!entries.length) {
-    tbody.innerHTML = `<tr><td colspan="8" class="text-dim">No zones in ${_zonesVsys}. Click <strong>+ Add Zone</strong> to create one.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="text-dim">No zones in ${_escSP(_zonesVsys)}. Click <strong>+ Add Zone</strong> to create one.</td></tr>`;
     return;
   }
-  tbody.innerHTML = entries.map(z=>`<tr>
-    <td><strong>${z.name}</strong></td>
-    <td><span class="badge" style="background:#1a4f9e;color:#fff">${z.zone_type}</span></td>
-    <td class="mono" style="font-size:10px">${(z.interfaces||[]).join(', ')||'--'}</td>
+  tbody.innerHTML = entries.map((z,i)=>`<tr>
+    <td><strong>${_escSP(z.name)}</strong></td>
+    <td><span class="badge" style="background:#1a4f9e;color:#fff">${_escSP(z.zone_type)}</span></td>
+    <td class="mono" style="font-size:10px">${_escSP((z.interfaces||[]).join(', ')||'--')}</td>
     <td>${z.enable_user_identification?'<span class="badge badge-up">on</span>':'<span class="text-dim">off</span>'}</td>
-    <td>${z.zone_protection_profile||'--'}</td>
-    <td>${z.log_setting||'--'}</td>
-    <td class="text-dim" style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${z.comment||''}</td>
+    <td>${_escSP(z.zone_protection_profile||'--')}</td>
+    <td>${_escSP(z.log_setting||'--')}</td>
+    <td class="text-dim" style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${_escSP(z.comment||'')}</td>
     <td>
-      <button class="btn btn-xs" onclick='editZone(${JSON.stringify(z).replace(/"/g,"&quot;")})'>Edit</button>
-      <button class="btn btn-xs btn-danger" onclick="deleteZone('${z.name}')">Del</button>
+      <button class="btn btn-xs" data-zone="${i}" data-action="edit">Edit</button>
+      <button class="btn btn-xs btn-danger" data-zone="${i}" data-action="delete">Del</button>
     </td>
   </tr>`).join('');
+  tbody.onclick = event => {
+    const button = event.target.closest('[data-zone]'); if (!button) return;
+    const zone = entries[Number(button.dataset.zone)]; if (!zone) return;
+    if (button.dataset.action === 'edit') editZone(zone);
+    else if (button.dataset.action === 'delete') deleteZone(zone.name);
+  };
 }
 
 function openZoneModal(existing) {
@@ -4475,20 +4489,20 @@ async function loadVirtualRouters() {
 
 function vrGridRow(vr, i) {
   const name = _escSP(vr.name);
-  const nameJs = (vr.name || '').replace(/'/g, "\\'");
+  const nameAttr = _escSP(vr.name || '');
   const ifaces = (vr.interfaces || vr.members || []);
   const ifHtml = ifaces.length ? _escSP(ifaces.join(', ')) : '<span class="text-dim">none</span>';
   const down = (vr.admin_up === false) ? ' <span class="badge badge-down" style="font-size:9px">admin down</span>' : '';
   return `<tr>
-    <td style="vertical-align:top"><strong class="mono" style="cursor:pointer;color:var(--accent)" title="Configure routing" onclick="openVrRouting('${nameJs}')">${name}</strong>${down}
+    <td style="vertical-align:top"><strong class="mono" style="cursor:pointer;color:var(--accent)" title="Configure routing" data-vr="${nameAttr}" onclick="openVrRouting(this.dataset.vr)">${name}</strong>${down}
       <div class="text-dim" style="font-size:10px">table ${_escSP(vr.table_id != null ? vr.table_id : '?')}</div></td>
     <td style="font-size:11px;vertical-align:top">${ifHtml}</td>
     <td id="vr-cfg-${i}" style="font-size:11px;vertical-align:top" class="text-dim">&hellip;</td>
     <td style="white-space:nowrap;vertical-align:top">
-      <button class="btn btn-xs btn-primary" onclick="openVrRouting('${nameJs}')">Routing</button>
-      <button class="btn btn-xs" onclick="openVrFibModal('${nameJs}')">Runtime</button>
-      <button class="btn btn-xs" onclick="editVR('${nameJs}')">Edit</button>
-      <button class="btn btn-xs btn-danger" onclick="deleteVR('${nameJs}')">Del</button>
+      <button class="btn btn-xs btn-primary" data-vr="${nameAttr}" onclick="openVrRouting(this.dataset.vr)">Routing</button>
+      <button class="btn btn-xs" data-vr="${nameAttr}" onclick="openVrFibModal(this.dataset.vr)">Runtime</button>
+      <button class="btn btn-xs" data-vr="${nameAttr}" onclick="editVR(this.dataset.vr)">Edit</button>
+      <button class="btn btn-xs btn-danger" data-vr="${nameAttr}" onclick="deleteVR(this.dataset.vr)">Del</button>
     </td>
   </tr>`;
 }
@@ -4703,7 +4717,7 @@ async function saveVrRouting() {
 
 function vrCardHtml(vr) {
   const name = _escSP(vr.name);
-  const nameJs = (vr.name || '').replace(/'/g, "\\'");
+  const nameAttr = _escSP(vr.name || '');
   const ifaces = (vr.interfaces || vr.members || []);
   const ifHtml = ifaces.length
     ? ifaces.map(i => `<span class="badge badge-info" style="font-size:10px">${_escSP(i)}</span>`).join(' ')
@@ -4725,11 +4739,11 @@ function vrCardHtml(vr) {
         ${protoBadge} ${up} ${vsys} ${rid} ${asn}
       </div>
       <div style="display:flex;gap:6px">
-        <button class="btn btn-xs" onclick="loadVRFib('${nameJs}')">Show FIB</button>
-        <button class="btn btn-xs btn-primary" onclick="openVRouteModal('${nameJs}')">+ Route</button>
-        <button class="btn btn-xs" onclick="openVrRouting('${nameJs}')">Routing</button>
-        <button class="btn btn-xs" onclick="editVR('${nameJs}')">Edit</button>
-        <button class="btn btn-xs btn-danger" onclick="deleteVR('${nameJs}')">Del</button>
+        <button class="btn btn-xs" data-vr="${nameAttr}" onclick="loadVRFib(this.dataset.vr)">Show FIB</button>
+        <button class="btn btn-xs btn-primary" data-vr="${nameAttr}" onclick="openVRouteModal(this.dataset.vr)">+ Route</button>
+        <button class="btn btn-xs" data-vr="${nameAttr}" onclick="openVrRouting(this.dataset.vr)">Routing</button>
+        <button class="btn btn-xs" data-vr="${nameAttr}" onclick="editVR(this.dataset.vr)">Edit</button>
+        <button class="btn btn-xs btn-danger" data-vr="${nameAttr}" onclick="deleteVR(this.dataset.vr)">Del</button>
       </div>
     </div>
     <div style="margin:8px 0;font-size:11px"><span class="text-dim">Members:</span> ${ifHtml}</div>
@@ -4757,15 +4771,15 @@ async function loadVRRoutes(vrName) {
     tbody.innerHTML = '<tr><td colspan="5" class="text-dim">No static routes.</td></tr>';
     return;
   }
-  const nameJs = (vrName || '').replace(/'/g, "\\'");
+  const nameAttr = _escSP(vrName || '');
   tbody.innerHTML = routes.map(r => {
-    const rid = String(_routeId(r)).replace(/'/g, "\\'");
+    const routeAttr = _escSP(String(_routeId(r)));
     return `<tr>
       <td class="mono">${_escSP(_routeDest(r))}</td>
       <td class="mono">${_escSP(_routeNh(r))}</td>
       <td>${_escSP(_routeDev(r) || '--')}</td>
       <td>${_escSP(r.metric != null ? r.metric : '--')}</td>
-      <td><button class="btn btn-xs btn-danger" onclick="deleteVRoute('${nameJs}','${rid}')">Del</button></td>
+      <td><button class="btn btn-xs btn-danger" data-vr="${nameAttr}" data-route="${routeAttr}" onclick="deleteVRoute(this.dataset.vr,this.dataset.route)">Del</button></td>
     </tr>`;
   }).join('');
 }
@@ -7477,12 +7491,12 @@ async function loadLicenses() {
     const files = s.licenses_on_disk || s.license_files || [];
     filesBody.innerHTML = files.length ? files.map(f => {
       const exp = f.expiry ? _escSP(f.expiry) + (f.expiry_days != null ? ` (${f.expiry_days}d)` : '') : 'permanent';
-      const nm = (f.name || '').replace(/'/g, "\\'");
+      const nameAttr = _escSP(f.name || '');
       return `<tr>
         <td class="mono">${_escSP(f.name || '--')}</td>
         <td class="mono">${_escSP(f.feature_id_hex || '?')}</td>
         <td>${exp}</td>
-        <td><button class="btn btn-xs btn-danger" onclick="licDelete('license','${nm}')">×</button></td>
+        <td><button class="btn btn-xs btn-danger" data-license="${nameAttr}" onclick="licDelete('license',this.dataset.license)">×</button></td>
       </tr>`;
     }).join('') : '<tr><td colspan="4" class="text-dim">No license tokens uploaded</td></tr>';
   }

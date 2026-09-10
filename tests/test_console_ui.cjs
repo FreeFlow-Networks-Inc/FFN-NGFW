@@ -32,6 +32,25 @@ const run = code => vm.runInContext(code,context);
   assert.equal(run('currentSubPage'),'network-qos');
   assert(run("_netEscape(['<script>', '\"'])").includes('&lt;script&gt;'));
   assert(!run("_netFieldInput({key:'x',type:'list'},['\" onfocus=\"evil()'])").includes('value="" onfocus'));
+  const hostile = "\\'\"><img src=x onerror=evil()>";
+  for (const render of [context.liveTrafficRowHTML, context.liveSystemLogHTML]) {
+    const result = render({timestamp:hostile, message:hostile, severity:hostile});
+    assert(!result.includes('<img'), 'WebSocket data must stay text');
+    assert(!result.includes('class="sev sev-\\'), 'Severity CSS uses a fixed allowlist');
+  }
+  for (const render of [context.vrGridRow,context.vrCardHtml]) {
+    const result=render({name:hostile},0);
+    assert(!result.includes('<img'));
+    for (const handler of result.matchAll(/onclick="([^"]*)"/g)) {
+      assert(!handler[1].includes('evil'), 'Object names must not be interpolated into JavaScript');
+      assert(handler[1].includes('this.dataset.vr'));
+    }
+  }
+  context.api=async()=>({routes:[{id:hostile,dest_cidr:'192.0.2.0/24'}]});
+  await context.loadVRRoutes(hostile);
+  const route=element('vr-routes-'+hostile).innerHTML;
+  assert(!route.includes('<img'));
+  assert(route.includes('deleteVRoute(this.dataset.vr,this.dataset.route)'));
 
   context.fetch=async()=>({ok:false,status:423,json:async()=>({detail:'Locked by another administrator'})});
   await assert.rejects(context.consoleRequest('/fixture'),/Locked/);
