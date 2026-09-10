@@ -101,6 +101,9 @@ jobs:
       - name: hardware inventory renderer
         run: node tests/test_hardware_ui.cjs
 
+      - name: console initialization and workflows
+        run: node tests/test_console_ui.cjs
+
       - name: code patch lifecycle and renderer
         run: |
           python3 tests/test_patches.py
@@ -207,6 +210,9 @@ jobs:
 
       - name: management input security regressions
         run: python tests/test_manager_security.py
+
+      - name: console settings and snapshot workflows
+        run: python tests/test_console_api.py
 
       - name: patch management API permissions
         run: python tests/test_patch_api.py
