@@ -12267,6 +12267,16 @@ async def logs_live(ws: WebSocket):
 # Entry point
 # ==========================================================================
 
+async def _extension_audit(username, action, detail):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await audit(db, username, action, detail)
+
+
+# Only an explicitly selected platform may register additional controls.
+from ffn_extensions import install as _install_extensions
+_install_extensions(app, get_current_user, _require_admin, _extension_audit)
+
+
 if __name__ == "__main__":
     # Concurrency model: one uvicorn worker with asyncio event loop.
     # The ConfigManager, commit lock, and runtime-state cache all live in
