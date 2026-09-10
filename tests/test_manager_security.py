@@ -68,12 +68,16 @@ class ManagerSecurityTests(unittest.TestCase):
             link.symlink_to(outside)
         except OSError:
             # Windows without symlink privilege: exercise the same rejection.
-            with patch.object(Path, 'is_symlink', return_value=True), self.assertRaises(m.HTTPException):
+            with patch.object(os.path, 'islink', return_value=True), self.assertRaises(m.HTTPException):
                 m._store_path(store, 'link.lic')
         else:
             with self.assertRaises(m.HTTPException):
                 m._store_path(store, 'link.lic')
         self.assertEqual(outside.read_text(), 'untouched')
+        # Resolved targets in a similarly named sibling are outside the store.
+        with patch.object(os.path, 'realpath', side_effect=[str(store), str(store) + '-backup/file.lic']), \
+             self.assertRaises(m.HTTPException):
+            m._store_path(store, 'file.lic')
 
     def test_network_command_injection_rejected_before_spawn(self):
         cases = [
@@ -100,7 +104,8 @@ class ManagerSecurityTests(unittest.TestCase):
             ):
                 self.assertEqual(m._run_net_cmd(args, 'test'), (0, ''))
                 self.assertEqual(spawn.call_args.args[0], args)
-                self.assertNotIn('shell', spawn.call_args.kwargs)
+                self.assertIs(spawn.call_args.kwargs['shell'], False)
+                self.assertEqual(spawn.call_args.kwargs['executable'], args[0])
 
     def test_journal_filters_are_validated_and_count_bounded(self):
         with patch.object(m.subprocess, 'check_output', return_value='') as spawn:
@@ -122,6 +127,10 @@ class ManagerSecurityTests(unittest.TestCase):
         with patch.object(m.subprocess, 'run', side_effect=OSError(secret)):
             result = m._payload_cli(['check'])
             self.assertNotIn(secret, json.dumps(result))
+        with patch('builtins.__import__', side_effect=ImportError(secret)):
+            result = m._publish_to_planes()
+            self.assertNotIn(secret, json.dumps(result))
+            self.assertFalse(result['published'])
         with patch.object(m.shutil, 'which', return_value='/usr/bin/tailscale'), \
              patch.object(m.subprocess, 'check_output', side_effect=subprocess.CalledProcessError(1, ['tailscale'], output=secret)):
             result = asyncio.run(m.tailscale_status(user={'username': 'test'}))

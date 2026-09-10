@@ -243,14 +243,18 @@ def _store_path(directory: Path, filename: str) -> Path:
     """Confine a plain filename to its store, including existing symlinks."""
     if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,199}", filename):
         raise HTTPException(status_code=400, detail="Invalid filename")
-    root = directory.resolve()
-    target = root / filename
-    if target.is_symlink():
-        raise HTTPException(status_code=400, detail="Symlink files are not allowed")
-    resolved = target.resolve()
-    if os.path.commonpath([str(root), str(resolved)]) != str(root):
+    root = os.path.realpath(directory)
+    target = os.path.abspath(os.path.join(root, filename))
+    # Include the separator so a sibling such as store-backup cannot match.
+    prefix = os.path.join(root, "")
+    if not target.startswith(prefix):
         raise HTTPException(status_code=400, detail="File is outside its store")
-    return resolved
+    if os.path.islink(target):
+        raise HTTPException(status_code=400, detail="Symlink files are not allowed")
+    resolved = os.path.realpath(target)
+    if not resolved.startswith(prefix):
+        raise HTTPException(status_code=400, detail="File is outside its store")
+    return Path(resolved)
 
 
 def _snapshot_name(name: str) -> str:
@@ -4919,13 +4923,13 @@ def _cp_reachable():
             return False, ("127.1.1.2 does not route over ffnnet0, so it would "
                            "reach this host's own loopback")
     except Exception as exc:
-        return False, "route check failed: %s" % exc
+        return False, "route check failed: %s" % _public_error(exc)
     try:
         sock = socket.create_connection(("127.1.1.2", 8104), timeout=3)
         sock.close()
         return True, "ffn-bcmd answering on 127.1.1.2:8104"
     except OSError as exc:
-        return False, "no answer on 127.1.1.2:8104: %s" % exc
+        return False, "no answer on 127.1.1.2:8104: %s" % _public_error(exc)
 
 
 def _sw_forwarder():
@@ -4976,7 +4980,7 @@ def _probe_host_octeon():
                 info["pci"].append(device["description"])
                 info["generation"] = info["generation"] or model
     except Exception as exc:
-        info["note"] = "Host PCI probe failed: %s" % exc
+        info["note"] = "Host PCI probe failed: %s" % _public_error(exc)
         return info
     if not info["pci"]:
         info["note"] = ("No OCTEON complex on this host's PCI bus. FFN uses "
@@ -5249,7 +5253,7 @@ async def updates_set_server(cfg: UpdateServerCfg, user: dict = Depends(get_curr
         with open(UPDATE_CONF, "w") as f:
             f.write("url=%s\n" % u)
     except Exception as e:
-        raise HTTPException(500, "could not save: %s" % e)
+        raise HTTPException(500, "could not save: %s" % _public_error(e))
     return {"success": True, "server": u}
 
 
@@ -5391,7 +5395,7 @@ async def octeon_bringup(user: dict = Depends(get_current_user)):
                     timeout=60)
         txt = r.stdout
     except Exception as e:
-        raise HTTPException(500, "bring-up plan unavailable: %s" % e)
+        raise HTTPException(500, "bring-up plan unavailable: %s" % _public_error(e))
     steps, ready, total = [], 0, 0
     cur = None
     for line in txt.splitlines():
@@ -5660,7 +5664,7 @@ async def policy_compile(user: dict = Depends(get_current_user)):
         return await _compile_policy_bin()
     except Exception as exc:
         raise HTTPException(status_code=500,
-                            detail="policy compile failed: %s" % exc)
+                            detail="policy compile failed: %s" % _public_error(exc))
 
 
 @app.put("/api/policy/rules/{rule_id}")
@@ -5954,6 +5958,7 @@ def _run_net_cmd(args, tag: str, timeout: int = 5):
     # before invocation, including commands interpreted by vtysh itself.
     if not args or args[0] not in ("ip", "sysctl", "vtysh"):
         raise HTTPException(status_code=400, detail="Unsupported network command")
+    executable = {"ip": "ip", "sysctl": "sysctl", "vtysh": "vtysh"}[args[0]]
     cmd = [args[0]]
     for index, value in enumerate(args[1:], 1):
         arg = str(value)
@@ -5970,7 +5975,8 @@ def _run_net_cmd(args, tag: str, timeout: int = 5):
     if args[0] == "vtysh" and len(cmd) % 2 != 1:
         raise HTTPException(status_code=400, detail="Missing routing command")
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(cmd, executable=executable, shell=False,
+                           capture_output=True, text=True, timeout=timeout)
         out = ((p.stdout or "") + (p.stderr or "")).strip()
         if p.returncode != 0:
             logger.warning("%s rc=%d: %s :: %s",
@@ -7623,7 +7629,7 @@ async def ml_score(req: MlScoreRequest, user: dict = Depends(get_current_user)):
     try:
         result = eng.score(data)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail="scoring failed: %s" % exc)
+        raise HTTPException(status_code=500, detail="scoring failed: %s" % _public_error(exc))
     return {"bytes": len(data), **result}
 
 
@@ -7661,7 +7667,7 @@ async def ml_update(payload: dict, user: dict = Depends(get_current_user)):
         raise
     except Exception as exc:
         # update()/import_() raise BEFORE mutating on a bad blob -> engine intact.
-        raise HTTPException(status_code=400, detail="model update failed: %s" % exc)
+        raise HTTPException(status_code=400, detail="model update failed: %s" % _public_error(exc))
 
     persisted = _ml_persist(eng)
     # Realtime fan-out: push the new model to a running DP over the §9 wire.
@@ -7794,7 +7800,7 @@ async def mpdp_push(payload: dict, user: dict = Depends(get_current_user)):
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=400, detail="push failed: %s" % exc)
+        raise HTTPException(status_code=400, detail="push failed: %s" % _public_error(exc))
 
     async with aiosqlite.connect(DB_PATH) as db:
         await audit(db, user["username"], "mpdp_push", kind)
@@ -8256,7 +8262,7 @@ async def dlp_rules_add(rule: DLPRule, user: dict = Depends(get_current_user)):
         try:
             re.compile(rule.pattern)
         except re.error as e:
-            raise HTTPException(status_code=400, detail="Invalid regex: %s" % e)
+            raise HTTPException(status_code=400, detail="Invalid regex: %s" % _public_error(e))
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
             "INSERT INTO dlp_rules "
@@ -9183,7 +9189,7 @@ def _publish_to_planes() -> dict:
     try:
         import ffn_config_render
     except ImportError as exc:
-        return {"published": False, "error": "renderer unavailable: %s" % exc,
+        return {"published": False, "error": "renderer unavailable: %s" % _public_error(exc),
                 "hint": "deploy ffn_config_render.py beside ffn_manager.py"}
     try:
         return ffn_config_render.publish()
