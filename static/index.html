@@ -1252,12 +1252,23 @@ let _platform = null;
 const extensionPages = new Map();
 let extensionLoad = null;
 const extensionAllowed = new Set();
+const extensionDeclarations = new Map();
 window.ffnExtensions = {
   register(id, label, render) {
-    if (!extensionAllowed.has(id) || extensionPages.has(id)) return;
+    if (!extensionAllowed.has(id) || typeof render !== 'function' || extensionDeclarations.get(id)?.length) return;
     const page = 'extension-' + id;
+    if (extensionPages.has(page)) return;
     extensionPages.set(page, render);
     TAB_MENUS.dashboard.push({id: page, label});
+  },
+  registerPage(id, pageId, render) {
+    if (!extensionAllowed.has(id) || typeof render !== 'function') return;
+    const declaration = (extensionDeclarations.get(id) || []).find(p => p.id === pageId);
+    if (!declaration || !Array.isArray(TAB_MENUS[declaration.tab])) return;
+    const page = 'extension-' + id + '--' + pageId;
+    if (extensionPages.has(page)) return;
+    extensionPages.set(page, render);
+    TAB_MENUS[declaration.tab].push({id: page, label: declaration.label});
   },
   async request(path, options = {}) {
     const response = await fetch(path, {...options, headers: {
@@ -1275,6 +1286,7 @@ async function loadExtensions() {
       if (!/^[a-z][a-z0-9-]{0,31}$/.test(ext.id) ||
           ext.script !== '/static/extensions/' + ext.id + '/ui.js') continue;
       extensionAllowed.add(ext.id);
+      extensionDeclarations.set(ext.id, ext.pages || []);
       await new Promise((resolve, reject) => {
         const script = document.createElement('script');
         script.src = ext.script;
@@ -2994,43 +3006,85 @@ async function saveDoS() {
 /* ---- Objects > Addresses ---- */
 function renderObjectsAddresses(c) { renderConfigObjects(c, 'address'); }
 function renderObjectsServices(c) { renderConfigObjects(c, 'service'); }
-function renderConfigObjects(c, kind) {
-  c.innerHTML = `<div class="page-header"><h2>${kind==='address'?'Address':'Service'} Objects</h2></div>
-    <p class="text-dim">Objects read from configuration XML, including shared and virtual-system scopes. This view does not modify objects.</p>
-    <div class="workflow-actions"><label for="object-source">Configuration</label>
-    <select id="object-source"><option value="candidate">Candidate</option><option value="running">Running</option></select>
-    <button id="object-refresh" class="btn">Refresh</button></div><div id="object-list" class="card">Loading…</div>`;
-  document.getElementById('object-source').onchange = () => loadConfigObjects(kind);
-  document.getElementById('object-refresh').onclick = () => loadConfigObjects(kind);
-  loadConfigObjects(kind);
+function renderConfigObjects(c, family) {
+  c.innerHTML = `<div class="page-header"><h2>${family==='address'?'Address':'Service'} Objects</h2></div>
+    <p class="text-dim">Edits are saved to candidate configuration. Runtime enforcement depends on the selected platform's policy implementation.</p>
+    <div class="workflow-actions"><label>Configuration <select id="object-source"><option>candidate</option><option>running</option></select></label>
+    <label>Scope <select id="object-scope"><option>shared</option></select></label>
+    <label>Kind <select id="object-kind"><option value="${family}">Objects</option><option value="${family}-group">Groups</option></select></label>
+    <button id="object-refresh" class="btn">Refresh</button><button id="object-add" class="btn" disabled>Add</button></div>
+    <div id="object-list" class="card">Loading…</div><div id="object-editor" class="card" hidden></div>`;
+  for (const id of ['object-source','object-scope','object-kind']) document.getElementById(id).onchange = loadConfigObjects;
+  document.getElementById('object-refresh').onclick = loadConfigObjects;
+  loadConfigObjects();
 }
 let objectRequestId = 0;
-async function loadConfigObjects(kind) {
+async function loadConfigObjects() {
   const id = ++objectRequestId, list = document.getElementById('object-list');
   const source = document.getElementById('object-source').value;
-  list.textContent = 'Loading '+source+' objects…';
+  const scope = document.getElementById('object-scope').value;
+  const kind = document.getElementById('object-kind').value;
+  const add = document.getElementById('object-add');
+  document.getElementById('object-editor').hidden = true;
+  add.disabled = true; list.textContent = 'Loading objects…';
   try {
-    const r = await consoleRequest('/api/config/'+source);
-    const xml = new DOMParser().parseFromString(r.xml, 'application/xml');
-    if (xml.querySelector('parsererror')) throw new Error('Configuration XML could not be read.');
+    const base = '/api/config/objects/'+kind;
+    const query = '?scope='+encodeURIComponent(scope);
+    const r = await consoleRequest(base+query+'&source='+source);
     if (!list.isConnected || id !== objectRequestId) return;
-    const rows = [];
-    for (const tag of [kind,kind+'-group']) for (const parent of xml.getElementsByTagName(tag)) {
-      // Object containers occur directly in shared or vsys entries, not rules.
-      const scope = parent.parentElement;
-      if (!(scope.tagName === 'shared' || (scope.tagName === 'entry' && scope.parentElement?.tagName === 'vsys'))) continue;
-      for (const entry of parent.children) {
-        if (entry.tagName !== 'entry') continue;
-        const description = Array.from(entry.children).find(n=>n.tagName==='description');
-        const value = Array.from(entry.children).filter(n=>!['description','tag'].includes(n.tagName))
-          .map(n=>n.tagName+': '+n.textContent.trim()).join('; ');
-        rows.push(`<tr><td>${_escSP(entry.getAttribute('name'))}</td><td>${_escSP(scope.tagName==='shared'?'Shared':scope.getAttribute('name'))}</td>
-          <td>${_escSP(tag)}</td><td>${_escSP(value)}</td><td>${_escSP(description?.textContent || '')}</td></tr>`);
-      }
-    }
-    list.innerHTML = rows.length ? `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Scope</th><th>Type</th><th>Value / Members</th><th>Description</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>` :
-      `<p class="text-dim">No ${_escSP(kind)} objects or groups in the ${_escSP(source)} configuration.</p>`;
-  } catch(e) { if (list.isConnected && id === objectRequestId) list.textContent = e.message; }
+    document.getElementById('object-scope').innerHTML = r.scopes.map(v=>`<option value="${_escSP(v)}">${_escSP(v)}</option>`).join('');
+    document.getElementById('object-scope').value = scope;
+    add.disabled = !r.can_edit; add.onclick = () => editConfigObject(r, base, query);
+    list.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Value / Members</th><th>Description</th><th>Actions</th></tr></thead><tbody>`+
+      r.entries.map((o,i)=>`<tr><td>${_escSP(o.name)}</td><td>${_escSP(o.type)}</td><td>${_escSP(o.members.length?o.members.join(', '):o.value)}</td><td>${_escSP(o.description)}</td><td>
+      <button class="btn btn-sm" data-object-ref="${i}">References</button>
+      <button class="btn btn-sm" data-object-edit="${i}" ${r.can_edit&&o.editable?'':'disabled'}>Edit</button>
+      <button class="btn btn-sm" data-object-delete="${i}" ${r.can_edit&&o.editable?'':'disabled'}>Delete</button></td></tr>`).join('')+
+      '</tbody></table></div>'+(r.entries.length?'':'<p>No objects in this scope.</p>');
+    list.querySelectorAll('[data-object-edit]').forEach(b=>b.onclick=()=>editConfigObject(r,base,query,r.entries[Number(b.dataset.objectEdit)]));
+    list.querySelectorAll('[data-object-ref]').forEach(b=>b.onclick=async()=>{
+      const box=document.getElementById('object-editor'); box.hidden=false; box.textContent='Loading references…';
+      try {
+        const refs=await consoleRequest(base+'/'+encodeURIComponent(r.entries[Number(b.dataset.objectRef)].name)+'/references'+query+'&source='+source);
+        if (id===objectRequestId && box.isConnected) box.textContent=refs.references.map(x=>x.path).join('\n') || 'No references.';
+      } catch(e) { if (id===objectRequestId) box.textContent=e.message; }
+    });
+    list.querySelectorAll('[data-object-delete]').forEach(b=>b.onclick=async()=>{
+      const o=r.entries[Number(b.dataset.objectDelete)];
+      if (!confirm('Delete '+o.name+' from candidate configuration?')) return;
+      b.disabled=true;
+      try {
+        await consoleRequest(base+'/'+encodeURIComponent(o.name)+query+'&revision='+r.revision,{method:'DELETE'});
+        refreshCommitIndicator(); if(id===objectRequestId) await loadConfigObjects();
+      } catch(e) { const box=document.getElementById('object-editor'); if(id===objectRequestId){box.hidden=false;box.textContent=e.message;b.disabled=false;} }
+    });
+  } catch(e) { if (list.isConnected && id===objectRequestId) list.textContent=e.message; }
+}
+function editConfigObject(snapshot, base, query, existing) {
+  const box=document.getElementById('object-editor'), generation=objectRequestId;
+  const group=snapshot.kind.endsWith('-group'), service=snapshot.kind==='service';
+  const o=existing || {name:'',type:group?'static':service?'tcp':'ip-netmask',value:'',source_port:'',members:[],description:''};
+  const choices=group?['static']:service?['tcp','udp']:['ip-netmask','ip-range','fqdn'];
+  box.hidden=false;
+  box.innerHTML=`<h3>${existing?'Edit':'Add'} ${_escSP(snapshot.kind)}</h3><form id="object-form">
+    <label>Name <input name="name" maxlength="63" required ${existing?'readonly':''} value="${_escSP(o.name)}"></label>
+    <label>Type <select name="type">${choices.map(v=>`<option ${v===o.type?'selected':''}>${v}</option>`).join('')}</select></label>
+    ${group?`<label>Members (one name per line)<textarea name="members" required>${_escSP(o.members.join('\n'))}</textarea></label><p class="text-dim">Available: ${_escSP(snapshot.member_choices.filter(x=>x.name!==o.name).map(x=>x.name).join(', '))}</p>`:
+    `<label>${service?'Destination ports':'Address value'} <input name="value" required value="${_escSP(o.value)}"></label>`}
+    ${service?`<label>Source ports (optional) <input name="source_port" value="${_escSP(o.source_port)}"></label>`:''}
+    <label>Description <textarea name="description" maxlength="1024">${_escSP(o.description)}</textarea></label>
+    <button type="submit" class="btn">Save to candidate</button><button type="button" id="object-cancel" class="btn">Cancel</button><p id="object-message" role="status"></p></form>`;
+  document.getElementById('object-cancel').onclick=()=>{box.hidden=true;};
+  document.getElementById('object-form').onsubmit=async event=>{
+    event.preventDefault(); const form=event.currentTarget, button=form.querySelector('[type=submit]');
+    const data=new FormData(form), payload={revision:snapshot.revision,name:data.get('name'),type:data.get('type'),description:data.get('description'),
+      value:data.get('value')||'',source_port:data.get('source_port')||'',members:group?data.get('members').split(/\r?\n/).map(x=>x.trim()).filter(Boolean):[]};
+    button.disabled=true;
+    try {
+      await consoleRequest(base+(existing?'/'+encodeURIComponent(existing.name):'')+query,{method:existing?'PUT':'POST',body:JSON.stringify(payload)});
+      refreshCommitIndicator(); if(generation===objectRequestId) await loadConfigObjects();
+    } catch(e) { if(generation===objectRequestId && form.isConnected){form.querySelector('[role=status]').textContent=e.message;button.disabled=false;} }
+  };
 }
 
 /* ---- Objects > Applications ---- */
