@@ -5551,7 +5551,7 @@ function renderDeviceConfigAudit(c) {
       <button class="btn" onclick="exportConfiguration('running')">Export Running XML</button>
       <button class="btn" onclick="exportConfiguration('candidate')">Export Candidate XML</button></div></div>
     <div class="card"><h3>Saved Running Snapshots</h3>
-      <div class="workflow-actions"><input id="snapshot-name" aria-label="Snapshot name" placeholder="Snapshot name" maxlength="200">
+      <div class="workflow-actions"><input id="snapshot-name" aria-label="Snapshot name" placeholder="Snapshot name" maxlength="128">
       <input id="snapshot-description" aria-label="Snapshot description" placeholder="Description">
       <button id="snapshot-save" class="btn btn-primary" ${consoleCanWrite()?'':'disabled'} onclick="saveSnapshot()">Save Running Snapshot</button>
       <button class="btn" onclick="loadSnapshots()">Refresh</button></div>
@@ -5579,7 +5579,7 @@ async function saveSnapshot() {
   if (!consoleCanWrite()) return;
   const name = document.getElementById('snapshot-name').value.trim();
   const msg = document.getElementById('config-notice'), btn = document.getElementById('snapshot-save');
-  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/.test(name)) { msg.textContent = 'Use a name beginning with a letter or number, followed by letters, numbers, dots, underscores or hyphens.'; return; }
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(name)) { msg.textContent = 'Use 1–128 letters, numbers, underscores or hyphens.'; return; }
   btn.disabled = true;
   try {
     const existing = await consoleRequest('/api/config/snapshots');
