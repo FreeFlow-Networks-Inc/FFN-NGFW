@@ -785,7 +785,7 @@ function fmtBytes(n) {
 function liveTrafficRowHTML(log) {
   const action = String(log.message || '').split(' ')[0] || '--';
   const badge = ['allow','deny','drop','reset'].includes(action.toLowerCase()) ? action.toLowerCase() : 'info';
-  return `<td class="mono">${_escSP(String(log.timestamp || '').replace('T',' ').substring(0,19))}</td><td class="mono">--</td><td class="mono">--</td><td>--</td><td><span class="badge badge-${badge}">${_escSP(action)}</span></td><td>--</td><td>--</td>`;
+  return `<td class="mono">${_escSP(String(log.timestamp || '').replace('T',' ').substring(0,19))}</td><td class="mono">--</td><td class="mono">--</td><td>--</td><td><span class="badge badge-${_escSP(badge)}">${_escSP(action)}</span></td><td>--</td><td>--</td>`;
 }
 function liveSystemLogHTML(log) {
   const severity = String(log.severity || 'info');
