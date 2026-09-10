@@ -36,7 +36,9 @@ hardware rather than a guess:
     platform/<name>/platform.json
         {"datapath": "offload", "cpu_isolation": "none", "reason": "..."}
 
-With no platform selected, the default is generic DPDK hardware.
+Hardware detection is evaluated first. Specialized processing hardware assigns
+the host CPU to management, even without a selected platform, and suppresses
+host isolation. Only a generic hardware inventory defaults to DPDK CPU splitting.
 
 WHY THIS IS CAUTIOUS ABOUT WRITING
 
@@ -251,11 +253,13 @@ class Plan:
         self.datapath: str = "dpdk"
         self.decl_path: Optional[str] = None
         self.ncpu: int = 0
+        self.cpu_role: str = "shared"
 
     def as_dict(self) -> Dict:
         return {
             "platform": self.platform,
             "datapath": self.datapath,
+            "cpu_role": self.cpu_role,
             "declaration": self.decl_path,
             "isolate": self.isolate,
             "isolated_cores": format_cpu_list(self.cores),
@@ -268,7 +272,8 @@ class Plan:
         }
 
 
-def physical_cores(ncpu: int, sibs: Dict[int, List[int]]) -> List[List[int]]:
+def physical_cores(ncpu: int, sibs: Dict[int, List[int]],
+                   cpu_ids: Optional[List[int]] = None) -> List[List[int]]:
     """Group logical CPUs into physical cores, in ascending order.
 
     With no sysfs topology every CPU is its own group, which is the right
@@ -276,10 +281,11 @@ def physical_cores(ncpu: int, sibs: Dict[int, List[int]]) -> List[List[int]]:
     """
     groups: List[List[int]] = []
     seen: set = set()
-    for c in range(ncpu):
+    available = set(range(ncpu) if cpu_ids is None else cpu_ids)
+    for c in sorted(available):
         if c in seen:
             continue
-        g = sorted(set(sibs.get(c, [c])) & set(range(ncpu))) or [c]
+        g = sorted(set(sibs.get(c, [c])) & available) or [c]
         seen.update(g)
         groups.append(g)
     return groups
@@ -287,7 +293,8 @@ def physical_cores(ncpu: int, sibs: Dict[int, List[int]]) -> List[List[int]]:
 
 def _pick_dpdk_cores(ncpu: int, sibs: Dict[int, List[int]],
                      prefer_node: Optional[int],
-                     data_fraction: float = 0.5
+                     data_fraction: float = 0.5,
+                     cpu_ids: Optional[List[int]] = None
                      ) -> Tuple[List[int], List[str]]:
     """Choose cores to isolate: whole physical cores, from the top, never CPU 0.
 
@@ -298,7 +305,7 @@ def _pick_dpdk_cores(ncpu: int, sibs: Dict[int, List[int]],
     /24-core host that isolated 46 of 48 and left the control plane with two.
     """
     warnings: List[str] = []
-    groups = physical_cores(ncpu, sibs)
+    groups = physical_cores(ncpu, sibs, cpu_ids)
 
     # Never touch the physical core that owns CPU 0: kernel housekeeping and
     # most IRQ handling live there, and its sibling shares the same core.
@@ -351,15 +358,38 @@ def decide(inv: Optional[Dict] = None, decl: Optional[Dict] = None,
     p.datapath = decl.get("datapath", "dpdk")
     p.decl_path = decl_path
 
+    cpu_info = (inv or {}).get("cpu", {})
+    cpu_ids = cpu_info.get("online_cpus") if ncpu is None else None
     if ncpu is None:
         ncpu = (inv or {}).get("cpu", {}).get("cores_logical") or os.cpu_count() or 1
+    cpu_ids = sorted(set(cpu_ids)) if cpu_ids is not None else list(range(ncpu))
     p.ncpu = ncpu
     if mem_gb is None:
         mem_gb = float((inv or {}).get("memory", {}).get("total_gb") or 0)
+    mode = str(decl.get("cpu_isolation", "auto")).lower()
+
+    # Hardware responsibilities are decided before topology partitioning or
+    # interpreting any inherited isolcpus/explicit core assignment.
+    if ffn_hwdetect is not None:
+        assignment = ffn_hwdetect.classify_cpu_role(inv, decl)
+        p.cpu_role = assignment["role"]
+        if assignment["cpu_isolation"] == "none":
+            p.housekeeping = list(cpu_ids)
+            p.datapath = "offload" if p.cpu_role == "management" else "unknown"
+            p.reason = assignment["reason"]
+            if mode == "explicit":
+                p.warnings.append("Explicit host dataplane isolation ignored after hardware-role classification.")
+            return p
+
+    if (inv or {}).get("status") == "unsupported":
+        p.reason = "Host tuning requires Linux hardware probes."
+        return p
+    if "available_cpus" in cpu_info and set(cpu_info["available_cpus"]) != set(cpu_ids):
+        p.reason = "Process CPU affinity is restricted; refusing host-wide kernel tuning from a partial CPU view."
+        return p
+
     if sibs is None:
         sibs = smt_siblings()
-
-    mode = str(decl.get("cpu_isolation", "auto")).lower()
 
     # ---- 1. the platform says isolation does not apply ------------------
     if mode == "none":
@@ -399,7 +429,7 @@ def decide(inv: Optional[Dict] = None, decl: Optional[Dict] = None,
                 "sharing cores with the scheduler." % ncpu)
             return p
         frac = float(decl.get("data_fraction", 0.5))
-        cores, warns = _pick_dpdk_cores(ncpu, sibs, nic_node, frac)
+        cores, warns = _pick_dpdk_cores(ncpu, sibs, nic_node, frac, cpu_ids)
         p.cores = cores
         p.warnings.extend(warns)
         p.isolate = bool(cores)
@@ -409,16 +439,16 @@ def decide(inv: Optional[Dict] = None, decl: Optional[Dict] = None,
             "scheduler, the timer tick and RCU callbacks.")
 
     # ---- shared post-processing for the isolating cases -----------------
-    p.cores = [c for c in sorted(set(p.cores)) if 0 <= c < ncpu]
+    p.cores = [c for c in sorted(set(p.cores)) if c in cpu_ids]
     if 0 in p.cores:
         p.cores.remove(0)
         p.warnings.append("refused to isolate CPU 0: kernel housekeeping and "
                           "most IRQ handling land there.")
-    p.housekeeping = [c for c in range(ncpu) if c not in p.cores]
+    p.housekeeping = [c for c in cpu_ids if c not in p.cores]
     if len(p.housekeeping) < MIN_SCHEDULABLE:
         p.isolate = False
         p.cores = []
-        p.housekeeping = list(range(ncpu))
+        p.housekeeping = list(cpu_ids)
         p.warnings.append(
             "plan would have left fewer than %d schedulable core(s); isolating "
             "nothing instead." % MIN_SCHEDULABLE)
@@ -429,7 +459,12 @@ def decide(inv: Optional[Dict] = None, decl: Optional[Dict] = None,
 
     p.hugepages = _plan_hugepages(mem_gb)
     model = ((inv or {}).get("cpu", {}).get("model") or "").lower()
-    if "amd" in model:
+    arch = ((inv or {}).get("system", {}).get("arch") or "").lower()
+    if arch and arch not in ("x86_64", "amd64", "i686", "i386"):
+        # ARM/MIPS SoCs do not have an Intel or AMD IOMMU. Device presence
+        # alone does not justify adding an x86-specific kernel argument.
+        p.iommu = ["iommu=pt"]
+    elif "amd" in model:
         p.iommu = ["amd_iommu=on", "iommu=pt"]
     else:
         p.iommu = ["intel_iommu=on", "iommu=pt"]
@@ -777,7 +812,7 @@ def selftest() -> int:
 
 def build_plan(root: str = ".") -> Plan:
     decl, path = find_platform_decl(root)
-    inv = None
+    inv = {"probe_status": {"pci": "error"}}
     nic_node = None
     if ffn_hwdetect is not None:
         try:
@@ -786,12 +821,15 @@ def build_plan(root: str = ".") -> Plan:
             best = None
             for n in inv.get("nics", []):
                 pci = n.get("pci") or ""
-                node = numa_of_pci(pci)
+                if not pci or n.get("kind") in ("virtual", "overlay/virtual", "dpu-control"):
+                    continue
+                node = n.get("numa_node", -1)
+                if not isinstance(node, int) or node < 0:
+                    node = numa_of_pci(pci)
                 if node is None:
                     continue
-                spd = n.get("speed") or ""
                 try:
-                    mbps = int(re.sub(r"[^0-9]", "", spd) or 0)
+                    mbps = max(0, int(n.get("speed_mbps") or 0))
                 except Exception:
                     mbps = 0
                 if best is None or mbps > best[0]:
@@ -799,7 +837,7 @@ def build_plan(root: str = ".") -> Plan:
             if best:
                 nic_node = best[1]
         except Exception:
-            inv = None
+            inv = {"probe_status": {"pci": "error"}}
     return decide(inv=inv, decl=decl, decl_path=path, nic_node=nic_node)
 
 

@@ -20,7 +20,7 @@ Signature classes (one `av_signatures` table, discriminated by `sig_type`):
   * yara    -- multi-string rule with an all/any/N-of condition (YARA-lite, JSON)
 
 Distinct from, and complementary to:
-  * ffn_threatdb.samples/iocs  -- verdict + IOC intel (WildFire feedback)
+  * ffn_threatdb.samples/iocs  -- verdict + IOC intel (Crucible feedback)
   * inline_payload_det.content_signatures -- IPS/stream byte rules (Suricata-ish)
 This is the FILE anti-malware/AV content, plus the content-versioning that all
 of them can hang updates off.

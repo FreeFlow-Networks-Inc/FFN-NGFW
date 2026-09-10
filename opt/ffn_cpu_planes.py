@@ -188,24 +188,49 @@ def auto_plan(ncpu: int, *, data_frac: float = 0.5, mgmt: int = 1,
 # ===========================================================================
 # The manager
 # ===========================================================================
+def _host_assignment(ncpu=None, inventory=None):
+    from ffn_hwdetect import detect, classify_cpu_role
+    declaration = None
+    if inventory is None and ncpu is None:
+        try:
+            inventory = detect()
+        except Exception:
+            inventory = {"probe_status": {"pci": "error"}}
+    if ncpu is None:
+        from ffn_cpuisol import find_platform_decl, _repo_root
+        declaration, _ = find_platform_decl(_repo_root())
+    inventory = inventory or {}
+    assignment = classify_cpu_role(inventory, declaration)
+    cpu = inventory.get("cpu") or {}
+    ids = cpu.get("online_cpus")
+    if ids is None:
+        ids = list(range(ncpu if ncpu is not None else cpu.get("cores_logical") or cpu_count()))
+    return sorted(set(ids)), assignment
+
+
 class CpuPlanes:
     """Owns the plane->cores map and applies it (affinity, RT, IRQ, workers)."""
 
     def __init__(self, planes: Dict[str, List[int]], *, isolated: Optional[List[int]] = None,
-                 nohz_full: Optional[List[int]] = None):
+                 nohz_full: Optional[List[int]] = None, assignment: Optional[dict] = None):
         self.planes = {p: sorted(set(planes.get(p, []))) for p in PLANES}
         self.isolated = sorted(set(isolated or []))
         self.nohz_full = sorted(set(nohz_full or []))
+        self.assignment = assignment or {"role": "shared", "reason": "Explicit CPU plane map"}
 
     # -- constructors ------------------------------------------------------
     @classmethod
     def from_system(cls, conf_path: str = DEFAULT_CONF, *, ncpu: Optional[int] = None,
-                    data_frac: float = 0.5) -> "CpuPlanes":
-        """Build from cpu-planes.conf + isolcpus; auto-plan if no conf present."""
-        n = ncpu or cpu_count()
+                    data_frac: float = 0.5, inventory: Optional[dict] = None) -> "CpuPlanes":
+        """Discover hardware roles, then consider saved configuration/isolation."""
+        ids, assignment = _host_assignment(ncpu, inventory)
+        n = len(ids)
         cmdline = read_cmdline()
         iso = parse_isolcpus(cmdline)
         nohz = parse_nohz_full(cmdline)
+        if assignment["cpu_isolation"] == "none":
+            return cls({PLANE_MGMT: ids, PLANE_CTRL: [], PLANE_DATA: []},
+                       isolated=iso, nohz_full=nohz, assignment=assignment)
         planes = {}
         try:
             with open(conf_path) as f:
@@ -213,19 +238,23 @@ class CpuPlanes:
         except OSError:
             pass
         if not any(planes.get(p) for p in PLANES):
-            planes = auto_plan(n, data_frac=data_frac)
+            planes = {key: [ids[i] for i in values] for key, values in auto_plan(n, data_frac=data_frac).items()}
             # honour isolcpus as the data plane if it was set
             if iso:
-                planes[PLANE_DATA] = iso
-                nonio = [c for c in range(n) if c not in iso]
+                planes[PLANE_DATA] = [c for c in iso if c in ids]
+                nonio = [c for c in ids if c not in iso]
                 planes[PLANE_MGMT] = nonio[:1] or [0]
                 planes[PLANE_CTRL] = nonio[1:] or nonio[:1] or [0]
-        return cls(planes, isolated=iso, nohz_full=nohz)
+        return cls(planes, isolated=iso, nohz_full=nohz, assignment=assignment)
 
     @classmethod
-    def auto(cls, ncpu: Optional[int] = None, *, data_frac: float = 0.5) -> "CpuPlanes":
-        n = ncpu or cpu_count()
-        return cls(auto_plan(n, data_frac=data_frac))
+    def auto(cls, ncpu: Optional[int] = None, *, data_frac: float = 0.5,
+             inventory: Optional[dict] = None) -> "CpuPlanes":
+        ids, assignment = _host_assignment(ncpu, inventory)
+        if assignment["cpu_isolation"] == "none":
+            return cls({PLANE_MGMT: ids, PLANE_CTRL: [], PLANE_DATA: []}, assignment=assignment)
+        planes = {key: [ids[i] for i in values] for key, values in auto_plan(len(ids), data_frac=data_frac).items()}
+        return cls(planes, assignment=assignment)
 
     # -- queries -----------------------------------------------------------
     def cores(self, plane: str) -> List[int]:
@@ -328,6 +357,8 @@ class CpuPlanes:
         Returns the multiprocessing.Process (already started). The child pins
         FIRST so all of target's work stays on the data-plane core.
         """
+        if self.assignment.get("cpu_isolation") == "none":
+            raise ValueError("Host dataplane workers are disabled by hardware-role classification")
         import multiprocessing
 
         def _entry():
@@ -345,6 +376,8 @@ class CpuPlanes:
     def assign_data_cores(self, n: int) -> List[int]:
         """Round-robin assign n workers across the data cores (one core each,
         wrapping if n > #data_cores). Used to place per-vsys dataplanes."""
+        if self.assignment.get("cpu_isolation") == "none":
+            return []
         dc = self.data_cores or list(range(cpu_count()))
         return [dc[i % len(dc)] for i in range(n)]
 
@@ -354,6 +387,8 @@ class CpuPlanes:
             "ncpu": cpu_count(),
             "planes": {p: format_cpu_list(self.planes[p]) for p in PLANES},
             "plane_cores": {p: self.planes[p] for p in PLANES},
+            "cpu_role": self.assignment["role"],
+            "role_reason": self.assignment["reason"],
             "isolated": format_cpu_list(self.isolated),
             "nohz_full": format_cpu_list(self.nohz_full),
             "current_affinity": format_cpu_list(self.affinity()),
@@ -363,6 +398,8 @@ class CpuPlanes:
 
     def verify(self) -> List[str]:
         w = []
+        if self.assignment.get("cpu_isolation") == "none" and (self.isolated or self.nohz_full):
+            w.append("Running kernel still isolates host CPUs despite hardware-role classification; review ffn_cpuisol.py diff, apply the corrected boot configuration and reboot.")
         n = cpu_count()
         # plane overlaps
         for i, a in enumerate(PLANES):
@@ -418,6 +455,8 @@ class CpuPlanes:
 
     def _eal_cores(self, cores: Optional[List[int]] = None) -> List[int]:
         """Cores to hand DPDK; defaults to the data plane."""
+        if self.assignment.get("cpu_isolation") == "none":
+            return []
         return sorted(set(cores if cores is not None else self.data_cores))
 
     def eal_coremask(self, cores: Optional[List[int]] = None) -> str:

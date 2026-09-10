@@ -55,6 +55,9 @@ jobs:
       PROFILE_NAME: ${{ inputs.profile || 'pa-5220' }}
 
     steps:
+      # submodules: false on purpose -- platform/vu9p is private and cannot be
+      # fetched here. The public crucible submodule is fetched explicitly in
+      # the payload step below.
       - uses: actions/checkout@v5
         with:
           submodules: false
@@ -87,12 +90,45 @@ jobs:
           mkdir -p "$BUILD_ROOT/payload/units"
           P="$BUILD_ROOT/payload"
 
+          # The detonation engine lives in the ffn-crucible submodule. It has
+          # to end up FLAT beside the rest of the Python: /opt/ffn-ngfw-v2 is
+          # sys.path[0] at runtime, and opt/cloud_det.py imports the engine as
+          # `ffn_crucible`, so crucible/ffn_crucible.py would not resolve.
+          #
+          # --checkout is not optional if the submodule is ever declared
+          # `update = none` for house-style consistency: without it git prints
+          # "Skipping" and the directory stays empty, which lands us right back
+          # in the silent-degradation case this step exists to prevent.
+          git submodule update --init --checkout crucible
+
+          # Stage a flattened tree rather than tarring `opt` directly, so the
+          # engine and the modules that import it are siblings in the payload.
+          STAGE="$BUILD_ROOT/stage/ffn-ngfw-v2"
+          rm -rf "$BUILD_ROOT/stage"
+          mkdir -p "$STAGE"
+          rsync -a --exclude=__pycache__ --exclude='*.pyc' --exclude=venv \
+            opt/ "$STAGE/"
+          rsync -a crucible/*.py "$STAGE/"
+          # The unit file names /opt/ffn-ngfw-v2/docs/crucible.md, so the docs
+          # have to be in the payload or that reference dangles.
+          mkdir -p "$STAGE/docs"
+          rsync -a crucible/docs/ "$STAGE/docs/"
+
+          # GATE: prove the flattened tree can import what the appliance will
+          # import. Every consumer guards this import and degrades quietly, so
+          # without a check here a broken payload ships looking healthy.
+          ( cd "$STAGE" && python3 -c 'import ffn_crucible as c, ffn_crucible_node; assert c.ContentSignature is not None, "signature generation would be dead"; print("payload imports the engine: %d chambers" % len(c.CrucibleSandbox(policy="best").statuses()))' )
+
           # provision.sh untars this with -C /opt, so the member prefix must be
           # the installed directory name.
           tar czf "$P/opt-ffn-ngfw-v2.tgz" \
             --exclude=__pycache__ --exclude='*.pyc' --exclude=venv \
-            --transform 's,^opt,ffn-ngfw-v2,' opt
+            -C "$BUILD_ROOT/stage" ffn-ngfw-v2
           cp image/*.service "$P/units/" 2>/dev/null || true
+          # The Crucible node's unit ships from the submodule. It is inert
+          # without a signing key (see its ConditionPathExists), so carrying it
+          # costs nothing on a firewall that never enables it.
+          cp crucible/units/*.service "$P/units/" 2>/dev/null || true
 
           # The updater's PUBLIC verification key. Not a secret -- it is 32 bytes of
           # hex that every appliance carries so it can check signatures. Supplied as

@@ -3,7 +3,7 @@
 """
 ffn_threatdb.py -- FFN NGFW canonical threat-intelligence database.
 
-This is the "WildFire-like" core: the single source of truth for sample
+This is the Crucible intelligence core: the single source of truth for sample
 verdicts and network indicators (IOCs), shared by every part of the
 pipeline:
 
@@ -16,15 +16,15 @@ pipeline:
               Lynceus URAM (fast feature-hash match)  +  DDR MALWARE/DNSBL/...
 
 Before this module the only "database" was a flat file of known-bad
-SHA256 in ffn_wildfire_agent.HashDB -- no verdict metadata, no IOC store,
+SHA256 in ffn_bnn_agent.HashDB -- no verdict metadata, no IOC store,
 no signature registry, and no way to persist what the agent discovered.
-ThreatDB replaces that with a real store and closes the WildFire feedback
+ThreatDB replaces that with a real store and closes the Crucible feedback
 loop: the agent records a verdict here, the compiler pushes it to the
 FPGA, and the next packet matches in hardware.
 
 Design goals:
   * stdlib only (sqlite3, hashlib, zlib) so it runs anywhere, no deps.
-  * Verdict taxonomy matches Palo Alto WildFire: benign / grayware /
+  * Verdict taxonomy is the industry-standard four classes: benign / grayware /
     phishing / malware (+ unknown for not-yet-analyzed).
   * Region IDs match enum ngfw_ddr_region in the driver / db_compiler.
   * A --selftest that needs no hardware and no network.
@@ -53,7 +53,7 @@ logger = logging.getLogger("ffn-threatdb")
 DEFAULT_DB_PATH = os.getenv("FFN_THREATDB_PATH", "/var/lib/ffn-ngfw/threatdb.sqlite")
 
 # ---------------------------------------------------------------------------
-# Verdict taxonomy (Palo Alto WildFire parity) + scores
+# Verdict taxonomy (industry-standard classes) + scores
 # ---------------------------------------------------------------------------
 VERDICTS = ("unknown", "benign", "grayware", "phishing", "malware")
 VERDICT_SCORE = {
@@ -193,7 +193,12 @@ class ThreatDB:
         self.path = path
         if path != ":memory:":
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        self.conn = sqlite3.connect(path)
+        # check_same_thread=False on purpose: the Crucible queue drainer reads
+        # and writes this handle from a worker thread while the data plane
+        # submits from another. SQLite is compiled serialized, so the sharing
+        # is safe; callers that run MULTI-STATEMENT transactions must still
+        # serialize themselves (see CloudDetectionService._lock).
+        self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(self.SCHEMA)
         self.conn.commit()

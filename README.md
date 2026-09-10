@@ -72,9 +72,11 @@ and link speed, and will not mistake it for something else.
 |---|---|---|
 | 1/10/25/40 GbE NICs | Intel | `igb` (i210/i350), `ixgbe` (82599/X520/X540), `i40e` (X710/XL710), `ice` (E810) |
 | 25/100 GbE NICs, SmartNICs | NVIDIA / Mellanox | `mlx5_core`, PCI vendor `15b3` (ConnectX family) |
-| DPU | NVIDIA BlueField | PCI `15b3` + `/dev/rshim*`, `/dev/mst/*`, `tmfifo_net*`; firmware via `mlxfwmanager` |
+| DPU | NVIDIA BlueField | specific BlueField PCI IDs; rshim/tmfifo control evidence. Mellanox vendor ID or MST alone does not imply a DPU |
 | FPGA accelerators | Xilinx | PCI vendor `10ee` |
 | FPGA accelerators | Intel / Altera | PCI vendor `1172` |
+| Platform/SoC FPGAs | kernel-supported FPGA managers | `/sys/class/fpga_manager` name/state and device association |
+| OCTEON processors | Cavium / Marvell | known PCI IDs, CPU model, and device-tree compatible strings; bridges and NVMe functions remain distinct |
 | Crypto offload | Intel QuickAssist (QAT) | PCI class `0b40` / device name |
 | CPU crypto | Intel, AMD | CPUID flags: AES-NI, VAES, SHA-NI, PCLMULQDQ, AVX2, AVX-512 |
 | Virtualisation | Intel, AMD | VT-x, AMD-V |
@@ -99,6 +101,12 @@ If you run FFN on hardware not listed above, `ffn_hwdetect.py --json` is the
 thing to send: it reports every NIC with its driver, PCI ID, link speed and NUMA
 node, plus CPU topology and accelerators.
 
+Detection reports partial inventories with probe diagnostics, so missing tools,
+permissions, or a disappearing device do not silently become "no hardware".
+Numeric PCI discovery works without `lspci`; FPGA/OCTEON presence is separate
+from firmware and forwarding readiness. See [hardware detection](docs/hardware-detection.md)
+for evidence rules, schema details, limitations, and fixture tests.
+
 ## Hardware autotuning
 
 FFN detects CPUs, NUMA topology, NICs and accelerators, decides what the host
@@ -114,7 +122,14 @@ On generic hardware with a DPDK datapath it isolates the poll-mode cores from
 the scheduler (`isolcpus`), the timer tick (`nohz_full`) and RCU callbacks
 (`rcu_nocbs`), pins IRQs to the housekeeping cores, and reserves 1 GB hugepages.
 
-**On hardware that offloads forwarding it isolates nothing.** When packets are
+**Detection comes before CPU-role assignment and isolation.** Recognized
+specialized processors, FPGAs, DPUs and co-processors classify the main CPU as the
+management plane. All its online cores remain available for management, and
+neither boot planning nor runtime allocation reserves host dataplane cores, even
+when an older saved split or `isolcpus` setting exists. Existing kernel settings
+still require a boot-configuration correction and reboot to remove.
+
+**On hardware assigned the management role it isolates nothing.** When packets are
 switched by dedicated silicon, host cores only ever run the control plane;
 isolating them removes cores from the scheduler for no gain and makes the
 management plane *less* responsive exactly when an operator needs it — during a
@@ -192,6 +207,8 @@ platform provides, and how to add one.
     tools/             host diagnostics
     image/             appliance image build and the bare-metal installer
     platform/          hardware platform registry and opt-in submodules
+    crucible/          submodule: the unknown-object detonation engine and
+                       its offloadable analysis node (see below)
     tests/             tests that need the app importable
     opt/               ALL the Python: management plane and host tooling
       ffn_manager.py     the API server and management plane
@@ -201,6 +218,34 @@ platform provides, and how to add one.
       ffn_platform.py    list and select hardware platforms
       ...                policy compiler, signature and threat databases,
                          detection engines, updater, sysd
+
+## Crucible: unknown-object detonation
+
+The half of the detection stack that deals with objects nothing yet has a
+verdict for lives in its own repository,
+[ffn-crucible](https://github.com/FreeFlow-Networks-Inc/ffn-crucible),
+consumed here as a submodule at `crucible/`. It takes the files
+`inline_payload_det.py` carves out of live flows, detonates them, and turns the
+observed behaviour into a hash verdict, network IOCs and inline content
+signatures that come back through `opt/cloud_det.py` into ThreatDB and the FPGA
+fast path.
+
+It is offloadable: analysis runs either on the appliance or on a separate node
+the firewall relays to, with ed25519-signed verdicts. `opt/cloud_det.py
+--backend` selects the shape, and `crucible/docs/crucible.md` explains them.
+
+    git submodule update --init crucible
+
+**It has to be flat at runtime.** `opt/cloud_det.py` imports it as
+`ffn_crucible` -- a same-directory import -- which resolves on an appliance
+because everything lands in a single flat `/opt/ffn-ngfw-v2`. Only the git tree
+separates them, so in a checkout the engine needs to be on the path:
+
+    PYTHONPATH=crucible python3 opt/cloud_det.py selftest
+
+Without it, `cloud_det.py` still runs: it falls back to the legacy static
+sandbox and its selftests skip the Crucible parts with a message saying so,
+rather than silently reporting a weaker result.
 
 ## Building
 

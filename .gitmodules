@@ -6,3 +6,11 @@
 	path = platform/vu9p
 	url = https://github.com/FreeFlow-Networks-Inc/FFN-NGFW-FPGA.git
 	update = none
+[submodule "image-build"]
+	path = image-build
+	url = https://github.com/FreeFlow-Networks-Inc/ffn-image-build.git
+	update = none
+[submodule "crucible"]
+	path = crucible
+	url = https://github.com/FreeFlow-Networks-Inc/ffn-crucible.git
+	branch = main

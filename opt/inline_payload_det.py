@@ -5,7 +5,7 @@ inline_payload_det.py -- FFN NGFW Inline Payload Detection System.
 
 The in-path, real-time content inspector. This is the "known-threat" half of
 the NGFW detection stack (the fast path); its sibling cloud_det.py is the
-"unknown-threat" half (the WildFire-like sandbox). Together they close the
+"unknown-threat" half (the Crucible detonation engine). Together they close the
 loop:
 
     packet/flow payload
@@ -191,7 +191,7 @@ class ContentSignature:
     action: int = ACTION_ALERT
     severity: str = "medium"
     threat_name: str = ""
-    verdict: str = "malware"      # WildFire verdict class this rule asserts
+    verdict: str = "malware"      # verdict class this rule asserts
     source: str = "builtin"
     enabled: bool = True
 

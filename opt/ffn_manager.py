@@ -30,6 +30,8 @@ import socket
 import sys
 import uuid
 import xml.etree.ElementTree as ET
+from defusedxml import ElementTree as SafeET
+from defusedxml.common import DefusedXmlException
 from xml.dom import minidom
 import psutil
 import uvicorn
@@ -59,6 +61,86 @@ try:
     controld = _get_controld()
 except Exception:
     controld = None
+# ---------------------------------------------------------------------------
+# Hardware platform support (optional, per-platform submodule)
+# ---------------------------------------------------------------------------
+# A platform submodule (platform/pa5200, platform/vu9p) ships the code that
+# knows one chassis: its port table, which of its NICs are control-plane, and
+# the client for whatever agent runs on its co-processors. None of it is
+# vendored into this tree, because two copies of a port map drift and the one
+# that drifts is always the copy.
+#
+# Imported lazily and never fatally: a manager on a box with no platform
+# submodule, or with a different one, must still start and serve every other
+# endpoint. A missing platform means "this is not that hardware", which is a
+# fact to report, not an error to raise.
+
+def _platform_paths():
+    here = os.path.dirname(os.path.abspath(__file__))
+    return [
+        "/opt/ffn-ngfw-v2",                                   # installed, flat
+        "/opt/ffn-ngfw",
+        os.path.join(here, "..", "platform", "pa5200"),       # repo, submodule
+        os.path.join(here, "..", "platform", "pa5200", "octeon", "bcmagent"),
+    ]
+
+
+def platform_mod(name):
+    """Import a platform module by name, or return None. Cached, including the
+    misses -- a box without the submodule must not pay an import attempt on
+    every request.
+
+    The cache is a function attribute rather than a module global so this
+    function is self-contained: it can be transplanted into another copy of the
+    manager on its own, without a separate module-level line that is easy to
+    leave behind. Leaving it behind is not a subtle failure -- the first call
+    raises NameError inside a startup path.
+    """
+    cache = getattr(platform_mod, "_cache", None)
+    if cache is None:
+        cache = platform_mod._cache = {}
+    if name in cache:
+        return cache[name]
+    mod = None
+    try:
+        mod = __import__(name)
+    except ImportError:
+        for path in _platform_paths():
+            if path not in sys.path and os.path.isdir(path):
+                sys.path.append(path)
+        try:
+            mod = __import__(name)
+        except ImportError:
+            mod = None
+        except Exception as exc:
+            # NOT just ImportError. A platform module may assert at import time
+            # -- ffn_bcmports checks its faceplate map against the vendor's own
+            # front-panel list, which is exactly the kind of check worth having
+            # -- and an AssertionError escaping here would propagate out of a
+            # request handler, or out of startup. A broken platform module must
+            # degrade to "this is not that hardware", never take the management
+            # plane with it.
+            logger.warning("platform module %s failed to import: %s: %s",
+                           name, type(exc).__name__, exc)
+            mod = None
+    except Exception as exc:
+        logger.warning("platform module %s failed to import: %s: %s",
+                       name, type(exc).__name__, exc)
+        mod = None
+    cache[name] = mod
+    return mod
+
+
+def _bcm_faceplate():
+    """The chassis faceplate map, or None when this is not that chassis."""
+    return platform_mod("ffn_bcmports")
+
+
+def _if_roles():
+    """The control-plane / data-plane NIC rule for this chassis, or None."""
+    return platform_mod("ffn_ifroles")
+
+
 from fastapi.staticfiles import StaticFiles
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -147,6 +229,39 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ffn-manager")
 
+
+def _public_error(exc):
+    """Return a stable API error without leaking paths, commands or credentials."""
+    incident = uuid.uuid4().hex
+    # Exception text can contain passwords and subprocess arguments. Log only
+    # its type and a correlation ID; never send the exception itself to clients.
+    logger.error("Operation failed (%s), incident %s", type(exc).__name__, incident)
+    return "Operation failed; incident " + incident
+
+
+def _store_path(directory: Path, filename: str) -> Path:
+    """Confine a plain filename to its store, including existing symlinks."""
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,199}", filename):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    root = os.path.realpath(directory)
+    target = os.path.abspath(os.path.join(root, filename))
+    # Include the separator so a sibling such as store-backup cannot match.
+    prefix = os.path.join(root, "")
+    if not target.startswith(prefix):
+        raise HTTPException(status_code=400, detail="File is outside its store")
+    if os.path.islink(target):
+        raise HTTPException(status_code=400, detail="Symlink files are not allowed")
+    resolved = os.path.realpath(target)
+    if not resolved.startswith(prefix):
+        raise HTTPException(status_code=400, detail="File is outside its store")
+    return Path(resolved)
+
+
+def _snapshot_name(name: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", name):
+        raise HTTPException(status_code=400, detail="Snapshot name must contain 1-128 letters, digits, underscores or hyphens")
+    return name
+
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
@@ -167,6 +282,9 @@ class PolicyRule(BaseModel):
     dst_port: int = 0
     proto: str = "any"
     action: str = "permit"
+    # Numeric vsys_id. 0 means "every virtual system", which is what the
+    # dataplane's wildcard already meant and what an untagged rule should do.
+    vsys: int = 0
     description: str = ""
     position: int = 0
 
@@ -1361,7 +1479,7 @@ class ConfigManager:
     # -- XML parsing --
 
     def _load(self, path: Path) -> ET.Element:
-        tree = ET.parse(str(path))
+        tree = SafeET.parse(str(path), forbid_dtd=True)
         return tree.getroot()
 
     def _save(self, root: ET.Element, path: Path):
@@ -1507,9 +1625,11 @@ class ConfigManager:
                 m.text = str(v)
         elif isinstance(value_or_xml, str) and value_or_xml.lstrip().startswith("<"):
             try:
-                frag = ET.fromstring(value_or_xml)
-            except ET.ParseError as exc:
-                return {"status": "error", "message": f"invalid XML: {exc}"}
+                if len(value_or_xml) > 1024 * 1024:
+                    return {"status": "error", "message": "XML fragment exceeds 1 MiB"}
+                frag = SafeET.fromstring(value_or_xml, forbid_dtd=True)
+            except (ET.ParseError, DefusedXmlException):
+                return {"status": "error", "message": "Invalid XML; DTDs and entities are not allowed"}
             existing = self._find_child(parent, leaf_step)
             if existing is not None:
                 parent.remove(existing)
@@ -1786,7 +1906,7 @@ class ConfigManager:
             xml_bytes = self.history.read_xml(int(version_or_alias))
             if xml_bytes is None:
                 return None
-            return self._collect_paths(ET.fromstring(xml_bytes))
+            return self._collect_paths(SafeET.fromstring(xml_bytes, forbid_dtd=True))
 
         old_paths = _paths_for(v_old)
         new_paths = _paths_for(v_new)
@@ -1815,9 +1935,9 @@ class ConfigManager:
         return {"status": "reverted", "user": user, "timestamp": datetime.utcnow().isoformat()}
 
     def snapshot_save(self, name: str, description: str = "") -> dict:
-        safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
-        path = SNAPSHOT_DIR / f"{safe_name}.xml"
-        meta_path = SNAPSHOT_DIR / f"{safe_name}.meta.json"
+        safe_name = _snapshot_name(name)
+        path = _store_path(SNAPSHOT_DIR, f"{safe_name}.xml")
+        meta_path = _store_path(SNAPSHOT_DIR, f"{safe_name}.meta.json")
         shutil.copy2(RUNNING_CONFIG, path)
         meta_path.write_text(json.dumps({
             "name": safe_name,
@@ -1838,8 +1958,8 @@ class ConfigManager:
         return out
 
     def snapshot_restore(self, name: str, user: str) -> dict:
-        safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
-        path = SNAPSHOT_DIR / f"{safe_name}.xml"
+        safe_name = _snapshot_name(name)
+        path = _store_path(SNAPSHOT_DIR, f"{safe_name}.xml")
         if not path.exists():
             return {"status": "error", "message": f"Snapshot '{name}' not found"}
         # Auto-snapshot current running before restore
@@ -1849,9 +1969,9 @@ class ConfigManager:
         return {"status": "restored-to-candidate", "name": safe_name, "message": "Commit to activate"}
 
     def snapshot_delete(self, name: str) -> dict:
-        safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
-        path = SNAPSHOT_DIR / f"{safe_name}.xml"
-        meta = SNAPSHOT_DIR / f"{safe_name}.meta.json"
+        safe_name = _snapshot_name(name)
+        path = _store_path(SNAPSHOT_DIR, f"{safe_name}.xml")
+        meta = _store_path(SNAPSHOT_DIR, f"{safe_name}.meta.json")
         if path.exists(): path.unlink()
         if meta.exists(): meta.unlink()
         return {"status": "deleted", "name": safe_name}
@@ -1998,8 +2118,8 @@ def _detection_live() -> dict:
         finally:
             sdb.close()
     except Exception as e:
-        live["sigdb"] = {"enabled": False, "error": str(e)[:160]}
-        live["antivirus"] = {"enabled": False, "error": str(e)[:160]}
+        live["sigdb"] = {"enabled": False, "error": _public_error(e)[:160]}
+        live["antivirus"] = {"enabled": False, "error": _public_error(e)[:160]}
     # --- Threat DB -> inline IPS + Anti-Malware + Cloud sandbox ---
     try:
         from ffn_threatdb import ThreatDB
@@ -2038,9 +2158,9 @@ def _detection_live() -> dict:
             except Exception:
                 pass
     except Exception as e:
-        live.setdefault("inline_ips", {"enabled": False, "error": str(e)[:160]})
-        live.setdefault("antimalware", {"enabled": False, "error": str(e)[:160]})
-        live.setdefault("cloud_det", {"enabled": False, "error": str(e)[:160]})
+        live.setdefault("inline_ips", {"enabled": False, "error": _public_error(e)[:160]})
+        live.setdefault("antimalware", {"enabled": False, "error": _public_error(e)[:160]})
+        live.setdefault("cloud_det", {"enabled": False, "error": _public_error(e)[:160]})
     return live
 
 
@@ -2075,6 +2195,12 @@ async def init_db():
                 dst_port INTEGER NOT NULL DEFAULT 0,
                 proto TEXT NOT NULL DEFAULT 'any',
                 action TEXT NOT NULL DEFAULT 'permit',
+                -- Which virtual system this rule belongs to, as the numeric
+                -- vsys_id the dataplane matches on. 0 is dp_classify()'s
+                -- WILDCARD -- a rule with vsys 0 applies to every tenant --
+                -- and it is the default so that every existing rule keeps
+                -- behaving exactly as it did before tenants existed.
+                vsys INTEGER NOT NULL DEFAULT 0,
                 description TEXT NOT NULL DEFAULT '',
                 hit_count INTEGER NOT NULL DEFAULT 0,
                 enabled INTEGER NOT NULL DEFAULT 1,
@@ -2264,6 +2390,10 @@ async def init_db():
             "ALTER TABLE policy_rules ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE policy_rules ADD COLUMN src_iface TEXT",
             "ALTER TABLE policy_rules ADD COLUMN dst_iface TEXT",
+            # Default 0 on purpose: 0 is the dataplane's wildcard, so an
+            # upgraded rulebase keeps applying to all traffic rather than
+            # silently binding every existing rule to tenant 1.
+            "ALTER TABLE policy_rules ADD COLUMN vsys INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE dlp_rules ADD COLUMN direction TEXT NOT NULL DEFAULT 'egress'",
             "ALTER TABLE dlp_rules ADD COLUMN threshold INTEGER NOT NULL DEFAULT 1",
             # FRR routing plane columns (contract §6) for upgraded VR tables.
@@ -2387,18 +2517,33 @@ async def get_current_user(
         token_str = authorization[7:]
     else:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    return await _authenticate_token(token_str, request.url.path)
+
+
+async def _authenticate_token(token_str: str, path: str):
+    """Share token and current-account checks between HTTP and WebSocket clients."""
     try:
-        payload = jwt.decode(token_str, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(token_str, JWT_SECRET, algorithms=[JWT_ALGORITHM],
+                             options={"require_exp": True, "require_sub": True})
         username = payload.get("sub")
-        role = payload.get("role", "viewer")
-        if username is None:
+        if not isinstance(username, str) or not username:
             raise HTTPException(status_code=401, detail="Invalid token")
-        if payload.get("pwc") and request.url.path not in PW_CHANGE_ALLOWED_PATHS:
+        # Roles and forced password changes can change during a token's lifetime.
+        # A deleted account must also lose access immediately.
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (await db.execute(
+                "SELECT role, must_change_pw FROM users WHERE username = ?",
+                (username,))).fetchone()
+        if row is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        pw_change_required = bool(payload.get("pwc") or row["must_change_pw"])
+        if pw_change_required and path not in PW_CHANGE_ALLOWED_PATHS:
             raise HTTPException(
                 status_code=403,
                 detail="Password change required before using this API")
-        return {"username": username, "role": role,
-                "pw_change_required": bool(payload.get("pwc"))}
+        return {"username": username, "role": row["role"],
+                "pw_change_required": pw_change_required}
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
@@ -2407,7 +2552,28 @@ async def get_current_user(
 # FastAPI application
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="FFN NGFW Manager", version="1.0.0")
+# docs_url/redoc_url/openapi_url are all None so FastAPI registers NONE of its
+# three built-in endpoints. They are re-registered below, behind auth.
+#
+# WHY. /openapi.json was answering 200 to anyone who could reach port 8443 --
+# 136 KB describing all 157 paths, every parameter and every request model. It
+# is the single most useful read on this box for someone who should not be here,
+# and it is invisible to any audit that walks the @app.get decorators, because
+# FastAPI adds it internally rather than through one. Guarding 58 handlers while
+# publishing their complete map would have been theatre.
+#
+# /docs and /redoc are not re-registered. They are browser UIs whose only job is
+# to fetch and render /openapi.json, and a browser opening them cannot send an
+# Authorization header, so behind bearer auth they can only ever render an empty
+# shell. A 404 is the honest answer; the spec itself is still available to any
+# authenticated caller at /openapi.json.
+app = FastAPI(
+    title="FFN NGFW Manager",
+    version="1.0.0",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -2416,6 +2582,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/openapi.json", include_in_schema=False)
+async def openapi_json(user: dict = Depends(get_current_user)):
+    """The API schema, for authenticated callers only.
+
+    Kept at its conventional path so anything that generates a client still
+    works -- it just has to authenticate first, like every other read on this
+    box. include_in_schema=False only stops it describing itself.
+    """
+    return app.openapi()
+
 
 fpga = FPGADevice(DEV_PATH)
 config_mgr = ConfigManager()
@@ -2807,14 +2985,14 @@ class _MpdpChannel:
             try:
                 raw = self.chan.recv()
             except Exception as exc:
-                self.last_error = str(exc)
+                self.last_error = _public_error(exc)
                 break
             if raw is None:
                 break
             try:
                 msg = self._wire.parse(raw)
             except Exception as exc:
-                self.last_error = str(exc)
+                self.last_error = _public_error(exc)
                 continue
             self.received += 1
             got += 1
@@ -3023,7 +3201,7 @@ def _bmfw_regen_reload() -> tuple:
             pass
         return True, "reloaded"
     except Exception as e:
-        return False, str(e)[:200]
+        return False, _public_error(e)[:200]
 
 
 def _engine_backend_view(eid: int, name: str, db_en: int, live: dict) -> dict:
@@ -3167,7 +3345,7 @@ async def _cli_auth_conn(reader, writer):
         await writer.drain()
     except Exception as e:
         try:
-            writer.write((json.dumps({"error": str(e)}) + _CLI_NL).encode())
+            writer.write((json.dumps({"error": _public_error(e)}) + _CLI_NL).encode())
             await writer.drain()
         except Exception:
             pass
@@ -3189,7 +3367,7 @@ async def _cli_auth_start():
         app.state._cli_auth_srv = srv
         print("[cli-auth] peercred socket ready at " + CLI_AUTH_SOCK)
     except Exception as e:
-        print("[cli-auth] not started: " + str(e))
+        print("[cli-auth] not started: " + _public_error(e))
 
 
 @app.on_event("startup")
@@ -3440,7 +3618,7 @@ async def system_fips_selftest(user: dict = Depends(get_current_user)):
     try:
         p = subprocess.run([FIPS_PY, FIPS_SELFTEST_BIN], capture_output=True, text=True, timeout=90)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"self-test run failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"self-test run failed: {_public_error(exc)}")
     out = _fips_status()
     out["exit_code"] = p.returncode
     return out
@@ -3452,7 +3630,7 @@ async def system_fips_selftest(user: dict = Depends(get_current_user)):
 
 
 @app.get("/api/system/status")
-async def system_status():
+async def system_status(user: dict = Depends(get_current_user)):
     try:
         hostname = platform.node()
     except Exception:
@@ -3617,12 +3795,42 @@ def _get_real_interfaces() -> list:
 
 
 @app.get("/api/system/interfaces")
-async def system_interfaces():
-    return {"interfaces": _discover_interfaces()}
+async def system_interfaces(user: dict = Depends(get_current_user)):
+    """The DEVICE's interfaces: this host's NICs, plus any faceplate connector
+    that belongs to the device rather than to the firewall.
+
+    On a PA-5200 that second group is HSCI -- the HA data link (HA2/HA3),
+    carrying session sync and, in active/active, forwarded packets between
+    peers. It is on the front of the chassis, which is why it used to appear in
+    the firewall's interface list, but it is HA plumbing: it is configured with
+    the device's high-availability settings and never appears in a security
+    policy. It lives on the switch ASIC rather than on a host NIC, so it is
+    marked `type: chassis` and carries no MAC or address of its own here.
+    """
+    out = _discover_interfaces()
+    fp = await _faceplate_map("management")
+    for d in (fp or {}).values():
+        out.append({
+            "name": d["name"],
+            "type": "chassis",
+            "role": d.get("role"),
+            "link_up": bool(d.get("link")),
+            "link_state": (d.get("link") if d.get("live") else None),
+            "speed_gbps": d.get("speed_gbps") or 0,
+            "media": d.get("media"),
+            "faceplate": d.get("faceplate"),
+            "chip_port": d.get("diag_name"),
+            "admin_enabled": d.get("admin_enabled"),
+            "mtu": 0, "mac": "", "ip_address": "", "netmask": "",
+            "ipv6_address": "",
+            "rx_bytes": 0, "tx_bytes": 0, "rx_packets": 0, "tx_packets": 0,
+            "rx_drops": 0, "tx_drops": 0, "rx_errors": 0,
+        })
+    return {"interfaces": out}
 
 
 @app.get("/api/system/resources")
-async def system_resources():
+async def system_resources(user: dict = Depends(get_current_user)):
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
     cpu_freq = psutil.cpu_freq()
@@ -3712,7 +3920,7 @@ _prev_counter_time = 0
 
 
 @app.get("/api/dashboard/throughput")
-async def dashboard_throughput():
+async def dashboard_throughput(user: dict = Depends(get_current_user)):
     global _prev_counters, _prev_counter_time
 
     now = time.time()
@@ -3773,7 +3981,7 @@ async def dashboard_throughput():
 
 
 @app.get("/api/dashboard/threats")
-async def dashboard_threats():
+async def dashboard_threats(user: dict = Depends(get_current_user)):
     """
     Threat summary from the REAL detection stack (signature DB, threat DB /
     inline IPS, anti-malware, cloud verdicts) via `_detection_live()`. Counts
@@ -3846,6 +4054,62 @@ def _vsys_id_for_entry(e) -> int:
         except ValueError:
             pass
     return _vsys_id_from_name(e.get("name") or "")
+
+
+def _configured_vsys_ids() -> set:
+    """The numeric ids of the virtual systems that actually exist.
+
+    Read from the candidate config, which is where a vsys lives -- there is no
+    vsys SQL table, and adding one would be a second source of truth for
+    something the PAN-OS config already owns.
+    """
+    ids = set()
+    try:
+        node = config_mgr.get_xpath(f"{DEV}.vsys", source="candidate")
+        for e in (node.findall("entry") if node is not None else []):
+            n = _vsys_id_from_name(e.get("name") or "")
+            if n:
+                ids.add(n)
+    except Exception:
+        pass
+    return ids
+
+
+def _check_vsys(v) -> int:
+    """Validate a rule's vsys id, or raise 400.
+
+    Two rejections, and both are about failing where someone is watching.
+
+    A rule bound to a virtual system that does not exist matches NOTHING -- the
+    dataplane compares the tag and never finds it -- so the rule sits in the
+    rulebase looking enabled while enforcing nothing. That is the worst outcome
+    a firewall can produce, and it is invisible until traffic goes the wrong
+    way, so it is refused at the point the rule is written.
+
+    An id above what the dataplane can express is refused for the same reason:
+    the wire format carries vsys in one byte and the plan allocates hardware per
+    tenant, so an id past that would be truncated rather than honoured.
+    """
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="vsys must be a number")
+    if n == 0:
+        return 0                      # the wildcard: applies to every tenant
+    if n < 0 or n > 32:               # DP_VSYS_MAX in ffn_dp_vsys.h
+        raise HTTPException(
+            status_code=400,
+            detail="vsys %d out of range; the dataplane supports 1..32 "
+                   "(0 means every virtual system)" % n)
+    have = _configured_vsys_ids()
+    if have and n not in have:
+        raise HTTPException(
+            status_code=400,
+            detail="no virtual system with id %d exists (configured: %s). "
+                   "A rule bound to a vsys that does not exist would match no "
+                   "traffic at all." % (n, ", ".join("vsys%d" % i
+                                                     for i in sorted(have))))
+    return n
 
 
 def _resolve_vsys_id(vsys) -> Optional[int]:
@@ -3980,7 +4244,7 @@ def _count_conntrack_by_state(limit: int = 1_000_000, vsys_id: Optional[int] = N
 
 
 @app.get("/api/dashboard/sessions")
-async def dashboard_sessions(breakdown: bool = False, vsys: Optional[str] = None):
+async def dashboard_sessions(breakdown: bool = False, vsys: Optional[str] = None, user: dict = Depends(get_current_user)):
     """
     Active firewall sessions = flows currently tracked in the kernel's
     conntrack table. On a firewall appliance every forwarded flow hits
@@ -4071,7 +4335,7 @@ async def dashboard_sessions(breakdown: bool = False, vsys: Optional[str] = None
 
 
 @app.get("/api/dashboard/ddos")
-async def dashboard_ddos():
+async def dashboard_ddos(user: dict = Depends(get_current_user)):
     if not fpga.sim_mode:
         zones = fpga.get_ddos_zones()
     else:
@@ -4104,7 +4368,7 @@ async def dashboard_ddos():
 
 
 @app.get("/api/security/dos-protection")
-async def dos_protection_get():
+async def dos_protection_get(user: dict = Depends(get_current_user)):
     """Anti-DDoS engine: configured thresholds + live drop state."""
     return {"config": _read_dos_config(), "live": _ddos_engine_state(),
             "backend": "nftables (forward hook, transit)"}
@@ -4121,7 +4385,7 @@ async def dos_protection_set(cfg: DosConfig, user: dict = Depends(get_current_us
         with open(path) as f:
             d = json.load(f)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"cannot read bmfw.json: {e}")
+        raise HTTPException(status_code=500, detail=f"cannot read bmfw.json: {_public_error(e)}")
     cur = d.get("dos") or {}
     upd = {k: v for k, v in cfg.dict(exclude_unset=True).items() if v is not None}
     cur.update(upd)
@@ -4137,7 +4401,7 @@ async def dos_protection_set(cfg: DosConfig, user: dict = Depends(get_current_us
         with open(path, "w") as f:
             json.dump(d, f, indent=2)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"cannot write bmfw.json: {e}")
+        raise HTTPException(status_code=500, detail=f"cannot write bmfw.json: {_public_error(e)}")
     ok, detail = _bmfw_regen_reload()
     if not ok:
         raise HTTPException(status_code=500, detail=f"config saved but reload failed: {detail}")
@@ -4169,18 +4433,171 @@ def _hw_inventory(refresh: bool = False) -> dict:
         import ffn_hwdetect
         data = ffn_hwdetect.detect()
     except Exception as e:
-        data = {"error": str(e)[:200]}
+        data = {"error": _public_error(e)[:200]}
     _HW_CACHE["t"] = now
     _HW_CACHE["data"] = data
     return data
 
 
 @app.get("/api/system/hardware")
-async def system_hardware(refresh: int = 0):
+async def system_hardware(refresh: int = 0, user: dict = Depends(get_current_user)):
     """Autodetected hardware inventory: system/DMI, CPU+NUMA+crypto, memory,
     every NIC (driver/speed/PCI/DPDK-bind/role), the DPU/SmartNIC, accelerators
-    (FPGA/GPU/QAT), storage and hugepages. Cached ~30s; ?refresh=1 to force."""
-    return _hw_inventory(refresh=bool(refresh))
+    (FPGA/GPU/QAT), storage and hugepages. Cached ~30s; ?refresh=1 to force.
+
+    The accelerator list is completed from the CONTROL PLANE, because on a
+    reclaimed appliance the interesting silicon is not on this host bus at all:
+    the packet processor, the front-end ASIC and the dataplane NPU sit behind
+    the CP. Every row carries `bus`, so "host" and "control-plane" stay
+    distinguishable rather than merging into one misleading list."""
+    inv = dict(await asyncio.to_thread(_hw_inventory, refresh=bool(refresh)))
+    try:
+        far = await _detect_offload_dp()
+    except Exception:
+        far = {}
+    rows = list(inv.get("accelerators") or [])
+    if inv.get("error") and "accelerators" not in inv:
+        # The host probe failed. Appending the control-plane rows to an empty
+        # list would produce a shorter list that looks complete -- which is how
+        # a NameError in the host detector read as "this box has no host-side
+        # silicon" instead of "the host probe did not run".
+        rows.append({"role": "host probe failed", "kind": "error", "bus": "host",
+                     "pci": str(inv["error"])[:200], "driver": None})
+    for dev in (far.get("cp_devices") or []):
+        # Bridges are plumbing. They are in the CP inventory because ruling them
+        # out is what stops a root complex being counted as a processor, but an
+        # operator reading an accelerator list does not need six PLX ports.
+        if dev.get("kind") in ("bridge", "serial"):
+            continue
+        rows.append({
+            "role": {"switch": "Packet processor",
+                     "asic": "Front-end ASIC",
+                     "npu": "NPU"}.get(dev.get("kind"), dev.get("kind")),
+            "kind": dev.get("kind"),
+            "bus": "control-plane",
+            "pci": "%s %s [%s:%s]" % (dev.get("pci"), dev.get("description"),
+                                      dev.get("vendor"), dev.get("device")),
+            "driver": dev.get("driver"),
+            "description": dev.get("description"),
+        })
+    inv["accelerators"] = rows
+    inv["offload"] = far
+    from ffn_hwdetect import classify_cpu_role
+    inv["cpu_role"] = classify_cpu_role(inv)
+    inv["cpu"] = dict(inv.get("cpu") or {}, role=inv["cpu_role"]["role"])
+    return inv
+
+
+# ==========================================================================
+# BCM88375 switch control -- proxied to ffn-bcmd on the CP
+# ==========================================================================
+#
+# The switch ASIC is on the CP's PCIe bus, so nothing here can touch it
+# directly. ffn-bcmd (octeon/bcmagent/) owns the chip on the CP and answers
+# JSON over ffnnet0; these endpoints are a thin proxy so the WebUI and ffn-cli
+# share one implementation, one auth check and one audit point.
+#
+# Every reply already carries "ok", and the client turns an unreachable CP into
+# an ok=False dict rather than an exception, so these handlers do not translate
+# errors -- a 500 here would lose the daemon's own "state": "init" / eta_s,
+# which is exactly what a UI needs to show progress during the ~150 s chip init.
+
+
+def _bcm_client():
+    """Import the client lazily.
+
+    Lazy so a manager on a box without the BCM payload still starts and every
+    other endpoint keeps working -- an ImportError at module scope would take
+    the whole management plane down over a switch feature.
+
+    Goes through platform_mod() rather than a bare import so it is found in the
+    repo layout too, where the client lives in the platform submodule
+    (platform/pa5200/octeon/bcmagent) and is deliberately NOT vendored into
+    this tree. A bare `import ffn_bcm_client` only ever worked on a box where
+    it had been copied next to the manager, which is why every /api/bcm/*
+    endpoint answered "bcm client unavailable" from a checkout.
+    """
+    mod = platform_mod("ffn_bcm_client")
+    if mod is None:
+        raise ImportError("ffn_bcm_client not found on any platform path: %s"
+                          % ", ".join(_platform_paths()))
+    return mod
+
+
+class BcmPortEnable(BaseModel):
+    enable: bool
+
+
+class BcmPortLoopback(BaseModel):
+    # none | mac | phy. mac/phy are the isolation tool: if they link while
+    # "none" stays down, the MAC, PCS and SerDes are all good and the fault is
+    # outside the die (cage, module or cabling).
+    mode: str
+
+
+def _bcm_unavailable(exc):
+    return {"ok": False, "error": "bcm client unavailable", "detail": _public_error(exc),
+            "hint": "ffn_bcm_client.py must be importable by the manager "
+                    "(deploy it beside ffn_manager.py or into /opt/ffn-ngfw)"}
+
+
+@app.get("/api/bcm/status")
+async def bcm_status(user: dict = Depends(get_current_user)):
+    """Chip and daemon state. state is init|ready|dead; during init the reply
+    carries eta_s so a UI can show progress instead of an error."""
+    try:
+        return await _bcm_client().status()
+    except ImportError as exc:
+        return _bcm_unavailable(exc)
+
+
+@app.get("/api/bcm/ports")
+async def bcm_ports(user: dict = Depends(get_current_user)):
+    """The port table, structured. "faceplate" marks the 25 front-panel ports;
+    the rest are internal (the DP trunk, recycle, ILKN) and should not be
+    offered as user-configurable."""
+    try:
+        return await _bcm_client().port_list()
+    except ImportError as exc:
+        return _bcm_unavailable(exc)
+
+
+@app.post("/api/bcm/port/{port}/enable")
+async def bcm_port_enable(port: int, req: BcmPortEnable,
+                          user: dict = Depends(get_current_user)):
+    """Enable or disable one port. Takes effect immediately and is NOT
+    persisted: the shipped config.bcm disables every front-panel port, so this
+    is lost on the next chip init. Persisting belongs in the candidate config
+    with a commit-time applier, which does not exist yet."""
+    try:
+        return await _bcm_client().port_set(port, req.enable)
+    except ImportError as exc:
+        return _bcm_unavailable(exc)
+
+
+@app.post("/api/bcm/port/{port}/loopback")
+async def bcm_port_loopback(port: int, req: BcmPortLoopback,
+                            user: dict = Depends(get_current_user)):
+    """Set loopback mode (none|mac|phy). Diagnostic: mac/phy loop traffic inside
+    the chip, so a port left in either carries no external traffic."""
+    if req.mode not in ("none", "mac", "phy"):
+        return {"ok": False, "error": "bad request",
+                "detail": "mode must be none, mac or phy"}
+    try:
+        return await _bcm_client().port_loopback(port, req.mode)
+    except ImportError as exc:
+        return _bcm_unavailable(exc)
+
+
+@app.get("/api/bcm/leds")
+async def bcm_leds(user: dict = Depends(get_current_user)):
+    """Front-panel LED processor state. The LED processors are programmed and
+    started by the chip's own init script, so enabled=false on a ready chip
+    means init did not reach its LED section."""
+    try:
+        return await _bcm_client().led_status()
+    except ImportError as exc:
+        return _bcm_unavailable(exc)
 
 
 # ==========================================================================
@@ -4298,7 +4715,7 @@ async def system_cert_csr(req: CsrRequest, user: dict = Depends(get_current_user
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)[:200])
+        raise HTTPException(status_code=500, detail=_public_error(e)[:200])
 
 
 # ==========================================================================
@@ -4406,7 +4823,7 @@ def _ha_live_state() -> dict:
 
 
 @app.get("/api/ha/config")
-async def ha_config_get():
+async def ha_config_get(user: dict = Depends(get_current_user)):
     return {"config": _read_ha_config()}
 
 
@@ -4445,7 +4862,7 @@ async def ha_config_set(cfg: HaConfig, user: dict = Depends(get_current_user)):
 
 
 @app.get("/api/ha/state")
-async def ha_state_get():
+async def ha_state_get(user: dict = Depends(get_current_user)):
     return _ha_live_state()
 
 
@@ -4460,7 +4877,7 @@ async def ha_failover(user: dict = Depends(get_current_user)):
         with open(HA_FAILOVER_FLAG, "w") as f:
             f.write("suspend\n")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"cannot set failover flag: {e}")
+        raise HTTPException(status_code=500, detail=f"cannot set failover flag: {_public_error(e)}")
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             await audit(db, user["username"], "ha_failover", "manual suspend")
@@ -4477,7 +4894,7 @@ async def ha_resume(user: dict = Depends(get_current_user)):
         if os.path.exists(HA_FAILOVER_FLAG):
             os.remove(HA_FAILOVER_FLAG)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"cannot clear failover flag: {e}")
+        raise HTTPException(status_code=500, detail=f"cannot clear failover flag: {_public_error(e)}")
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             await audit(db, user["username"], "ha_resume", "manual resume")
@@ -4487,60 +4904,267 @@ async def ha_resume(user: dict = Depends(get_current_user)):
     return {"status": "resumed", "local": "active"}
 
 
-def _detect_offload_dp() -> dict:
-    """Reclaimed-appliance dataplane: the on-board Octeon NPU (+FE100/FPGA behind it)
-    and FFN's own forwarder. On EOL PAN hardware the x86 CP runs FFN while this
-    complex does line rate -- see Desktop/PAN/pa5200-brdagent-protocol.md."""
-    info={"present":False,"generation":None,"pci":[],"driver":None,"bars":[],
-          "dp_instances":0,"boot_state":"absent","fpga":"behind-octeon (not on host PCIe)",
-          "forwarder":{},"note":""}
+def _cp_reachable():
+    """Is the control plane answering? Returns (bool, detail).
+
+    Positive evidence only. `systemctl is-active ffn-octeon` is a oneshot with
+    RemainAfterExit, so it reports "active" forever after the bring-up script
+    exits -- including long after the CP has stopped answering.
+
+    The route check is here because 127.1.1.2 is inside 127/8: with ffnnet0
+    down the kernel hands that address to this host's own loopback, so the
+    connection is refused by our own sshd while ping still succeeds. That trap
+    has produced a confident wrong answer before.
+    """
     try:
-        out=subprocess.run(["lspci","-Dnn"],capture_output=True,text=True,timeout=5).stdout
-        for ln in out.splitlines():
-            low=ln.lower()
-            if "177d:" in low or "cavium" in low:
-                info["pci"].append(ln.strip())
-                if "octeon iii" in low or "cn73" in low: info["generation"]="OCTEON III (CN73xx)"
-                elif "octeon ii" in low:                 info["generation"]="OCTEON II"
-    except Exception: pass
-    if info["pci"]:
-        info["present"]=True
-        first=info["pci"][0].split()[0]
+        r = subprocess.run(["ip", "route", "get", "127.1.1.2"],
+                           capture_output=True, text=True, timeout=4)
+        if "ffnnet0" not in r.stdout:
+            return False, ("127.1.1.2 does not route over ffnnet0, so it would "
+                           "reach this host's own loopback")
+    except Exception as exc:
+        return False, "route check failed: %s" % _public_error(exc)
+    try:
+        sock = socket.create_connection(("127.1.1.2", 8104), timeout=3)
+        sock.close()
+        return True, "ffn-bcmd answering on 127.1.1.2:8104"
+    except OSError as exc:
+        return False, "no answer on 127.1.1.2:8104: %s" % _public_error(exc)
+
+
+def _sw_forwarder():
+    """FFN's own software forwarder -- the path that works with no NPU at all."""
+    out = {"unit": "ffn-dp-afpacket", "active": False, "ports": [],
+           "kind": "AF_PACKET bump-in-the-wire"}
+    try:
+        r = subprocess.run(["systemctl", "is-active", "ffn-dp-afpacket"],
+                           capture_output=True, text=True, timeout=5)
+        out["active"] = r.stdout.strip() == "active"
+        pg = subprocess.run(["pgrep", "-af", "ffn_dp_afpacket"],
+                            capture_output=True, text=True, timeout=5).stdout
+        out["ports"] = re.findall(r"-i\s+(\S+)", pg)
+    except Exception:
+        pass
+    return out
+
+
+def _probe_host_octeon():
+    """The host-side half of offload detection. BLOCKING -- runs in a thread.
+
+    Everything here shells out or reads sysfs, and none of it belongs on an
+    event loop: this is called from request handlers the WebUI polls every ten
+    seconds, and a synchronous subprocess there stalls every other request on
+    the box, including the ones an operator is using to find out what is wrong.
+    """
+    info = {
+        "present": False, "generation": None, "pci": [], "driver": None,
+        "bars": [], "boot_state": "absent", "note": "",
+        "cp": {"present": False, "reachable": False},
+        "dp": {"present": False},
+        "switch": {"present": False}, "fe100": {"present": False},
+        "forwarder": _sw_forwarder(),
+    }
+    try:
+        from ffn_hwdetect import detect_pci_summary, _octeon
+        snapshot = detect_pci_summary()
+        if not snapshot["available"]:
+            info["probe_status"] = "unavailable"
+            info["note"] = "Host PCI inventory unavailable; OCTEON presence is unknown."
+            return info
+        for device in snapshot["devices"]:
+            model = _octeon(device)
+            # The PA control-plane transport is a processor endpoint. A root
+            # complex, NVMe function or VF alone does not establish its presence.
+            if (model and not device["class_id"].startswith(("06", "0108"))
+                    and not device["physical_function"] and " VF" not in model):
+                info["pci"].append(device["description"])
+                info["generation"] = info["generation"] or model
+    except Exception as exc:
+        info["note"] = "Host PCI probe failed: %s" % _public_error(exc)
+        return info
+    if not info["pci"]:
+        info["note"] = ("No OCTEON complex on this host's PCI bus. FFN uses "
+                        "its software dataplane here.")
+        return info
+
+    info["present"] = True
+    info["cp"]["present"] = True
+    # One chip, several functions. Count DISTINCT PCI slots, not BDF entries,
+    # or a single CN73XX reads as a three-instance dataplane.
+    info["cp"]["functions"] = sorted(set(ln.split()[0].rsplit(".", 1)[0]
+                                         for ln in info["pci"]))
+    info["cp"]["chips"] = len(info["cp"]["functions"])
+    first = info["pci"][0].split()[0]
+    d = "/sys/bus/pci/devices/" + first
+    try:
+        info["driver"] = os.path.basename(os.readlink(d + "/driver"))
+    except OSError:
+        info["driver"] = None
+    try:
+        # Rows 0-5 are the BARs; 6 is the expansion ROM and 7-12 are bridge
+        # forwarding windows. Counting those as BARs inflates the device.
+        for i, l in enumerate(open(d + "/resource").read().splitlines()):
+            if i > 5:
+                break
+            parts = l.split()
+            if len(parts) >= 2:
+                st, en = int(parts[0], 16), int(parts[1], 16)
+                if en > st:
+                    info["bars"].append(
+                        {"bar": i, "size_mb": (en - st + 1) // (1 << 20)})
+    except Exception:
+        pass
+
+    ok, detail = _cp_reachable()
+    info["cp"]["reachable"] = ok
+    info["cp"]["detail"] = detail
+    info["boot_state"] = "CP running" if ok else "CP present, not answering"
+    if not ok:
+        info["note"] = ("The control plane is on the bus but not responding, "
+                        "so nothing behind it can be enumerated. " + detail)
+    return info
+
+
+async def _detect_offload_dp(max_age: float = 15.0) -> dict:
+    """The forwarding complex of a reclaimed appliance, walked as the chain it
+    actually is:
+
+        MP (x86, this host) --PCIe--> CP OCTEON --PCIe--> DP OCTEON (CN78XX)
+                                          |
+                                          +--> BCM88375 switch --> faceplate
+                                          +--> FE100 front-end ASIC
+
+    The previous version stopped at the first hop and drew three wrong
+    conclusions from it. It ran `lspci` here, counted the THREE PCI functions of
+    the single CN73XX -- two OCTEON functions plus its NVMe-class one -- and
+    reported dp_instances=3. It read that chip's unbound driver link and
+    reported "unbound" for a CP that was up and answering. And it called the CP
+    itself the dataplane.
+
+    Everything past the CP -- the BCM, the FE100, and the 40-core CN78XX that
+    IS the dataplane -- hangs off the CP's own root complexes. None of it
+    appears in this host's PCI space, so no amount of host-side lspci could
+    ever have found it. That is why the far side is asked rather than guessed:
+    ffn-bcmd answers a read-only sysfs inventory on the CP, and that query
+    deliberately does not touch the switch session, so it still answers while
+    the chip is initialising or after that session has died.
+
+    CACHED, and the blocking half runs off the event loop. Three endpoints call
+    this and the WebUI polls two of them every ten seconds; without both of
+    those it would be four subprocesses and a synchronous socket connect on the
+    loop, several times per poll -- which stalls every other request on the box
+    at exactly the moment an operator is trying to find out what is wrong.
+    """
+    # Short-lived cache. Two endpoints the WebUI polls every ten seconds call
+    # this, and a third calls it per hardware refresh; what it reports -- which
+    # silicon is present, whether the CP answers -- does not change on a
+    # sub-second timescale, so re-probing per request buys nothing and costs a
+    # subprocess storm. Held as a function attribute rather than a module
+    # global so the function is self-contained and can be deployed on its own.
+    now = time.time()
+    ent = getattr(_detect_offload_dp, "_cache", None)
+    if ent is None:
+        ent = _detect_offload_dp._cache = {"t": 0.0, "data": None}
+    if ent["data"] is not None and (now - ent["t"]) < max_age:
+        return ent["data"]
+
+    info = await asyncio.to_thread(_probe_host_octeon)
+
+    if info["cp"]["reachable"]:
         try:
-            import os as _o
-            d="/sys/bus/pci/devices/"+first
-            try: info["driver"]=_o.path.basename(_o.readlink(d+"/driver"))
-            except Exception: info["driver"]=None
-            for i,l in enumerate(open(d+"/resource").read().splitlines()):
-                p=l.split()
-                if len(p)>=2:
-                    st,en=int(p[0],16),int(p[1],16)
-                    if en>st: info["bars"].append({"bar":i,"size_mb":(en-st+1)//(1<<20)})
-        except Exception: pass
-        info["dp_instances"]=len(info["pci"])
-        info["boot_state"]=("vfio-bound (ready for bring-up)" if info["driver"]=="vfio-pci"
-                            else ("driver:"+str(info["driver"]) if info["driver"] else "unbound"))
-    else:
-        info["note"]="No Octeon/offload NPU on this host; FFN uses its software dataplane."
-    # FFN's own forwarder (the path that works today, without the NPU)
-    try:
-        r=subprocess.run(["systemctl","is-active","ffn-dp-afpacket"],capture_output=True,text=True,timeout=5)
-        act=r.stdout.strip()=="active"
-        ports=[]
-        pg=subprocess.run(["pgrep","-af","ffn_dp_afpacket"],capture_output=True,text=True,timeout=5).stdout
-        for tok in pg.split():
-            pass
-        import re as _re
-        ports=_re.findall(r"-i\s+(\S+)", pg)
-        info["forwarder"]={"unit":"ffn-dp-afpacket","active":act,"ports":ports,
-                           "kind":"AF_PACKET bump-in-the-wire"}
-    except Exception: pass
+            inv = await _bcm_client().sys_inventory()
+        except ImportError as exc:
+            inv = {"ok": False, "error": "bcm client unavailable",
+                   "detail": _public_error(exc)}
+        except Exception as exc:
+            inv = {"ok": False, "error": "inventory failed", "detail": _public_error(exc)}
+
+        if not inv.get("devices"):
+            info["note"] = ("CP is answering but returned no inventory: %s"
+                            % (inv.get("detail") or inv.get("error")
+                               or "empty reply"))
+        else:
+            info["cp"]["kernel"] = (inv.get("cp") or {}).get("release")
+            info["cp"]["arch"] = (inv.get("cp") or {}).get("machine")
+            info["cp_devices"] = inv["devices"]
+            for dev in inv["devices"]:
+                if dev["kind"] == "npu" and dev["device"] == "0095":
+                    # NO "booted" flag. It is tempting to derive one from the
+                    # driver link, and it would be wrong: this device is
+                    # brought up by writing its PCI `enable` file and then
+                    # mmap'ing resourceN directly -- dpboot and ffn_dpnetd both
+                    # do exactly that -- so NO kernel driver ever binds to it,
+                    # and driver=None is the normal, healthy state rather than
+                    # a fault. The `enable` bit is not a boot indicator either:
+                    # it stays 1 after whatever set it has gone away.
+                    #
+                    # There is no read-only PCI signal for "is the dataplane
+                    # running", so this reports what it can see and says so.
+                    # Asking the DP itself would answer it, but that goes
+                    # through ffn-dpsh, which is single-session -- a status
+                    # endpoint polled every ten seconds must not touch it.
+                    info["dp"].update({
+                        "present": True, "pci": dev["pci"],
+                        "driver": dev["driver"], "model": dev["description"],
+                        "pci_enabled": dev.get("pci_enabled"),
+                    })
+                elif dev["kind"] == "switch" and not info["switch"]["present"]:
+                    info["switch"].update({
+                        "present": True, "pci": dev["pci"],
+                        "driver": dev["driver"], "model": dev["description"],
+                    })
+                elif dev["kind"] == "asic":
+                    info["fe100"].update({
+                        "present": True, "pci": dev["pci"],
+                        "driver": dev["driver"], "model": dev["description"],
+                    })
+            if info["dp"]["present"]:
+                info["generation"] = info["generation"] or "OCTEON III"
+                info["boot_state"] = "CP running, DP present"
+                # Liveness comes from the CP, because it is the only place with
+                # evidence: the dataplane is driven with no kernel driver bound,
+                # so from this host there is no driver, no netdev and no signal
+                # of any kind. Asking is the whole point -- an earlier version
+                # inferred "booted" from the driver link and would have reported
+                # a running dataplane as down.
+                try:
+                    st = await _bcm_client().dp_status()
+                except Exception as exc:
+                    st = {"error": _public_error(exc)}
+                if st.get("summary"):
+                    mbox = st.get("mailbox") or {}
+                    info["dp"]["liveness"] = st["summary"]
+                    info["dp"]["agents"] = st.get("agent") or []
+                    info["dp"]["net"] = st.get("net") or {}
+                    info["dp"]["mailbox"] = mbox
+                    # The agent answering on the mailbox is the strongest signal
+                    # there is, and it is the ONLY one right after a boot: the
+                    # control-plane network daemon is a separate step, so there
+                    # is no CP-side process and no dpnet interface yet. Keying
+                    # `running` off the process list alone reported a
+                    # demonstrably-alive dataplane as idle -- a false negative
+                    # that invites someone to re-boot working hardware.
+                    running = bool(mbox.get("agent_up")) or bool(st.get("agent"))
+                    info["dp"]["running"] = running
+                    info["boot_state"] = "CP running, DP %s" % (
+                        "running" if running else "present, idle")
+                else:
+                    # Say that the question was not answered, rather than
+                    # letting a missing field read as "not running".
+                    info["dp"]["liveness"] = (
+                        "unknown: the control plane did not report (%s)"
+                        % (st.get("detail") or st.get("error") or "no reply"))
+            else:
+                info["boot_state"] = "CP running, no DP found on its bus"
+
+    ent["t"] = now
+    ent["data"] = info
     return info
 
 
 @app.get("/api/dataplane/offload")
-async def dataplane_offload():
-    return _detect_offload_dp()
+async def dataplane_offload(user: dict = Depends(get_current_user)):
+    return await _detect_offload_dp()
 
 
 # ---------------------------------------------------------------------------
@@ -4571,11 +5195,11 @@ def _payload_cli(args, timeout=120):
                     text=True, timeout=timeout)
         return {"rc": r.returncode, "out": r.stdout, "err": r.stderr}
     except Exception as e:
-        return {"rc": -1, "out": "", "err": str(e)}
+        return {"rc": -1, "out": "", "err": _public_error(e)}
 
 
 @app.get("/api/system/updates")
-async def updates_status():
+async def updates_status(user: dict = Depends(get_current_user)):
     """Installed payload versions, key presence, and the configured server."""
     import json as _j
     st = {}
@@ -4620,7 +5244,7 @@ class UpdateServerCfg(BaseModel):
 
 
 @app.put("/api/system/updates/server")
-async def updates_set_server(cfg: UpdateServerCfg):
+async def updates_set_server(cfg: UpdateServerCfg, user: dict = Depends(get_current_user)):
     u = (cfg.url or "").strip()
     if u and not u.startswith(("http://", "https://")):
         raise HTTPException(400, "url must start with http:// or https://")
@@ -4629,12 +5253,12 @@ async def updates_set_server(cfg: UpdateServerCfg):
         with open(UPDATE_CONF, "w") as f:
             f.write("url=%s\n" % u)
     except Exception as e:
-        raise HTTPException(500, "could not save: %s" % e)
+        raise HTTPException(500, "could not save: %s" % _public_error(e))
     return {"success": True, "server": u}
 
 
 @app.post("/api/system/updates/check")
-async def updates_check(insecure: bool = True):
+async def updates_check(insecure: bool = True, user: dict = Depends(get_current_user)):
     url = _update_server_url()
     if not url:
         raise HTTPException(400, "no update server configured")
@@ -4651,7 +5275,7 @@ class UpdateInstall(BaseModel):
 
 
 @app.post("/api/system/updates/install")
-async def updates_install(req: UpdateInstall):
+async def updates_install(req: UpdateInstall, user: dict = Depends(get_current_user)):
     """Download+verify a payload; only writes anything when apply=true.
 
     An 'image' payload is written to the INACTIVE A/B root, never the running
@@ -4689,7 +5313,7 @@ def _vendor_cli(args, timeout=120):
                     text=True, timeout=timeout)
         return {"rc": r.returncode, "out": r.stdout, "err": r.stderr}
     except Exception as e:
-        return {"rc": -1, "out": "", "err": str(e)}
+        return {"rc": -1, "out": "", "err": _public_error(e)}
 
 
 def _removable_media():
@@ -4727,7 +5351,7 @@ def _vendor_registry_raw():
 
 
 @app.get("/api/vendor/status")
-async def vendor_status():
+async def vendor_status(user: dict = Depends(get_current_user)):
     """Chassis fingerprint, owner-imported firmware, and bring-up readiness."""
     det = _vendor_cli(["detect", "--json"], timeout=30)
     chassis = {}
@@ -4762,7 +5386,7 @@ async def vendor_status():
 
 
 @app.get("/api/octeon/bringup")
-async def octeon_bringup():
+async def octeon_bringup(user: dict = Depends(get_current_user)):
     """The 9-step bring-up plan, parsed for display. Read-only: this never
     touches the hardware (ffn_oct.py needs --force for that)."""
     import subprocess as _sp
@@ -4771,7 +5395,7 @@ async def octeon_bringup():
                     timeout=60)
         txt = r.stdout
     except Exception as e:
-        raise HTTPException(500, "bring-up plan unavailable: %s" % e)
+        raise HTTPException(500, "bring-up plan unavailable: %s" % _public_error(e))
     steps, ready, total = [], 0, 0
     cur = None
     for line in txt.splitlines():
@@ -4796,13 +5420,13 @@ class VendorScanReq(BaseModel):
 
 
 @app.post("/api/vendor/scan")
-async def vendor_scan(req: VendorScanReq):
+async def vendor_scan(req: VendorScanReq, user: dict = Depends(get_current_user)):
     r = _vendor_cli(["scan", "--source", req.path], timeout=180)
     return {"success": r["rc"] == 0, "output": r["out"] or r["err"]}
 
 
 @app.post("/api/vendor/import")
-async def vendor_import(req: VendorScanReq):
+async def vendor_import(req: VendorScanReq, user: dict = Depends(get_current_user)):
     a = ["import", "--source", req.path]
     if req.force:
         a.append("--force")
@@ -4811,7 +5435,7 @@ async def vendor_import(req: VendorScanReq):
 
 
 @app.post("/api/vendor/forget")
-async def vendor_forget():
+async def vendor_forget(user: dict = Depends(get_current_user)):
     r = _vendor_cli(["forget", "--all"], timeout=60)
     return {"success": r["rc"] == 0, "output": r["out"] or r["err"]}
 
@@ -4826,7 +5450,7 @@ IMMUTABLE_KIND_PREFIX = {"intrazone-default", "interzone-default", "lab-mgmt"}
 
 
 @app.get("/api/policy/rules")
-async def policy_list(show_hidden: bool = False, show_defaults: bool = True):
+async def policy_list(show_hidden: bool = False, show_defaults: bool = True, user: dict = Depends(get_current_user)):
     """
     Returns rules in evaluation order: user rules first (by position),
     then PAN-OS-style implicit defaults (intrazone-default, then
@@ -4888,15 +5512,159 @@ async def policy_add(rule: PolicyRule, user: dict = Depends(get_current_user)):
         cursor = await db.execute(
             "INSERT INTO policy_rules "
             "(position, name, src_ip, dst_ip, src_iface, dst_iface, "
-            " src_port, dst_port, proto, action, description, kind) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'user')",
+            " src_port, dst_port, proto, action, vsys, description, kind) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'user')",
             (rule.position, rule.name, rule.src_ip, rule.dst_ip,
              rule.src_iface, rule.dst_iface,
              rule.src_port, rule.dst_port,
-             rule.proto, rule.action, rule.description),
+             rule.proto, rule.action, _check_vsys(rule.vsys), rule.description),
         )
         await audit(db, user["username"], "add_rule", f"id={cursor.lastrowid}")
         return {"id": cursor.lastrowid, "status": "created"}
+
+
+# Where the dataplane looks for its compiled tables. The DP reads this
+# directory directly, so writes into it are atomic (see below).
+_FASTPATH_DIR = os.getenv("FFN_FASTPATH_DIR", "/var/lib/ffn-ngfw/fastpath")
+
+
+def _cidr_to_pair(cidr: str):
+    """'10.1.0.0/16' -> (host-order base, host-order mask). '' or 'any' -> 0/0.
+
+    Host order, because that is what struct dp_policy_row holds and what
+    dp_classify() compares against a tuple built with explicit shifts. The
+    dataplane deliberately has no ntohl (see ffn_dp_oct.h), so getting the order
+    wrong here would produce rules that match on x86 and not on the OCTEON.
+    """
+    s = (cidr or "").strip()
+    if not s or s.lower() in ("any", "0.0.0.0/0", "*"):
+        return 0, 0
+    addr, _, bits = s.partition("/")
+    try:
+        parts = [int(x) for x in addr.split(".")]
+        if len(parts) != 4 or any(p < 0 or p > 255 for p in parts):
+            return 0, 0
+        base = (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]
+    except ValueError:
+        return 0, 0
+    try:
+        n = int(bits) if bits else 32
+    except ValueError:
+        n = 32
+    if n <= 0:
+        return 0, 0
+    if n > 32:
+        n = 32
+    mask = (0xFFFFFFFF << (32 - n)) & 0xFFFFFFFF
+    return base & mask, mask
+
+
+def _proto_to_num(p) -> int:
+    """Protocol name or number -> IP protocol number. An unknown name is 0,
+    which the dataplane treats as "any protocol" -- the same thing the
+    rulebase means by 'any'.
+
+    The table lives INSIDE the function deliberately. These helpers get
+    deployed individually onto an appliance whose manager is behind on
+    unrelated changes, and a module-level constant sitting beside them is
+    exactly what gets left behind -- which has now happened three times in
+    this file, each time surfacing as a NameError in a running handler.
+    """
+    proto_num = {"any": 0, "ip": 0, "tcp": 6, "udp": 17, "icmp": 1,
+                 "esp": 50, "ah": 51, "gre": 47, "sctp": 132}
+    if isinstance(p, int):
+        return p & 0xFF
+    s = (p or "any").strip().lower()
+    if s in proto_num:
+        return proto_num[s]
+    try:
+        return int(s) & 0xFF
+    except ValueError:
+        return 0
+
+
+async def _compile_policy_bin(path: str = None) -> dict:
+    """Compile the live rulebase into the dataplane's policy.bin.
+
+    THIS LINK DID NOT EXIST. ffn_fastpath_compile could build the blob and the
+    dataplane could load it, but nothing in the manager ever called the
+    compiler -- `load_policy` had no caller outside the compiler's own selftest.
+    So the rulebase an operator edits and the table the dataplane matches on
+    were never connected: rules were stored, displayed, audited, and never
+    enforced by the fast path.
+
+    Rules are emitted in POSITION order, because a fast-path table is
+    first-match and position is what the operator ordered them by. Disabled and
+    hidden rules are left out entirely rather than emitted with a flag: a row
+    the dataplane can never use still costs a comparison per packet.
+
+    The vsys byte comes from each rule's own column, so a rule tagged to a
+    tenant matches only that tenant's traffic, and an untagged rule (vsys 0)
+    keeps the wildcard behaviour every rule had before tenants existed.
+    """
+    import ffn_fastpath_compile as fpc
+
+    out = path or os.path.join(_FASTPATH_DIR, "ffn_fastpath.policy.bin")
+    rows = []
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT id, position, name, src_ip, dst_ip, src_port, dst_port, "
+            "       proto, action, vsys FROM policy_rules "
+            " WHERE enabled=1 AND COALESCE(hidden,0)=0 "
+            " ORDER BY position, id")
+        for r in await cur.fetchall():
+            src, srcm = _cidr_to_pair(r["src_ip"])
+            dst, dstm = _cidr_to_pair(r["dst_ip"])
+            sp = int(r["src_port"] or 0)
+            dp_ = int(r["dst_port"] or 0)
+            act = (r["action"] or "permit").strip().lower()
+            rows.append({
+                "src_ip": src, "src_mask": srcm,
+                "dst_ip": dst, "dst_mask": dstm,
+                # Port 0 in the rulebase means "any", which on the wire is the
+                # whole range -- not the single port zero.
+                "sport_lo": sp or 0, "sport_hi": sp or 0xFFFF,
+                "dport_lo": dp_ or 0, "dport_hi": dp_ or 0xFFFF,
+                "proto": _proto_to_num(r["proto"]),
+                "vsys": int(r["vsys"] or 0) & 0xFF,
+                # The dataplane's decision codes from ffn_dp_oct.h:
+                # FP_FORWARD_W 0, FP_INSPECT_W 1, FP_DROP_W 3. Inline for the
+                # same reason as the protocol table above.
+                "action": (3 if act in ("deny", "drop", "reject")
+                           else 1 if act in ("inspect", "scan")
+                           else 0),
+                "flags": 0,
+                # No egress is pinned from the rulebase: that is bump-in-the-wire
+                # forwarding, and the dataplane routes when a rule does not name
+                # one. DP_EGRESS_NONE.
+                "egress_port": 0xFFFF,
+                "rule_id": int(r["id"]) & 0xFFFF,
+            })
+
+    c = fpc.FastPathCompiler()
+    c.load_policy(rows, vsys=0)
+    blob = c._pack_policy()
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    tmp = out + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(blob)
+    os.replace(tmp, out)             # atomic: the DP may read this at any moment
+
+    import hashlib
+    return {"path": out, "rules": len(rows), "bytes": len(blob),
+            "sha256": hashlib.sha256(blob).hexdigest()[:16],
+            "tenants": sorted({r["vsys"] for r in rows if r["vsys"]})}
+
+
+@app.post("/api/policy/compile")
+async def policy_compile(user: dict = Depends(get_current_user)):
+    """Build policy.bin from the live rulebase. Also run at commit."""
+    try:
+        return await _compile_policy_bin()
+    except Exception as exc:
+        raise HTTPException(status_code=500,
+                            detail="policy compile failed: %s" % _public_error(exc))
 
 
 @app.put("/api/policy/rules/{rule_id}")
@@ -4928,12 +5696,13 @@ async def policy_update(rule_id: int, rule: PolicyRule,
         await db.execute(
             "UPDATE policy_rules SET name=?, src_ip=?, dst_ip=?, "
             "  src_iface=?, dst_iface=?, src_port=?, dst_port=?, "
-            "  proto=?, action=?, description=?, position=?, "
+            "  proto=?, action=?, vsys=?, description=?, position=?, "
             "  updated_at=datetime('now') WHERE id=?",
             (rule.name, rule.src_ip, rule.dst_ip,
              rule.src_iface, rule.dst_iface,
              rule.src_port, rule.dst_port,
-             rule.proto, rule.action, rule.description, rule.position, rule_id),
+             rule.proto, rule.action, _check_vsys(rule.vsys),
+             rule.description, rule.position, rule_id),
         )
         await audit(db, user["username"], "update_rule", f"id={rule_id}")
         return {"status": "updated"}
@@ -5080,7 +5849,7 @@ def _get_arp_table():
 
 
 @app.get("/api/network/routes")
-async def network_routes():
+async def network_routes(user: dict = Depends(get_current_user)):
     return {"routes": _get_routes_from_system()}
 
 
@@ -5095,7 +5864,7 @@ async def network_add_route(route: StaticRoute, user: dict = Depends(get_current
     except FileNotFoundError:
         pass  # Windows/non-Linux: no-op
     except subprocess.CalledProcessError as exc:
-        raise HTTPException(status_code=400, detail=f"Route add failed: {exc}")
+        raise HTTPException(status_code=400, detail=f"Route add failed: {_public_error(exc)}")
     async with aiosqlite.connect(DB_PATH) as db:
         await audit(db, user["username"], "add_route", f"{route.destination} via {route.next_hop}")
     return {"status": "added"}
@@ -5108,19 +5877,19 @@ async def network_delete_route(destination: str = Query(...), user: dict = Depen
     except FileNotFoundError:
         pass
     except subprocess.CalledProcessError as exc:
-        raise HTTPException(status_code=400, detail=f"Route delete failed: {exc}")
+        raise HTTPException(status_code=400, detail=f"Route delete failed: {_public_error(exc)}")
     async with aiosqlite.connect(DB_PATH) as db:
         await audit(db, user["username"], "delete_route", destination)
     return {"status": "deleted"}
 
 
 @app.get("/api/network/arp")
-async def network_arp():
+async def network_arp(user: dict = Depends(get_current_user)):
     return {"arp_table": _get_arp_table()}
 
 
 @app.get("/api/network/interfaces")
-async def network_interfaces_config():
+async def network_interfaces_config(user: dict = Depends(get_current_user)):
     """Real interface configuration from the system."""
     return {"interfaces": _discover_interfaces()}
 
@@ -5149,7 +5918,7 @@ async def network_interface_update(iface_name: str, cfg: InterfaceConfig, user: 
     except FileNotFoundError:
         pass
     except subprocess.CalledProcessError as exc:
-        raise HTTPException(status_code=400, detail=f"Config failed: {exc}")
+        raise HTTPException(status_code=400, detail=f"Config failed: {_public_error(exc)}")
     async with aiosqlite.connect(DB_PATH) as db:
         await audit(db, user["username"], "update_interface", f"{iface_name}: {', '.join(actions)}")
     return {"status": "updated", "interface": iface_name, "applied": actions}
@@ -5185,9 +5954,29 @@ def _run_net_cmd(args, tag: str, timeout: int = 5):
     error; real command failures surface their non-zero rc. Shared by the
     `ip`/`sysctl` VRF applier and the `vtysh` FRR applier (contract §6).
     """
-    cmd = [str(a) for a in args]
+    # These helpers are not a general command runner. Validate every token
+    # before invocation, including commands interpreted by vtysh itself.
+    if not args or args[0] not in ("ip", "sysctl", "vtysh"):
+        raise HTTPException(status_code=400, detail="Unsupported network command")
+    executable = {"ip": "ip", "sysctl": "sysctl", "vtysh": "vtysh"}[args[0]]
+    cmd = [args[0]]
+    for index, value in enumerate(args[1:], 1):
+        arg = str(value)
+        if args[0] == "vtysh":
+            valid = arg == "-c" if index % 2 else re.fullmatch(r"[A-Za-z][A-Za-z0-9_.:/ -]{0,1023}", arg)
+        elif args[0] == "sysctl":
+            valid = arg == "-w" if index == 1 else arg in (
+                "net.ipv4.tcp_l3mdev_accept=1", "net.ipv4.udp_l3mdev_accept=1")
+        else:
+            valid = arg == "-j" or re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,254}", arg)
+        if not valid:
+            raise HTTPException(status_code=400, detail="Invalid network command argument")
+        cmd.append(arg)
+    if args[0] == "vtysh" and len(cmd) % 2 != 1:
+        raise HTTPException(status_code=400, detail="Missing routing command")
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(cmd, executable=executable, shell=False,
+                           capture_output=True, text=True, timeout=timeout)
         out = ((p.stdout or "") + (p.stderr or "")).strip()
         if p.returncode != 0:
             logger.warning("%s rc=%d: %s :: %s",
@@ -5201,7 +5990,7 @@ def _run_net_cmd(args, tag: str, timeout: int = 5):
         return 124, "timeout"
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("%s error %s: %s", tag, exc, " ".join(cmd))
-        return 1, str(exc)
+        return 1, _public_error(exc)
 
 
 def _run_ip(args, timeout: int = 5):
@@ -5702,7 +6491,7 @@ async def iface_set_vr(iface: str, body: IfaceVrAssign,
 
 
 @app.get("/api/network/virtual-routers")
-async def vr_list():
+async def vr_list(user: dict = Depends(get_current_user)):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
@@ -5769,7 +6558,7 @@ async def _vr_fetch(db, name: str):
 
 
 @app.get("/api/network/virtual-routers/{name}")
-async def vr_get(name: str):
+async def vr_get(name: str, user: dict = Depends(get_current_user)):
     async with aiosqlite.connect(DB_PATH) as db:
         row = await _vr_fetch(db, name)
         if not row:
@@ -5922,7 +6711,7 @@ async def vr_set_routing(name: str, cfg: VrRoutingConfig, user: dict = Depends(g
 
 
 @app.get("/api/network/virtual-routers/{name}/routes")
-async def vr_routes_list(name: str):
+async def vr_routes_list(name: str, user: dict = Depends(get_current_user)):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         row = await _vr_fetch(db, name)
@@ -6008,7 +6797,7 @@ async def vr_route_delete(name: str, route_id: int,
 
 
 @app.get("/api/network/virtual-routers/{name}/fib")
-async def vr_fib(name: str):
+async def vr_fib(name: str, user: dict = Depends(get_current_user)):
     """Read the live FIB: prefer FRR (`show ip route vrf <name> json`),
     fall back to the kernel table (`ip route show table N`)."""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -6044,7 +6833,7 @@ async def vr_fib(name: str):
 
 
 @app.get("/api/network/virtual-routers/{name}/neighbors")
-async def vr_neighbors(name: str):
+async def vr_neighbors(name: str, user: dict = Depends(get_current_user)):
     """Read `ip neigh` scoped to this VR's member interfaces."""
     async with aiosqlite.connect(DB_PATH) as db:
         row = await _vr_fetch(db, name)
@@ -6179,10 +6968,9 @@ def _lic_audit(action: str, user: str, **kw) -> None:
 
 def _lic_safe_filename(name: str) -> str:
     """Reject anything that isn't a plain filename (no slashes, no ..)."""
-    base = os.path.basename(name)
-    if not base or base.startswith(".") or not _LIC_SAFE_NAME.match(base):
-        raise HTTPException(status_code=400, detail=f"unsafe filename: {name!r}")
-    return base
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,199}", name):
+        raise HTTPException(status_code=400, detail="Invalid license filename")
+    return name
 
 
 def _lic_ensure_dirs():
@@ -6225,7 +7013,7 @@ async def _lic_run_verifier() -> dict:
     except OSError as exc:
         return {
             "ok": False, "exit": -1, "stdout": "",
-            "stderr": f"failed to spawn verifier: {exc}",
+            "stderr": f"failed to spawn verifier: {_public_error(exc)}",
             "tokens_accepted": 0, "tokens_total": 0,
         }
 
@@ -6368,7 +7156,7 @@ class LicenseStatusResponse(BaseModel):
 
 
 @app.get("/api/license/dna")
-async def license_get_dna():
+async def license_get_dna(user: dict = Depends(get_current_user)):
     """
     Return BOTH identities the operator may need to ship to HQ:
       * host (h1) BASE identity  — card-independent, always present.
@@ -6407,7 +7195,7 @@ async def license_get_dna():
 
 
 @app.get("/api/license/dna.txt")
-async def license_get_dna_txt():
+async def license_get_dna_txt(user: dict = Depends(get_current_user)):
     """Plain-text license-request blob (email to HQ)."""
     from fastapi.responses import PlainTextResponse
     host_info = fpga.device_host_dna_info()
@@ -6458,7 +7246,7 @@ async def license_get_dna_txt():
 
 
 @app.get("/api/license/status", response_model=LicenseStatusResponse)
-async def license_get_status():
+async def license_get_status(user: dict = Depends(get_current_user)):
     """
     Comprehensive licensing snapshot.  When a card is present the kernel
     (fpga.query_license) answers per-feature; cardless, the host-side
@@ -6531,8 +7319,8 @@ async def license_upload(file: UploadFile = File(...),
     if data[:8] != b"FFN-LIC1":
         raise HTTPException(status_code=400, detail="bad magic — not a FFN-LIC1 token")
 
-    dest = LIC_DIR / name
-    tmp  = LIC_DIR / (name + ".uploading")
+    dest = _store_path(LIC_DIR, name)
+    tmp = _store_path(LIC_DIR, name + ".uploading")
     tmp.write_bytes(data)
     os.replace(tmp, dest)
 
@@ -6564,8 +7352,8 @@ async def license_upload_vendor(file: UploadFile = File(...),
     if data[:8] != b"FFN-VND1":
         raise HTTPException(status_code=400, detail="bad magic — not a FFN-VND1 cert")
 
-    dest = VENDOR_DIR / name
-    tmp  = VENDOR_DIR / (name + ".uploading")
+    dest = _store_path(VENDOR_DIR, name)
+    tmp = _store_path(VENDOR_DIR, name + ".uploading")
     tmp.write_bytes(data)
     os.replace(tmp, dest)
 
@@ -6601,14 +7389,14 @@ async def license_upload_bundle(file: UploadFile = File(...),
             members = [(m.name, tf.extractfile(m).read())
                        for m in tf.getmembers() if m.isfile()]
         except (tarfile.TarError, OSError) as e:
-            raise HTTPException(status_code=400, detail=f"bad tarball: {e}")
+            raise HTTPException(status_code=400, detail=f"bad tarball: {_public_error(e)}")
     elif name.endswith(".zip"):
         try:
             zf = zipfile.ZipFile(io.BytesIO(data), "r")
             members = [(m.filename, zf.read(m))
                        for m in zf.infolist() if not m.is_dir()]
         except zipfile.BadZipFile as e:
-            raise HTTPException(status_code=400, detail=f"bad zip: {e}")
+            raise HTTPException(status_code=400, detail=f"bad zip: {_public_error(e)}")
     else:
         raise HTTPException(status_code=400,
             detail="bundle must be .tar, .tar.gz, .tgz, or .zip")
@@ -6623,13 +7411,13 @@ async def license_upload_bundle(file: UploadFile = File(...),
         if base.endswith(".lic"):
             if (LIC_TOKEN_MIN <= len(member_data) <= LIC_TOKEN_MAX
                     and member_data[:8] == b"FFN-LIC1"):
-                (LIC_DIR / base).write_bytes(member_data)
+                _store_path(LIC_DIR, base).write_bytes(member_data)
                 accepted.append({"name": base, "kind": "license"})
             else:
                 rejected.append({"name": base, "reason": "bad magic or size"})
         elif base.endswith(".vcert"):
             if len(member_data) == VND_CERT_SIZE and member_data[:8] == b"FFN-VND1":
-                (VENDOR_DIR / base).write_bytes(member_data)
+                _store_path(VENDOR_DIR, base).write_bytes(member_data)
                 accepted.append({"name": base, "kind": "vendor"})
             else:
                 rejected.append({"name": base, "reason": "bad magic or size"})
@@ -6666,7 +7454,7 @@ async def license_refresh(user: dict = Depends(get_current_user)):
 
 
 @app.get("/api/license/audit")
-async def license_get_audit(limit: int = 200):
+async def license_get_audit(limit: int = 200, user: dict = Depends(get_current_user)):
     """Return the last N audit-log entries (newest first)."""
     if not AUDIT_LOG.exists():
         return {"entries": [], "log_path": str(AUDIT_LOG)}
@@ -6682,7 +7470,7 @@ async def license_get_audit(limit: int = 200):
                 except json.JSONDecodeError:
                     continue
     except OSError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=_public_error(e))
     entries.reverse()
     return {"entries": entries[:limit], "log_path": str(AUDIT_LOG)}
 
@@ -6702,7 +7490,7 @@ async def license_delete_file(kind: str, name: str,
     if not safe.endswith(suffix):
         raise HTTPException(status_code=400,
             detail=f"filename must end with {suffix}")
-    target = d / safe
+    target = _store_path(d, safe)
     if not target.exists():
         raise HTTPException(status_code=404, detail="not found")
     target.unlink()
@@ -6722,7 +7510,7 @@ async def license_delete_file(kind: str, name: str,
 
 
 @app.get("/api/engines")
-async def engines_list():
+async def engines_list(user: dict = Depends(get_current_user)):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("SELECT * FROM engine_state")
@@ -6744,7 +7532,7 @@ async def engines_list():
 
 
 @app.get("/api/engines/emulator")
-async def engines_emulator():
+async def engines_emulator(user: dict = Depends(get_current_user)):
     """Software FPGA DPI offload emulator status (REWORK_CONTRACT §7).
 
     Surfaces the emulated AC (dpi_l7) / DFA (dpi_regex) offload engines so the
@@ -6771,7 +7559,7 @@ async def engines_emulator():
                           for (pat, path) in emu.dfa_paths()],
         }
     except Exception as exc:
-        return {"available": False, "hw_present": fpga_present(), "error": str(exc)}
+        return {"available": False, "hw_present": fpga_present(), "error": _public_error(exc)}
 
 
 # ---------------------------------------------------------------------------
@@ -6779,7 +7567,7 @@ async def engines_emulator():
 # No license gating (per contract): status/score/update are always reachable.
 # ---------------------------------------------------------------------------
 @app.get("/api/ml/status")
-async def ml_status():
+async def ml_status(user: dict = Depends(get_current_user)):
     """Inline ML engine status (REWORK_CONTRACT §8).
 
     Reports kind, version, features_version, loaded, and verdict thresholds.
@@ -6814,7 +7602,7 @@ async def ml_status():
 
 
 @app.post("/api/ml/score")
-async def ml_score(req: MlScoreRequest):
+async def ml_score(req: MlScoreRequest, user: dict = Depends(get_current_user)):
     """Score a buffer for a malware/grayware/benign verdict (contract §8).
 
     Body: {"text": "..."} or {"hex": "deadbeef"}. Returns MlEngine.score():
@@ -6841,7 +7629,7 @@ async def ml_score(req: MlScoreRequest):
     try:
         result = eng.score(data)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail="scoring failed: %s" % exc)
+        raise HTTPException(status_code=500, detail="scoring failed: %s" % _public_error(exc))
     return {"bytes": len(data), **result}
 
 
@@ -6879,7 +7667,7 @@ async def ml_update(payload: dict, user: dict = Depends(get_current_user)):
         raise
     except Exception as exc:
         # update()/import_() raise BEFORE mutating on a bad blob -> engine intact.
-        raise HTTPException(status_code=400, detail="model update failed: %s" % exc)
+        raise HTTPException(status_code=400, detail="model update failed: %s" % _public_error(exc))
 
     persisted = _ml_persist(eng)
     # Realtime fan-out: push the new model to a running DP over the §9 wire.
@@ -6907,7 +7695,7 @@ async def ml_update(payload: dict, user: dict = Depends(get_current_user)):
 # running (default in-proc/file-ring Channel). No license gating (per §4).
 # ---------------------------------------------------------------------------
 @app.get("/api/mpdp/status")
-async def mpdp_status():
+async def mpdp_status(user: dict = Depends(get_current_user)):
     """MP<->DP channel health (REWORK_CONTRACT §9).
 
     Reports transport, connected, sent/recv counts and last_seq. Drains any
@@ -7012,7 +7800,7 @@ async def mpdp_push(payload: dict, user: dict = Depends(get_current_user)):
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=400, detail="push failed: %s" % exc)
+        raise HTTPException(status_code=400, detail="push failed: %s" % _public_error(exc))
 
     async with aiosqlite.connect(DB_PATH) as db:
         await audit(db, user["username"], "mpdp_push", kind)
@@ -7026,7 +7814,7 @@ async def mpdp_push(payload: dict, user: dict = Depends(get_current_user)):
 
 
 @app.get("/api/mpdp/telemetry")
-async def mpdp_telemetry():
+async def mpdp_telemetry(user: dict = Depends(get_current_user)):
     """Last parsed DP->MP EngineTelemetry / FlowEvent messages (§9).
 
     Drains the channel first, then returns the bounded telemetry ring split by
@@ -7086,7 +7874,7 @@ async def engine_disable(name: str, user: dict = Depends(get_current_user)):
 
 
 @app.get("/api/engines/{name}/stats")
-async def engine_stats(name: str):
+async def engine_stats(name: str, user: dict = Depends(get_current_user)):
     if name not in ENGINE_NAMES:
         raise HTTPException(status_code=404, detail="Engine not found")
     eid = ENGINE_NAMES.index(name)
@@ -7103,7 +7891,7 @@ async def engine_stats(name: str):
 
 
 @app.get("/api/engines/dpi/patterns")
-async def dpi_patterns_list():
+async def dpi_patterns_list(user: dict = Depends(get_current_user)):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("SELECT * FROM dpi_patterns ORDER BY id")
@@ -7123,7 +7911,7 @@ async def dpi_patterns_add(pat: DPIPattern, user: dict = Depends(get_current_use
 
 
 @app.get("/api/engines/url/categories")
-async def url_categories():
+async def url_categories(user: dict = Depends(get_current_user)):
     categories = [
         "malware", "phishing", "adult", "gambling", "social_media",
         "streaming", "vpn_proxy", "cryptomining", "ads", "custom",
@@ -7145,7 +7933,7 @@ async def url_blocklist_add(entry: URLBlockEntry, user: dict = Depends(get_curre
 # -- Security plugins (Objects > Security Profiles) ------------------------
 
 @app.get("/api/plugins")
-async def plugins_list():
+async def plugins_list(user: dict = Depends(get_current_user)):
     """Security plugins with live enable-state + DLP rule count for the panel."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -7179,7 +7967,7 @@ async def plugins_list():
 # Signature Database + host detection engines (post-pivot software stack).
 # ---------------------------------------------------------------------------
 @app.get("/api/sigdb/status")
-async def sigdb_status():
+async def sigdb_status(user: dict = Depends(get_current_user)):
     """Signature Database: version, counts by type/severity, recent updates."""
     try:
         from ffn_sigdb import SignatureDB
@@ -7191,7 +7979,7 @@ async def sigdb_status():
             sdb.close()
         return {"available": True, **st, "recent_updates": ups}
     except Exception as e:
-        return {"available": False, "error": str(e)}
+        return {"available": False, "error": _public_error(e)}
 
 
 @app.post("/api/sigdb/update")
@@ -7208,7 +7996,7 @@ async def sigdb_update(user: dict = Depends(get_current_user)):
         finally:
             sdb.close()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=_public_error(e))
     # Realtime fan-out: push the content-package bump to a running DP (§9).
     wire_pushed = _mpdp_emit_threat_intel(v)
     async with aiosqlite.connect(DB_PATH) as db:
@@ -7217,8 +8005,154 @@ async def sigdb_update(user: dict = Depends(get_current_user)):
             "total": st["total"], "added": added, "wire_pushed": wire_pushed}
 
 
+@app.get("/api/crucible/status")
+async def crucible_status(user: dict = Depends(get_current_user)):
+    """Live state of the Crucible unknown-object pipeline.
+
+    Sourced from the same sqlite tables the data plane writes to, so the
+    numbers here are the queue the datapath is actually feeding -- not a
+    separate counter that can drift from it.
+    """
+    import json as _json
+    import os as _os
+    import time as _time
+
+    out = {
+        "available": False,
+        "pending": 0,
+        "analyzed_today": 0,
+        "analyzed_total": 0,
+        "verdicts": {},
+        "queue": [],
+        "results": [],
+        # No source for these yet: the BNN agent owns model versioning and does
+        # not publish it. Null, not invented.
+        "last_update": None,
+        "retrain": None,
+        "backend": None,
+        "policy": None,
+        "chambers": [],
+        "relay": None,
+    }
+
+    # -- where does analysis happen -------------------------------------
+    spec = _os.getenv("FFN_CRUCIBLE_BACKEND", "local")
+    policy = _os.getenv("FFN_CRUCIBLE_POLICY", "static")
+    out["backend"], out["policy"] = spec, policy
+    try:
+        from ffn_crucible import CrucibleSandbox
+        eng = CrucibleSandbox(policy="best")
+        out["chambers"] = [
+            {"name": st.name, "fidelity": st.fidelity,
+             "available": st.available, "executes": st.executes,
+             "reason": st.reason}
+            for st in eng.statuses()]
+        out["max_fidelity"] = max(
+            [st.fidelity for st in eng.statuses() if st.available], default=0)
+    except Exception as e:
+        out["chambers_error"] = _public_error(e)[:160]
+
+    if spec.startswith("relay"):
+        url = spec.split(":", 1)[1] if ":" in spec else ""
+        pub = _os.getenv("FFN_CRUCIBLE_RELAY_PUB",
+                         "/etc/ffn-ngfw/crucible-verdict.pub")
+        tok = _os.getenv("FFN_CRUCIBLE_TOKEN",
+                         "/etc/ffn-ngfw/crucible-node.token")
+        out["relay"] = {
+            "url": url,
+            "pinned_key": _os.path.exists(pub),
+            "token": _os.path.exists(tok),
+            "fallback_local": spec.startswith("relay+local"),
+        }
+
+    # -- the queue and the verdicts --------------------------------------
+    try:
+        from ffn_threatdb import ThreatDB
+        tdb = ThreatDB()
+    except Exception as e:
+        out["error"] = _public_error(e)[:160]
+        return out
+    try:
+        conn = tdb.conn
+        have = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "cloud_queue" not in have:
+            # Nothing has ever submitted on this box, so the tables the
+            # service creates on first use do not exist yet. Not an error.
+            out["available"] = True
+            return out
+        out["available"] = True
+        out["pending"] = conn.execute(
+            "SELECT COUNT(*) FROM cloud_queue WHERE status='pending'"
+        ).fetchone()[0]
+        today = _time.strftime("%Y-%m-%d", _time.gmtime())
+        if "cloud_reports" in have:
+            out["analyzed_total"] = conn.execute(
+                "SELECT COUNT(*) FROM cloud_reports").fetchone()[0]
+            out["analyzed_today"] = conn.execute(
+                "SELECT COUNT(*) FROM cloud_reports WHERE analyzed LIKE ?",
+                (today + "%",)).fetchone()[0]
+            for row in conn.execute(
+                    "SELECT verdict, COUNT(*) FROM cloud_reports "
+                    "GROUP BY verdict"):
+                out["verdicts"][row[0]] = row[1]
+
+        for row in conn.execute(
+                "SELECT sha256,status,file_type,size,meta,submitted "
+                "FROM cloud_queue WHERE status IN ('pending','analyzing') "
+                "ORDER BY submitted DESC LIMIT 50"):
+            try:
+                meta = _json.loads(row[4] or "{}")
+            except ValueError:
+                meta = {}
+            out["queue"].append({
+                "id": row[0][:16],
+                "time": row[5],
+                "src": meta.get("src") or meta.get("flow") or "-",
+                "verdict": "unknown",
+                "confidence": None,
+                "status": row[1],
+                "result": "%s, %s bytes" % (row[2] or "unknown type",
+                                            row[3] or 0),
+            })
+
+        if "cloud_reports" in have:
+            for row in conn.execute(
+                    "SELECT sha256,verdict,score,threat_name,file_type,"
+                    "backend,analyzed,report FROM cloud_reports "
+                    "ORDER BY analyzed DESC LIMIT 50"):
+                details = {}
+                try:
+                    details = (_json.loads(row[7] or "{}") or {}).get(
+                        "details", {}) or {}
+                except ValueError:
+                    pass
+                out["results"].append({
+                    "id": row[0][:16],
+                    "time": row[6],
+                    "ml_verdict": row[1],
+                    "result": row[1],
+                    "score": row[2],
+                    "threat": row[3] or "-",
+                    "file_type": row[4] or "-",
+                    "chamber": details.get("chamber") or row[5] or "-",
+                    "confidence": details.get("confidence") or "-",
+                    "action": ("blocked" if row[1] in ("malware", "phishing")
+                               else "alerted" if row[1] == "grayware"
+                               else "allowed"),
+                })
+    except Exception as e:
+        out["error"] = _public_error(e)[:160]
+    finally:
+        try:
+            tdb.close()
+        except Exception:
+            pass
+    return out
+
+
 @app.get("/api/detection/engines")
-async def detection_engines():
+async def detection_engines(user: dict = Depends(get_current_user)):
     """Live status of the host detection engines (sig DB, AV, anti-malware,
     inline IPS, cloud sandbox) -- the same engines the data plane runs."""
     return {"engines": _detection_live()}
@@ -7264,7 +8198,7 @@ async def detection_scan(body: dict, user: dict = Depends(get_current_user)):
             except Exception:
                 pass
     except Exception as e:
-        out["inline"] = {"error": str(e)}
+        out["inline"] = {"error": _public_error(e)}
     # anti-malware fusion (hash reputation + AV + heuristics)
     try:
         from ffn_sigdb import SignatureDB, seed_baseline as seed_sigs
@@ -7290,24 +8224,25 @@ async def detection_scan(body: dict, user: dict = Depends(get_current_user)):
             except Exception:
                 pass
     except Exception as e:
-        out["antimalware"] = {"error": str(e)}
+        out["antimalware"] = {"error": _public_error(e)}
     return out
 
 
 @app.get("/api/system/cpu-planes")
-async def cpu_planes_status():
+async def cpu_planes_status(user: dict = Depends(get_current_user)):
     """CPU proc-splitting: mgmt / ctrl / data plane core assignment, isolation
     (isolcpus / nohz_full), and scheduling capabilities."""
     try:
         from ffn_cpu_planes import CpuPlanes
-        cp = CpuPlanes.from_system()
+        inventory = await system_hardware(user=user)
+        cp = await asyncio.to_thread(CpuPlanes.from_system, inventory=inventory)
         return {"available": True, **cp.snapshot()}
     except Exception as e:
-        return {"available": False, "error": str(e)}
+        return {"available": False, "error": _public_error(e)}
 
 
 @app.get("/api/engines/dlp/rules")
-async def dlp_rules_list():
+async def dlp_rules_list(user: dict = Depends(get_current_user)):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT * FROM dlp_rules ORDER BY id")
@@ -7327,7 +8262,7 @@ async def dlp_rules_add(rule: DLPRule, user: dict = Depends(get_current_user)):
         try:
             re.compile(rule.pattern)
         except re.error as e:
-            raise HTTPException(status_code=400, detail="Invalid regex: %s" % e)
+            raise HTTPException(status_code=400, detail="Invalid regex: %s" % _public_error(e))
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
             "INSERT INTO dlp_rules "
@@ -7353,7 +8288,7 @@ async def dlp_rules_delete(rule_id: int, user: dict = Depends(get_current_user))
 
 
 @app.get("/api/vpn/ipsec/tunnels")
-async def vpn_ipsec_list():
+async def vpn_ipsec_list(user: dict = Depends(get_current_user)):
     # Read from database (user-configured tunnels)
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -7388,7 +8323,7 @@ async def vpn_ipsec_add(tunnel: IPSecTunnel, user: dict = Depends(get_current_us
 
 
 @app.get("/api/vpn/zerotier/peers")
-async def vpn_zerotier_peers():
+async def vpn_zerotier_peers(user: dict = Depends(get_current_user)):
     """Try to read from zerotier-cli, otherwise return empty."""
     try:
         out = subprocess.check_output(
@@ -7410,7 +8345,7 @@ async def vpn_zerotier_peers():
 
 
 @app.get("/api/vpn/zerotier/networks")
-async def vpn_zerotier_networks():
+async def vpn_zerotier_networks(user: dict = Depends(get_current_user)):
     """Try to read from zerotier-cli, otherwise return empty."""
     try:
         out = subprocess.check_output(
@@ -7493,7 +8428,7 @@ class RetrainRequest(BaseModel):
 
 @app.post("/api/ml/retrain")
 async def ml_retrain(req: RetrainRequest = None, user: dict = Depends(get_current_user)):
-    # In production, this sends weights to the WildFire agent which
+    # In production, this sends weights to the BNN agent which
     # retrains the BNN and programs weights via ioctl
     job_id = f"retrain-{int(time.time())}"
     logger.info("ML retrain triggered by %s: model=%s epochs=%d",
@@ -7506,12 +8441,12 @@ async def ml_retrain(req: RetrainRequest = None, user: dict = Depends(get_curren
         "job_id": job_id,
         "model_type": req.model_type if req else "anomaly",
         "epochs": req.epochs if req else 10,
-        "message": "Retrain job queued for WildFire agent",
+        "message": "Retrain job queued for BNN agent",
     }
 
 
 @app.get("/api/system/copp")
-async def system_copp():
+async def system_copp(user: dict = Depends(get_current_user)):
     """CoPP status — per-class rate limits and drop counters."""
     classes = [
         {"id": 0, "name": "CRITICAL", "protocols": "BGP, OSPF, BFD",
@@ -7554,7 +8489,7 @@ async def system_copp():
 
 
 @app.get("/api/system/fpga")
-async def system_fpga():
+async def system_fpga(user: dict = Depends(get_current_user)):
     """FPGA detailed status."""
     if not fpga.sim_mode:
         return {
@@ -7689,11 +8624,20 @@ def _hugepage_snapshot() -> dict:
 
 
 @app.get("/api/dataplane/status")
-async def dataplane_status():
-    """Check FPGA and DPDK dataplane status — reflects live state, not
-    a hardcoded service name. Looks up whichever DPDK unit is actually
-    installed + running on the box (ffn-dpdk-runtime preferred, falls
-    back to ffn-dpdk-fwd for older deployments)."""
+async def dataplane_status(user: dict = Depends(get_current_user)):
+    """Where packets are actually forwarded on this box.
+
+    THREE dataplanes can exist, and this endpoint used to describe only two of
+    them. The FPGA and DPDK paths belong to FFN's own board; a reclaimed
+    appliance has neither and forwards on an OCTEON complex behind the control
+    plane instead. Reporting only fpga_detected there produced a UI that said
+    the dataplane was absent on a box whose dataplane was running -- so the
+    offload chain is reported here too, and `kind` names which one is in play
+    rather than leaving a caller to infer it from three unrelated booleans.
+
+    Looks up whichever DPDK unit is actually installed and running
+    (ffn-dpdk-runtime preferred, ffn-dpdk-fwd for older deployments).
+    """
     fpga_detected = not fpga.sim_mode
     pcie_link = "N/A"
     if fpga_detected:
@@ -7726,7 +8670,31 @@ async def dataplane_status():
     except Exception:
         pass
 
+    # The offload complex, asked through the control plane. Cheap when absent
+    # (one lspci) and one short CP round trip when present.
+    offload = await _detect_offload_dp()
+    # `kind` says which dataplane this box HAS, not whether it is currently
+    # passing traffic -- those are different questions and a UI needs both
+    # separately. An earlier version conflated them by deriving the kind from
+    # a "booted" flag that turned out to measure nothing (this DP is driven
+    # with no kernel driver bound, so its driver link is always empty).
+    if offload.get("dp", {}).get("present"):
+        kind = "octeon-offload"
+    elif offload.get("present"):
+        kind = "octeon-offload-cp-only"
+    elif fpga_detected:
+        kind = "fpga"
+    elif dpdk_running:
+        kind = "dpdk"
+    else:
+        kind = "software"
+
     return {
+        # Which dataplane this box actually has. A UI should branch on this
+        # rather than on fpga_detected, which is only ever true on the FPGA
+        # board and says nothing at all about an appliance.
+        "kind": kind,
+        "offload": offload,
         "fpga_detected": fpga_detected,
         "fpga_driver_loaded": driver_loaded,
         "pcie_link": pcie_link,
@@ -7779,9 +8747,9 @@ async def dataplane_restart(req: DataplaneRestart, user: dict = Depends(get_curr
                         results["output"] = "PCIe function-level reset sent to Xilinx device"
                     except Exception as exc:
                         results["message"] = "PCIe reset via sysfs"
-                        results["output"] = f"Reset attempt: {exc}"
+                        results["output"] = f"Reset attempt: {_public_error(exc)}"
             except Exception as exc:
-                results["output"] = str(exc)
+                results["output"] = _public_error(exc)
 
     if req.target in ("dpdk", "dpdk-stop", "all"):
         # Detect whichever DPDK unit is actually installed on this box.
@@ -7812,7 +8780,7 @@ async def dataplane_restart(req: DataplaneRestart, user: dict = Depends(get_curr
                     + (f"\n{r.stderr.strip()}" if r.stderr.strip() else "")
                 )
             except Exception as exc:
-                results["output"] += f"\nDPDK {action} error: {exc}"
+                results["output"] += f"\nDPDK {action} error: {_public_error(exc)}"
                 # Fallback: kill whichever DPDK process is running by name
                 for name in ("dpdk-testpmd", "ffn_dpdk_fwd"):
                     try:
@@ -7884,7 +8852,7 @@ async def system_diagnostic(req: DiagnosticRequest, user: dict = Depends(get_cur
             out = f"Unknown command: {req.command}"
         return {"output": out, "command": req.command}
     except subprocess.CalledProcessError as exc:
-        return {"output": exc.output or str(exc), "command": req.command}
+        return {"output": _public_error(exc), "command": req.command}
     except FileNotFoundError:
         return {"output": f"Command '{req.command}' not found on this system", "command": req.command}
     except subprocess.TimeoutExpired:
@@ -8088,7 +9056,7 @@ def _apply_running_config():
         return None
 
     try:
-        root = ET.parse(str(RUNNING_CONFIG)).getroot()
+        root = SafeET.parse(str(RUNNING_CONFIG), forbid_dtd=True).getroot()
         sysn = find_dev_sys(root)
         if sysn is not None:
             hn = sysn.findtext("hostname")
@@ -8197,6 +9165,39 @@ async def _sync_netresources_to_xml():
     return touched
 
 
+def _publish_to_planes() -> dict:
+    """Render the committed config out to the CP and, through it, the DP.
+
+    This is the top of a chain that was already complete below this point:
+
+        here -> /etc/ffn/config.env -> ffn_cfgd (MP, versioned + namespaced)
+          -> ffn_cfgagent (CP): applies cp.*, relays dp.*
+            -> PCIe mailbox (the DP has no IP path)
+              -> DP /etc/ffn/dp.env -> ffn_dp_l3_config.c -> the FIB
+
+    It is a PUBLISH, not a push. The agents pull and converge on their own, so a
+    CP or DP that reboots re-reads the current version without the MP having to
+    notice -- which matters because the MP cannot reach the DP to push even if
+    it wanted to.
+
+    A failure here NEVER fails the commit. By the time this runs the candidate
+    has already become running and the MP has applied it; raising would report a
+    commit that did happen as one that did not, and would leave the operator
+    with no idea which half succeeded. So problems are returned in the response
+    instead, where the UI can show "committed, not yet distributed".
+    """
+    try:
+        import ffn_config_render
+    except ImportError as exc:
+        return {"published": False, "error": "renderer unavailable: %s" % _public_error(exc),
+                "hint": "deploy ffn_config_render.py beside ffn_manager.py"}
+    try:
+        return ffn_config_render.publish()
+    except Exception as exc:
+        logger.warning("plane publish failed: %s", exc)
+        return {"published": False, "error": repr(exc)}
+
+
 @app.post("/api/config/commit")
 async def config_commit(req: CommitRequest, user: dict = Depends(get_current_user)):
     """Commit candidate → running. Supports full or partial (xpath-scoped) commits."""
@@ -8249,6 +9250,12 @@ async def config_commit(req: CommitRequest, user: dict = Depends(get_current_use
                 result["applied_to_system"] = _apply_running_config()
         else:
             result["applied_to_system"] = _apply_running_config()
+
+        # Distribute to the CP and, through it, the DP. Ordered AFTER the local
+        # apply on purpose: the MP is the first hop of the chain, and publishing
+        # a config the MP itself has not accepted would put the planes ahead of
+        # their own management plane.
+        result["planes"] = _publish_to_planes()
         result["changes_committed"] = d["total_changes"]
 
         async with aiosqlite.connect(DB_PATH) as db:
@@ -8273,7 +9280,7 @@ async def config_revert(user: dict = Depends(get_current_user)):
 
 
 @app.get("/api/config/lock")
-async def config_lock_status():
+async def config_lock_status(user: dict = Depends(get_current_user)):
     return config_mgr.lock_status()
 
 
@@ -8320,24 +9327,224 @@ async def config_apply_status(user: dict = Depends(get_current_user)):
     try:
         return json.loads(p.read_text())
     except Exception as exc:
-        return {"overall": "error", "error": str(exc)}
+        return {"overall": "error", "error": _public_error(exc)}
+
+
+def _platform_decl() -> dict:
+    """The selected platform's own declaration, or {}.
+
+    ffn_cpuisol already knows how to find platform/<name>/platform.json and is
+    the module that consumes `datapath` today, so it owns the reader. A second
+    one here would be a second thing to keep in agreement.
+
+    Returns {} on an installed appliance, where the tree is flat and there is no
+    platform/ directory -- which is why nothing downstream may treat an empty
+    declaration as "no platform". Evidence decides that; see _platform_profile.
+    """
+    try:
+        import ffn_cpuisol
+        decl, _path = ffn_cpuisol.find_platform_decl(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        return decl or {}
+    except Exception:
+        return {}
+
+
+def _chassis_family_name(chassis: dict) -> str:
+    """A human name for the chassis family, from the models it could be.
+
+    Deliberately the family. The vendor fingerprint identifies the BOARD, and
+    one board serves several models -- a PA-5220 and a PA-5280 are the same
+    board -- so picking a model out of the list would state something the
+    detector never established.
+    """
+    models = [m for m in (chassis.get("models") or []) if m]
+    if not models:
+        return ""
+    pfx = models[0]
+    for m in models[1:]:
+        while pfx and not m.startswith(pfx):
+            pfx = pfx[:-1]
+    pfx = pfx.rstrip("-")
+    if not pfx:
+        return ""
+    # "PA-52" from PA-5220/5250/... is a family stem, not a product name.
+    name = pfx + "0" * max(0, len(models[0]) - len(pfx))
+    return "Palo Alto Networks %s series" % name if len(models) > 1 else            "Palo Alto Networks %s" % models[0]
+
+
+def _chassis_fingerprint() -> dict:
+    """What chassis this is, from the vendor detector. {} when unrecognised."""
+    try:
+        import ffn_vendor
+        return ffn_vendor.detect_chassis() or {}
+    except Exception:
+        return {}
+
+
+async def _platform_profile() -> dict:
+    """What this appliance IS, and therefore which features apply to it.
+
+    WHY THIS EXISTS. The WebUI was written for FFN's own board -- an accelerator
+    card plus a DPDK path -- and shows that board's features unconditionally. On
+    an appliance that has neither, the result is not a missing panel but a
+    misleading one: a red "Not Detected" beside an instruction to install a card
+    that does not fit the chassis, and a DPDK panel reporting "Stopped" for a
+    subsystem the box was never going to run. Both read as faults. Neither is.
+
+    So every feature carries TWO booleans, and the difference between them is
+    the whole point:
+
+        applicable  does this feature belong on this hardware at all?
+        present     is it actually there right now?
+
+    not applicable  -> the UI hides it. There is nothing to report and nothing
+                       an operator could do about it.
+    applicable, not present -> the UI reports it missing. That IS actionable.
+
+    Everything here is DERIVED. The platform declaration is used when there is
+    one, and otherwise the answer comes from what was detected -- an installed
+    appliance has a flat tree with no platform/ directory, so treating a missing
+    declaration as "no platform" would misreport every deployed box.
+    """
+    decl = _platform_decl()
+    chassis = _chassis_fingerprint()
+    offload = await _detect_offload_dp()
+    faceplate = await _faceplate_map("data")
+
+    has_fpga_card = not fpga.sim_mode
+    has_offload = bool(offload.get("present"))
+    dpdk_unit = _detect_dpdk_service()
+    # A unit FILE existing is not a datapath. The image ships ffn-dpdk-fwd on
+    # every platform, so keying "present" off the unit reported DPDK as present
+    # on a chassis that has never run it.
+    dpdk_running = bool(_detect_dpdk_process())
+
+    # Datapath: the declaration is authoritative where it exists, because it is
+    # the platform stating its own design. Otherwise infer from what is here.
+    datapath = decl.get("datapath")
+    if not datapath:
+        datapath = ("offload" if has_offload
+                    else "fpga" if has_fpga_card
+                    else "dpdk")
+
+    off_reason = ("this chassis forwards on its own offload complex, so the "
+                  "host-side datapath is not used here")
+
+    def feat(applicable, present, reason="", **extra):
+        d = {"applicable": bool(applicable), "present": bool(present)}
+        if reason:
+            d["reason"] = reason
+        d.update(extra)
+        return d
+
+    features = {
+        # The host-side datapaths. Both are FFN's own board's design; an
+        # offload chassis has neither and needs neither.
+        "dpdk": feat(datapath == "dpdk", dpdk_running,
+                     off_reason if datapath != "dpdk" else "",
+                     unit=dpdk_unit),
+        "fpga_card": feat(datapath in ("dpdk", "fpga"), has_fpga_card,
+                          off_reason if datapath == "offload" else ""),
+        "hugepages": feat(datapath == "dpdk", datapath == "dpdk",
+                          "hugepages back the DPDK mempools; nothing here uses "
+                          "them" if datapath != "dpdk" else ""),
+        # Isolating host cores only helps a host-side poll-mode datapath, so it
+        # follows the datapath rather than a default. This cannot be left to the
+        # declaration alone: an INSTALLED appliance has a flat tree with no
+        # platform/ directory, so the declaration is absent exactly where it
+        # matters, and defaulting to "auto" reported core isolation as
+        # applicable on a chassis that forwards nothing on its host cores.
+        "cpu_isolation": feat(
+            decl.get("cpu_isolation", "auto") != "none" and datapath == "dpdk",
+            decl.get("cpu_isolation", "auto") != "none" and datapath == "dpdk",
+            decl.get("reason") or (off_reason if datapath == "offload" else "")),
+
+        # The offload chassis's own silicon.
+        "offload_complex": feat(has_offload, has_offload,
+                                detail=offload.get("boot_state") or ""),
+        "switch_faceplate": feat(faceplate is not None, bool(faceplate),
+                                 ports=len(faceplate or {})),
+        "front_end_asic": feat(has_offload,
+                               bool((offload.get("fe100") or {}).get("present")),
+                               model=(offload.get("fe100") or {}).get("model") or ""),
+
+        # Software subsystems, present when their binary is.
+        "frr": feat(True, os.path.exists("/usr/bin/vtysh")),
+        "ipsec": feat(True, os.path.exists("/usr/sbin/swanctl")
+                      or os.path.exists("/usr/bin/swanctl")),
+        "zerotier": feat(True, os.path.exists("/usr/sbin/zerotier-cli")
+                         or os.path.exists("/usr/bin/zerotier-cli")),
+    }
+
+    return {
+        "platform": decl.get("platform") or (
+            "pa5200" if faceplate is not None else
+            "vu9p" if has_fpga_card else "generic"),
+        # Falls back to the chassis fingerprint, because the declaration is the
+        # thing that is missing on a deployed box.
+        # Falls back to the chassis fingerprint, because the declaration is the
+        # thing that is missing on a deployed box. The FAMILY, not a model: the
+        # fingerprint lists every model this board could be (the PA-5220 and
+        # PA-5280 share it), and naming one of them would be a guess.
+        "hardware": decl.get("hardware") or _chassis_family_name(chassis),
+        "datapath": datapath,
+        "chassis": {
+            "family": chassis.get("platform") or "",
+            "models": chassis.get("models") or [],
+            "dmi": chassis.get("dmi") or "",
+            "match": chassis.get("match"),
+            # Named by whichever detector answered; the CLI reports it as
+            # "octeon" and the in-process call may not carry it at all.
+            "npu": chassis.get("octeon") or offload.get("generation") or "",
+        },
+        "features": features,
+    }
 
 
 @app.get("/api/system/capabilities")
 async def system_capabilities(user: dict = Depends(get_current_user)):
-    """Which subsystems are present (FPGA, DPDK, FRR, strongSwan, ZeroTier)."""
+    """Which subsystems are present, and which ones this appliance even has.
+
+    The flat booleans are kept because callers already read them, but they
+    cannot express the difference that matters on an appliance: a subsystem
+    that is MISSING versus one that was never part of this hardware. `platform`
+    carries that, per feature, as applicable/present -- see _platform_profile.
+    A UI should branch on it and hide what is not applicable, rather than
+    reporting a DPDK path this chassis does not have as "Stopped".
+    """
+    base = None
     if controld is not None and controld.available():
         try:
-            return controld.capabilities()
+            base = controld.capabilities()
         except Exception:
-            pass
-    return {
-        "fpga":     not fpga.sim_mode,
-        "dpdk":     os.path.exists("/var/run/ffn-ngfw/dpdk.sock"),
-        "frr":      os.path.exists("/usr/bin/vtysh"),
-        "ipsec":    os.path.exists("/usr/sbin/swanctl") or os.path.exists("/usr/bin/swanctl"),
-        "zerotier": os.path.exists("/usr/sbin/zerotier-cli") or os.path.exists("/usr/bin/zerotier-cli"),
-    }
+            base = None
+    if base is None:
+        base = {
+            "fpga":     not fpga.sim_mode,
+            "dpdk":     os.path.exists("/var/run/ffn-ngfw/dpdk.sock"),
+            "frr":      os.path.exists("/usr/bin/vtysh"),
+            "ipsec":    os.path.exists("/usr/sbin/swanctl") or os.path.exists("/usr/bin/swanctl"),
+            "zerotier": os.path.exists("/usr/sbin/zerotier-cli") or os.path.exists("/usr/bin/zerotier-cli"),
+        }
+    # Merged rather than replacing controld's answer: it owns the subsystem
+    # booleans, this owns what the hardware is.
+    try:
+        base = dict(base)
+        base["platform"] = await _platform_profile()
+    except Exception as exc:
+        logger.warning("platform profile failed: %s", exc)
+    return base
+
+
+@app.get("/api/system/platform")
+async def system_platform(user: dict = Depends(get_current_user)):
+    """The appliance's own specification: what it is, and which features apply.
+
+    Separate from /api/system/capabilities so a caller that only wants to know
+    what hardware this is does not have to reason about subsystem booleans.
+    """
+    return await _platform_profile()
 
 
 # ---------------------------------------------------------------------------
@@ -8424,9 +9631,9 @@ def _dpd_call(method: str, *args, **kwargs) -> dict:
         return fn(*args, **kwargs) or {}
     except RuntimeError as exc:
         # controld returned ok=false — usually "ffn-dpd not running"
-        raise HTTPException(status_code=503, detail=str(exc))
+        raise HTTPException(status_code=503, detail=_public_error(exc))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"dpd proxy failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"dpd proxy failed: {_public_error(exc)}")
 
 
 @app.get("/api/dpd/status")
@@ -8869,9 +10076,9 @@ async def wireguard_status(user: dict = Depends(get_current_user)):
         out = subprocess.check_output(["wg", "show", "all", "dump"],
                                       text=True, timeout=5)
     except subprocess.CalledProcessError as exc:
-        return {"available": True, "error": exc.output or str(exc), "interfaces": []}
+        return {"available": True, "error": _public_error(exc), "interfaces": []}
     except Exception as exc:
-        return {"available": True, "error": str(exc), "interfaces": []}
+        return {"available": True, "error": _public_error(exc), "interfaces": []}
 
     # `wg show all dump` format:
     # iface private_key public_key listen_port fwmark                  (first line per iface)
@@ -8910,9 +10117,9 @@ async def tailscale_status(user: dict = Depends(get_current_user)):
         data = json.loads(out)
     except subprocess.CalledProcessError as exc:
         return {"available": True, "running": False,
-                "error": exc.output or str(exc), "peers": []}
+                "error": _public_error(exc), "peers": []}
     except Exception as exc:
-        return {"available": True, "running": False, "error": str(exc), "peers": []}
+        return {"available": True, "running": False, "error": _public_error(exc), "peers": []}
     self_node = (data.get("Self") or {})
     peers = []
     for _, p in (data.get("Peer") or {}).items():
@@ -8954,7 +10161,7 @@ async def lldp_neighbors(user: dict = Depends(get_current_user)):
                                       text=True, timeout=5)
         data = json.loads(out)
     except Exception as exc:
-        return {"available": True, "error": str(exc), "interfaces": []}
+        return {"available": True, "error": _public_error(exc), "interfaces": []}
 
     interfaces = []
     # lldpctl json0 shape: {"lldp": [{"interface": [...]}]}
@@ -9086,7 +10293,7 @@ def _dns_proxy_stats() -> dict:
 
 
 @app.get("/api/network/dns-proxy")
-async def dns_proxy_get():
+async def dns_proxy_get(user: dict = Depends(get_current_user)):
     return {"config": _read_dns_proxy(), "stats": _dns_proxy_stats()}
 
 
@@ -9101,7 +10308,7 @@ async def dns_proxy_set(cfg: DnsProxyConfig, user: dict = Depends(get_current_us
         with open(DNS_PROXY_PATH, "w") as f:
             json.dump(cur, f, indent=2)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"cannot write dns-proxy config: {e}")
+        raise HTTPException(status_code=500, detail=f"cannot write dns-proxy config: {_public_error(e)}")
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             await audit(db, user["username"], "set_dns_proxy",
@@ -9229,7 +10436,7 @@ async def link_capabilities(user: dict = Depends(get_current_user)):
                 )
                 entry.update(_parse_ethtool(out))
             except Exception as exc:
-                entry["error"] = str(exc)
+                entry["error"] = _public_error(exc)
         # Always also fill in live link state from psutil (quick)
         try:
             st = psutil.net_if_stats().get(linux_name)
@@ -9565,7 +10772,169 @@ def _list_linux_nics() -> list:
     # drop OVS bridges / internal ports (operator-named, so query OVS)
     _ovs = _ovs_owned_ifaces()
     names = [n for n in names if n not in _ovs]
+
+    # A platform submodule may declare which of this host's NICs are
+    # control-plane. On a PA-5200 that is ALL of them -- MGT, the HA1 pair, the
+    # two AUX ports and the internal backplane links -- and the rule has been
+    # written down in platform/pa5200/ffn_ifroles.py since it was worked out.
+    # It was referenced by nothing, so this function kept handing every one of
+    # them an ethernet1/N firewall slot at startup, and those aliases were
+    # written into the candidate config where they persisted across commits.
+    # Offering an operator a management NIC as a data port is how you bridge
+    # your own management network.
+    roles = _if_roles()
+    if roles is not None:
+        kept = []
+        for n in names:
+            try:
+                if roles.is_control_plane(n):
+                    continue
+            except Exception:
+                pass          # an undecidable NIC stays visible, not hidden
+            kept.append(n)
+        names = kept
     return sorted(names)
+
+
+
+
+# ---------------------------------------------------------------------------
+# The firewall's DATA interfaces
+# ---------------------------------------------------------------------------
+# On a reclaimed appliance the firewall's interfaces are the chassis faceplate
+# ports, which live on a switch ASIC behind the control plane. They are NOT
+# this host's NICs -- every one of those is management, HA, AUX or an internal
+# backplane link, which is what platform/pa5200/ffn_ifroles.py has said all
+# along.
+#
+# Two different things are being joined here, and keeping them separate is the
+# point:
+#
+#   the MAP    which chip port is behind which faceplate connector, and what
+#              ethernet1/N an operator should call it. A property of the board.
+#              Known whether or not anything is powered on.
+#   the STATE  link, admin state, negotiated speed. Read from the chip through
+#              ffn-bcmd, and only available when the control plane answers.
+#
+# So an unreachable CP costs the state and not the map: the interface list
+# still shows all 25 faceplate ports, with link state reported as unknown
+# rather than as down. Showing an empty interface list because a daemon is
+# restarting would be a worse answer than showing the ports with no state.
+
+
+async def _faceplate_map(plane=None):
+    """{pan_name: portinfo} for this chassis, or None if it has no faceplate
+    map -- which is how "this is not that hardware" is reported.
+
+    `plane` selects which connectors: "data" for the firewall's interfaces,
+    "management" for the device's own (the HA data link). None returns the
+    whole faceplate, which is what a physical inventory wants.
+    """
+    bp = _bcm_faceplate()
+    if bp is None:
+        return None
+
+    if not _this_is_a_faceplate_chassis():
+        return None
+
+    live = {}
+    reply = {}
+    try:
+        reply = await _bcm_client().port_list()
+        for p in (reply.get("ports") or []):
+            live[p.get("port")] = p
+    except ImportError:
+        reply = {"ok": False, "error": "bcm client unavailable"}
+    except Exception as exc:                       # never fail the whole page
+        reply = {"ok": False, "error": _public_error(exc)}
+
+    # Insertion order is faceplate order -- bp.faceplate_ports() returns the
+    # numbered connectors in order and then the named ones. Callers iterate this
+    # dict directly, so ordering it here means the interface list reads like the
+    # front of the chassis rather than like the chip's port numbering, which is
+    # scrambled relative to the metal (logical 28 is connector 1).
+    out = {}
+    for port in bp.faceplate_ports(plane):
+        name = bp.pan_ifname(port)
+        label, media, speed, pl = bp.FACEPLATE[port]
+        p = live.get(port) or {}
+        out[name] = {
+            "name": name,
+            "bcm_port": port,
+            # Which plane the connector serves. HSCI is on the front of the
+            # chassis but it is the HA DATA link -- HA2/HA3, session sync and
+            # active/active packet forwarding between peers -- so it belongs to
+            # the device's high-availability configuration and not to the
+            # firewall's interface list. Being on the faceplate does not make a
+            # connector a firewall interface.
+            "plane": pl,
+            "role": ("HA data link (HA2/HA3)" if pl == bp.PLANE_MGMT
+                     else "data"),
+            "configurable": pl == bp.PLANE_DATA,
+            # The name the switch's own diag shell uses. Shown to an operator
+            # because it is what every chip-level tool and log line says, and
+            # it is not derivable from either the faceplate label or the chip
+            # port name.
+            "diag_name": p.get("name") or bp.diag_name(port),
+            "chip_name": bp.PORTS[port][0],
+            "faceplate": label,
+            "media": media,
+            "speed_gbps": speed,
+            "link": p.get("link"),
+            "admin_enabled": p.get("enabled"),
+            "state": p.get("state"),
+            "live": bool(p),
+        }
+    return out
+
+
+def _this_is_a_faceplate_chassis():
+    """Does this host actually have the chassis the faceplate map describes?
+
+    Importability is NOT the test. A platform module can be present because a
+    checkout has the submodule, or because someone copied it, and treating that
+    as "this is a PA-5200" would make a completely different host purge its
+    interface aliases and advertise 25 ports it does not have.
+
+    So the map is only claimed alongside positive hardware evidence: an OCTEON
+    on this host's PCI bus. That is the one part of the complex the host can
+    see, it is read straight from sysfs with no subprocess, and no other
+    platform FFN targets carries one.
+    """
+    if _bcm_faceplate() is None:
+        return False
+    try:
+        for dev in os.listdir("/sys/bus/pci/devices"):
+            try:
+                with open("/sys/bus/pci/devices/%s/vendor" % dev) as f:
+                    if f.read().strip().lower() == "0x177d":
+                        return True
+            except OSError:
+                continue          # hotplug/rescan race: skip, do not fail
+    except OSError:
+        return False
+    return False
+
+
+def _faceplate_map_sync(plane=None):
+    """Map only, no chip state. For the paths that cannot await."""
+    bp = _bcm_faceplate()
+    if bp is None or not _this_is_a_faceplate_chassis():
+        return None
+    out = {}
+    for port in bp.faceplate_ports(plane):
+        label, media, speed, pl = bp.FACEPLATE[port]
+        out[bp.pan_ifname(port)] = {
+            "name": bp.pan_ifname(port), "bcm_port": port,
+            "plane": pl,
+            "role": ("HA data link (HA2/HA3)" if pl == bp.PLANE_MGMT
+                     else "data"),
+            "configurable": pl == bp.PLANE_DATA,
+            "diag_name": bp.diag_name(port), "chip_name": bp.PORTS[port][0],
+            "faceplate": label, "media": media, "speed_gbps": speed,
+            "link": None, "admin_enabled": None, "state": None, "live": False,
+        }
+    return out
 
 
 def _load_aliases() -> dict:
@@ -9602,6 +10971,31 @@ def _auto_assign_aliases() -> dict:
     Returns the fresh {pan_name: linux_name} map.
     """
     existing = _load_aliases()
+
+    # On a chassis whose data ports are on a switch ASIC, NO host NIC is a
+    # firewall interface, so there is nothing here to auto-assign. Any alias
+    # already in the candidate was minted by an older build of this function
+    # and points at a management, HA, AUX or backplane NIC -- purge it, or the
+    # interface grid keeps offering an operator a management port to configure
+    # as a data port long after the source of the mistake is fixed.
+    if _faceplate_map_sync() is not None:
+        # Purge aliases pointing at NICs that are no longer eligible -- on this
+        # chassis, every control-plane NIC -- and then FALL THROUGH rather than
+        # returning. ffn_ifroles documents a `data_plane_netdevs` escape hatch
+        # for a platform where a host NIC really is a data port; returning here
+        # meant that override could never produce an alias, which quietly broke
+        # the one case it exists for. _list_linux_nics() already honours it, so
+        # falling through does the right thing for both.
+        eligible = set(_list_linux_nics())
+        for pan, lnx in list(existing.items()):
+            if lnx in eligible:
+                continue
+            logger.info("Purging host-NIC alias %s -> %s: this chassis's data "
+                        "ports are on the switch ASIC, not on host NICs",
+                        pan, lnx)
+            _delete_alias(pan)
+            existing.pop(pan, None)
+
     # Purge stale aliases pointing at non-physical Linux interfaces
     # (bondN, veth, docker bridges) that may have leaked into the
     # candidate before this filter was added.
@@ -9755,6 +11149,22 @@ async def aliases_list(user: dict = Depends(get_current_user)):
     Return the PAN-OS → Linux NIC alias map. Auto-assigns for any newly
     detected interface on every call so the UI reflects current hardware.
     """
+    fp = await _faceplate_map("data")
+    if fp is not None:
+        # The map is fixed by the board, so there is nothing to remap and
+        # linux_nics is empty on purpose: offering a host NIC as a remap target
+        # is what put management ports in the firewall interface list.
+        # linux_name carries the switch diag name (xe13, ce32) because that is
+        # what every chip-level tool and log line calls the port, and it is the
+        # string an operator needs when correlating the two.
+        return {
+            "aliases": [{"pan_name": n, "linux_name": d["diag_name"]}
+                        for n, d in fp.items()],
+            "linux_nics": [],
+            "faceplate": list(fp.values()),
+            "source": "switch-asic faceplate map",
+        }
+
     aliases = _auto_assign_aliases()
     # Include detected Linux NICs so UI can offer re-mapping
     linux_nics = []
@@ -10077,7 +11487,16 @@ async def interfaces_enriched(user: dict = Depends(get_current_user)):
     """
     candidate = config_mgr.get_xpath(f"{DEV}", source="candidate")
     if candidate is None:
-        return {"ethernet": [], "vlan": [], "loopback": [], "tunnel": [], "sdwan": []}
+        # No config yet is not the same as no interfaces. The faceplate is a
+        # property of the chassis, so report it even on a box that has never
+        # been configured -- that is precisely when an operator opens this page.
+        empty = {"ethernet": [], "vlan": [], "loopback": [], "tunnel": [],
+                 "sdwan": []}
+        fp0 = await _faceplate_map("data")
+        if fp0 is not None:
+            empty["faceplate"] = list(fp0.values())
+            empty["source"] = "switch-asic faceplate"
+        return empty
 
     # Build name→VR, name→zone, name→vsys lookup tables once
     vr_of = {}
@@ -10118,6 +11537,16 @@ async def interfaces_enriched(user: dict = Depends(get_current_user)):
                     if m.text:
                         zone_of[m.text.strip()] = z_name
 
+    # Where the interface names and link state come from. On a switch-ASIC
+    # chassis both come from the faceplate: pan_to_linux maps ethernet1/N to
+    # the switch diag name, and link state is the chip's, not psutil's. The row
+    # shape does not change, so the grid renderer needs no knowledge of this.
+    #
+    # DATA plane only. HSCI is on the same faceplate but it is the HA data
+    # link, so it belongs to the device's HA configuration and appears under
+    # the system interfaces, not in the firewall's list.
+    fp = await _faceplate_map("data")
+
     # Live link state per Linux name
     live_up = {}
     live_ip = {}
@@ -10135,6 +11564,15 @@ async def interfaces_enriched(user: dict = Depends(get_current_user)):
     except Exception:
         pass
     pan_to_linux = _load_aliases()
+    if fp is not None:
+        pan_to_linux = {n: d["diag_name"] for n, d in fp.items()}
+        # The chip's link bit, keyed the same way, so _shape_row's existing
+        # live_up[linux] lookup picks it up without knowing what a switch is.
+        # None stays None: an unreachable control plane means link state is
+        # UNKNOWN, and painting that as down would report every port on a
+        # healthy chassis as failed because a daemon was restarting.
+        for d in fp.values():
+            live_up[d["diag_name"]] = d["link"]
 
     def _mode_and_type(entry: ET.Element):
         """Return (mode-key, pretty-type-label, aggregate-group or None)."""
@@ -10224,6 +11662,12 @@ async def interfaces_enriched(user: dict = Depends(get_current_user)):
         }
 
     out = {"ethernet": [], "vlan": [], "loopback": [], "tunnel": [], "sdwan": []}
+    if fp is not None:
+        # Report the faceplate alongside the rows so a caller can show ports
+        # that exist in the chassis but not yet in the config, and can say what
+        # each one is (media, speed, which connector) without a second request.
+        out["faceplate"] = list(fp.values())
+        out["source"] = "switch-asic faceplate"
     net = candidate.find("./network/interface")
     if net is not None:
         # Ethernet
@@ -10542,10 +11986,15 @@ def _generate_log_entries(log_type: str, limit: int = 50, offset: int = 0):
 def _journal_entries(unit: Optional[str] = None, priority: Optional[str] = None,
                      limit: int = 50) -> list:
     """Read real entries from systemd journal."""
+    limit = max(1, min(int(limit), 10000))
     cmd = ["journalctl", "-n", str(limit), "-o", "json", "--no-pager"]
     if unit:
+        if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.@-]{0,255}", unit):
+            return []
         cmd += ["-u", unit]
     if priority:
+        if not re.fullmatch(r"[0-7](?:\.\.[0-7])?", priority):
+            return []
         cmd += ["-p", priority]
     try:
         out = subprocess.check_output(cmd, text=True, timeout=5)
@@ -10631,7 +12080,7 @@ def _conntrack_entries(limit: int = 50, vsys_id: Optional[int] = None):
 
 
 @app.get("/api/logs/security")
-async def logs_security(limit: int = 50, offset: int = 0):
+async def logs_security(limit: int = 50, offset: int = 0, user: dict = Depends(get_current_user)):
     """
     Security events — when the FPGA dataplane is present, this reads from the
     hardware's threat/IDS log buffer. Otherwise surfaces kernel audit log and
@@ -10659,7 +12108,7 @@ async def logs_security(limit: int = 50, offset: int = 0):
 
 
 @app.get("/api/logs/traffic")
-async def logs_traffic(limit: int = 50, offset: int = 0, vsys: Optional[str] = None):
+async def logs_traffic(limit: int = 50, offset: int = 0, vsys: Optional[str] = None, user: dict = Depends(get_current_user)):
     """Real network flows via conntrack/ss. Real FPGA traffic log when present.
 
     `vsys` (name 'vsys2' or numeric id '2') scopes the flow list to that vsys's
@@ -10679,7 +12128,7 @@ async def logs_traffic(limit: int = 50, offset: int = 0, vsys: Optional[str] = N
 
 
 @app.get("/api/logs/system")
-async def logs_system(limit: int = 50, offset: int = 0):
+async def logs_system(limit: int = 50, offset: int = 0, user: dict = Depends(get_current_user)):
     """Real system journal entries."""
     entries = _journal_entries(limit=limit + offset)
     return {"logs": entries[offset:offset + limit],
@@ -10688,7 +12137,7 @@ async def logs_system(limit: int = 50, offset: int = 0):
 
 
 @app.get("/api/monitor/sessions")
-async def monitor_sessions(limit: int = 100, vsys: Optional[str] = None):
+async def monitor_sessions(limit: int = 100, vsys: Optional[str] = None, user: dict = Depends(get_current_user)):
     """
     Live session / connection browser. Prefers FPGA session table via
     controld, falls back to psutil net_connections.
@@ -10744,7 +12193,21 @@ def _live_connections(limit: int) -> list:
 @app.websocket("/api/logs/live")
 async def logs_live(ws: WebSocket):
     await ws.accept()
+    # Browser WebSockets cannot set Authorization headers. Send the bearer in
+    # the first frame, never in a URL that proxies and access logs can retain.
+    try:
+        auth = await asyncio.wait_for(ws.receive_json(), timeout=5)
+        if not isinstance(auth, dict) or not isinstance(auth.get("token"), str):
+            raise ValueError("Missing token")
+        await _authenticate_token(auth["token"], ws.url.path)
+    except WebSocketDisconnect:
+        return
+    except (HTTPException, ValueError, TypeError, KeyError, asyncio.TimeoutError):
+        await ws.close(code=1008)
+        return
     proc = None
+    disconnect_task = None
+    line_task = None
     try:
         # journalctl -f in JSON — parse line by line
         proc = await asyncio.create_subprocess_exec(
@@ -10754,8 +12217,20 @@ async def logs_live(ws: WebSocket):
         )
         sev_map = {"0": "EMERG", "1": "ALERT", "2": "CRITICAL", "3": "ERROR",
                    "4": "WARNING", "5": "NOTICE", "6": "INFO", "7": "DEBUG"}
+        async def wait_disconnect():
+            while (await ws.receive())["type"] != "websocket.disconnect":
+                pass
+
+        disconnect_task = asyncio.create_task(wait_disconnect())
         while True:
-            line = await proc.stdout.readline()
+            # A quiet journal must not keep journalctl alive after the browser
+            # closes: wait for either a log line or the disconnect event.
+            line_task = asyncio.create_task(proc.stdout.readline())
+            done, _ = await asyncio.wait(
+                (line_task, disconnect_task), return_when=asyncio.FIRST_COMPLETED)
+            if disconnect_task in done:
+                break
+            line = line_task.result()
             if not line:
                 break
             try:
@@ -10776,6 +12251,10 @@ async def logs_live(ws: WebSocket):
     except Exception as exc:
         logger.warning("logs_live error: %s", exc)
     finally:
+        tasks = [task for task in (line_task, disconnect_task) if task is not None]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         if proc:
             try:
                 proc.terminate()
@@ -10798,9 +12277,26 @@ if __name__ == "__main__":
     # Override with FFN_MGR_WORKERS=N env to enable multi-worker mode once
     # the commit lock and config cache are backed by a shared store.
     workers = int(os.getenv("FFN_MGR_WORKERS", "1"))
+
+    # Same resolution the systemd unit uses, so running this file directly and
+    # running it as a service cannot disagree about where the manager listens.
+    # A hardcoded 0.0.0.0 here would quietly reintroduce the behaviour the unit
+    # was changed to stop -- and this path is what a developer or a recovery
+    # shell actually uses.
+    try:
+        from ffn_mgmt_bind import resolve as _resolve_bind
+        _host, _why, _detail = _resolve_bind()
+        print("ffn-manager: binding %s (%s)" % (_host, _why))
+        if _detail.get("warning"):
+            print("ffn-manager: WARNING: %s" % _detail["warning"])
+    except Exception as _exc:              # never fail to start over this
+        _host = "0.0.0.0"
+        print("ffn-manager: bind resolver unavailable (%s); binding %s"
+              % (_exc, _host))
+
     uvicorn.run(
         "ffn_manager:app",
-        host="0.0.0.0",
+        host=_host,
         port=8443,
         reload=False,
         log_level="info",

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-FFN NGFW — WildFire ML Model Update Agent
+FFN NGFW - FPGA binary-neural-network model update agent
 
 Reads suspicious packets punted by the FPGA BNN engine via QDMA C2H,
 runs deeper analysis, collects labeled samples, retrains the BNN with
@@ -20,7 +20,7 @@ Workflow:
   6. Log all verdicts to syslog.
 
 Usage:
-    ffn_wildfire_agent.py [--dev /dev/ngfw0] [--qdma /dev/qdma0-c2h-0]
+    ffn_bnn_agent.py [--dev /dev/ngfw0] [--qdma /dev/qdma0-c2h-0]
                           [--hashdb /var/lib/ngfw/hashes.db]
                           [--interval 300] [--min-samples 100]
                           [--debug]
@@ -44,7 +44,7 @@ from pathlib import Path
 
 import numpy as np
 
-# Canonical threat-intelligence store (the WildFire database). Imported softly
+# Canonical threat-intelligence store (ThreatDB). Imported softly
 # so the agent still runs if it is not deployed; without it, lookups + verdict
 # feedback fall back to the legacy flat-file HashDB only.
 try:
@@ -533,7 +533,7 @@ class QDMAReader:
 # Main agent
 # ============================================================
 
-class WildFireAgent:
+class BnnAgent:
     """Main agent coordinating packet analysis and BNN updates."""
 
     def __init__(self, args):
@@ -570,7 +570,7 @@ class WildFireAgent:
     def start(self):
         self.fpga.open()
         self.qdma.open()
-        logging.info("WildFire agent started")
+        logging.info("BNN agent started")
         logging.info("  retrain interval: %d s", self.retrain_interval)
         logging.info("  min samples: %d", self.min_samples)
 
@@ -582,7 +582,7 @@ class WildFireAgent:
                          stats["drops"], stats["errors"])
 
     def stop(self):
-        logging.info("WildFire agent stopping (analyzed=%d malicious=%d benign=%d)",
+        logging.info("BNN agent stopping (analyzed=%d malicious=%d benign=%d)",
                      self.total_analyzed, self.total_malicious, self.total_benign)
         self.qdma.close()
         self.fpga.close()
@@ -636,7 +636,7 @@ class WildFireAgent:
 
         if label == 1:
             self.total_malicious += 1
-            # WildFire feedback loop: persist newly discovered bad content so
+            # Crucible feedback loop: persist newly discovered bad content so
             # the compiler can push it to the FPGA MALWARE region and the next
             # occurrence matches in hardware (not just in this agent).
             if self.threatdb is not None and not is_known_bad:
@@ -721,7 +721,7 @@ def main():
     global agent_instance
 
     parser = argparse.ArgumentParser(
-        description="FFN NGFW WildFire ML Model Update Agent")
+        description="FFN NGFW Crucible ML Model Update Agent")
     parser.add_argument("--dev", default="/dev/ngfw0",
                         help="FPGA device path (default: /dev/ngfw0)")
     parser.add_argument("--qdma", default="/dev/qdma0-c2h-0",
@@ -748,7 +748,7 @@ def main():
         syslog_handler = logging.handlers.SysLogHandler(
             address="/dev/log", facility=logging.handlers.SysLogHandler.LOG_DAEMON)
         syslog_handler.setFormatter(
-            logging.Formatter("ffn_wildfire: %(levelname)s %(message)s"))
+            logging.Formatter("ffn_bnn: %(levelname)s %(message)s"))
         logger.addHandler(syslog_handler)
     except OSError:
         # /dev/log may not exist on all systems
@@ -761,7 +761,7 @@ def main():
             logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         logger.addHandler(console)
 
-    logging.info("FFN WildFire agent starting")
+    logging.info("FFN BNN agent starting")
     logging.info("  device:    %s", args.dev)
     logging.info("  qdma:      %s", args.qdma)
     logging.info("  hashdb:    %s", args.hashdb)
@@ -773,19 +773,19 @@ def main():
     signal.signal(signal.SIGINT,  signal_handler)
 
     # Create and run agent
-    agent_instance = WildFireAgent(args)
+    agent_instance = BnnAgent(args)
     try:
         agent_instance.run()
     except KeyboardInterrupt:
         agent_instance.running = False
         agent_instance.stop()
     except Exception:
-        logging.exception("fatal error in WildFire agent")
+        logging.exception("fatal error in BNN agent")
         if agent_instance:
             agent_instance.stop()
         sys.exit(1)
 
-    logging.info("FFN WildFire agent exited cleanly")
+    logging.info("FFN BNN agent exited cleanly")
 
 
 if __name__ == "__main__":
