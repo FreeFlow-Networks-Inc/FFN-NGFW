@@ -59,6 +59,7 @@ jobs:
       - name: hardware inventory and tuning regressions (no hardware required)
         run: |
           python3 tests/test_hwdetect.py
+          python3 tests/test_cpu_balance.py
           python3 opt/ffn_cpuisol.py selftest
           python3 opt/ffn_cpu_planes.py selftest
 

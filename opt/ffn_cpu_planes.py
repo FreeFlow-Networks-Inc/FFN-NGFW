@@ -159,15 +159,40 @@ def parse_conf(text: str) -> Dict[str, List[int]]:
 # ===========================================================================
 # Planning: auto-split cores into planes
 # ===========================================================================
-def auto_plan(ncpu: int, *, data_frac: float = 0.5, mgmt: int = 1,
+def balanced_plan(cpu_ids, siblings=None):
+    """Reserve ~12.5% each for MP/CP; DP gets the remainder, by physical core."""
+    from ffn_cpuisol import physical_cores
+    ids = sorted(set(cpu_ids))
+    groups = physical_cores(len(ids), siblings or {}, ids)
+    if len(groups) < 4:
+        return {p: list(ids) for p in PLANES}
+    reserve = max(1, len(groups) // 8)
+    return {PLANE_MGMT: sorted(c for g in groups[:reserve] for c in g),
+            PLANE_CTRL: sorted(c for g in groups[reserve:2*reserve] for c in g),
+            PLANE_DATA: sorted(c for g in groups[2*reserve:] for c in g)}
+
+
+def inventory_plan(ids, inventory=None):
+    topology = ((inventory or {}).get('cpu') or {}).get('topology', [])
+    siblings = {row['cpu']: row.get('siblings') or [row['cpu']] for row in topology}
+    if not topology:
+        from ffn_cpuisol import smt_siblings
+        siblings = smt_siblings() if inventory is None else {}
+    return balanced_plan(ids, siblings)
+
+
+def auto_plan(ncpu: int, *, data_frac: Optional[float] = None, mgmt: int = 1,
               ctrl: int = 1) -> Dict[str, List[int]]:
     """Split `ncpu` cores into mgmt / ctrl / data planes.
 
     Core 0 is always kept for the mgmt plane (kernel housekeeping / IRQs land
-    there by convention). The data plane gets the top `data_frac` of the
-    remaining cores (these are the ones you would also list in isolcpus).
+    there by convention). By default MP and CP each reserve about one eighth
+    and DP gets the remainder. An explicit data_frac retains legacy fractional
+    allocation. Use inventory_plan for physical-core-aware topology allocation.
     """
     cores = list(range(ncpu))
+    if data_frac is None:
+        return balanced_plan(cores)
     if ncpu <= 2:
         # too few to split meaningfully: everything shares
         return {PLANE_MGMT: cores, PLANE_CTRL: cores, PLANE_DATA: cores}
@@ -205,7 +230,7 @@ def _host_assignment(ncpu=None, inventory=None):
     ids = cpu.get("online_cpus")
     if ids is None:
         ids = list(range(ncpu if ncpu is not None else cpu.get("cores_logical") or cpu_count()))
-    return sorted(set(ids)), assignment
+    return sorted(set(ids)), assignment, inventory
 
 
 class CpuPlanes:
@@ -221,9 +246,9 @@ class CpuPlanes:
     # -- constructors ------------------------------------------------------
     @classmethod
     def from_system(cls, conf_path: str = DEFAULT_CONF, *, ncpu: Optional[int] = None,
-                    data_frac: float = 0.5, inventory: Optional[dict] = None) -> "CpuPlanes":
+                    data_frac: Optional[float] = None, inventory: Optional[dict] = None) -> "CpuPlanes":
         """Discover hardware roles, then consider saved configuration/isolation."""
-        ids, assignment = _host_assignment(ncpu, inventory)
+        ids, assignment, inventory = _host_assignment(ncpu, inventory)
         n = len(ids)
         cmdline = read_cmdline()
         iso = parse_isolcpus(cmdline)
@@ -238,22 +263,30 @@ class CpuPlanes:
         except OSError:
             pass
         if not any(planes.get(p) for p in PLANES):
-            planes = {key: [ids[i] for i in values] for key, values in auto_plan(n, data_frac=data_frac).items()}
+            planes = (inventory_plan(ids, inventory if inventory is not None else ({} if ncpu is not None else None))
+                      if data_frac is None else {key: [ids[i] for i in values] for key, values in auto_plan(n, data_frac=data_frac).items()})
             # honour isolcpus as the data plane if it was set
             if iso:
                 planes[PLANE_DATA] = [c for c in iso if c in ids]
                 nonio = [c for c in ids if c not in iso]
-                planes[PLANE_MGMT] = nonio[:1] or [0]
-                planes[PLANE_CTRL] = nonio[1:] or nonio[:1] or [0]
+                from ffn_cpuisol import physical_cores, smt_siblings
+                topology = ((inventory or {}).get('cpu') or {}).get('topology', [])
+                sibs = {r['cpu']: r.get('siblings') or [r['cpu']] for r in topology}
+                if not topology and ncpu is None: sibs = smt_siblings()
+                groups = physical_cores(len(nonio), sibs, nonio)
+                boundary = max(1, len(groups) // 2)
+                planes[PLANE_MGMT] = sorted(c for g in groups[:boundary] for c in g)
+                planes[PLANE_CTRL] = sorted(c for g in groups[boundary:] for c in g) or list(nonio)
         return cls(planes, isolated=iso, nohz_full=nohz, assignment=assignment)
 
     @classmethod
-    def auto(cls, ncpu: Optional[int] = None, *, data_frac: float = 0.5,
+    def auto(cls, ncpu: Optional[int] = None, *, data_frac: Optional[float] = None,
              inventory: Optional[dict] = None) -> "CpuPlanes":
-        ids, assignment = _host_assignment(ncpu, inventory)
+        ids, assignment, inventory = _host_assignment(ncpu, inventory)
         if assignment["cpu_isolation"] == "none":
             return cls({PLANE_MGMT: ids, PLANE_CTRL: [], PLANE_DATA: []}, assignment=assignment)
-        planes = {key: [ids[i] for i in values] for key, values in auto_plan(len(ids), data_frac=data_frac).items()}
+        planes = (inventory_plan(ids, inventory if inventory is not None else ({} if ncpu is not None else None))
+                  if data_frac is None else {key: [ids[i] for i in values] for key, values in auto_plan(len(ids), data_frac=data_frac).items()})
         return cls(planes, assignment=assignment)
 
     # -- queries -----------------------------------------------------------
@@ -436,7 +469,7 @@ class CpuPlanes:
     def grub_isolcpus(self) -> str:
         """Recommended kernel arg to isolate the data cores."""
         cl = format_cpu_list(self.data_cores)
-        if not cl:
+        if not cl or set(self.data_cores) & (set(self.cores(PLANE_MGMT)) | set(self.cores(PLANE_CTRL))):
             return ""
         return "isolcpus=managed_irq,domain,%s nohz_full=%s rcu_nocbs=%s" % (cl, cl, cl)
 
@@ -649,7 +682,8 @@ def selftest() -> int:
 def main(argv=None):
     ap = argparse.ArgumentParser(description="FFN NGFW CPU plane / proc-splitting")
     ap.add_argument("--conf", default=DEFAULT_CONF)
-    ap.add_argument("--data-frac", type=float, default=0.5)
+    ap.add_argument("--data-frac", type=float, default=None)
+    ap.add_argument("--auto", action="store_true", help="Generate a fresh detected plan instead of using saved/running assignments")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("selftest")
     sub.add_parser("show")
@@ -663,7 +697,7 @@ def main(argv=None):
     if args.cmd == "selftest":
         return selftest()
 
-    if args.cmd == "plan":
+    if args.cmd == "plan" or args.auto:
         cp = CpuPlanes.auto(data_frac=args.data_frac)
     else:
         cp = CpuPlanes.from_system(args.conf, data_frac=args.data_frac)
