@@ -254,12 +254,14 @@ class Plan:
         self.decl_path: Optional[str] = None
         self.ncpu: int = 0
         self.cpu_role: str = "shared"
+        self.planes: Dict[str, List[int]] = {}
 
     def as_dict(self) -> Dict:
         return {
             "platform": self.platform,
             "datapath": self.datapath,
             "cpu_role": self.cpu_role,
+            "planes": self.planes,
             "declaration": self.decl_path,
             "isolate": self.isolate,
             "isolated_cores": format_cpu_list(self.cores),
@@ -279,16 +281,20 @@ def physical_cores(ncpu: int, sibs: Dict[int, List[int]],
     With no sysfs topology every CPU is its own group, which is the right
     degradation: it just means no SMT pairing is applied.
     """
-    groups: List[List[int]] = []
-    seen: set = set()
     available = set(range(ncpu) if cpu_ids is None else cpu_ids)
+    parent = {c: c for c in available}
+    def owner(c):
+        while parent[c] != c:
+            parent[c] = parent[parent[c]]
+            c = parent[c]
+        return c
     for c in sorted(available):
-        if c in seen:
-            continue
-        g = sorted(set(sibs.get(c, [c])) & available) or [c]
-        seen.update(g)
-        groups.append(g)
-    return groups
+        for sibling in set(sibs.get(c, [])) & available:
+            parent[owner(sibling)] = owner(c)
+    grouped = {}
+    for c in sorted(available):
+        grouped.setdefault(owner(c), []).append(c)
+    return sorted(grouped.values(), key=lambda group: group[0])
 
 
 def _pick_dpdk_cores(ncpu: int, sibs: Dict[int, List[int]],
@@ -389,7 +395,9 @@ def decide(inv: Optional[Dict] = None, decl: Optional[Dict] = None,
         return p
 
     if sibs is None:
-        sibs = smt_siblings()
+        topology = cpu_info.get("topology", [])
+        sibs = ({row['cpu']: row.get('siblings') or [row['cpu']] for row in topology}
+                if topology else (smt_siblings() if inv is None else {}))
 
     # ---- 1. the platform says isolation does not apply ------------------
     if mode == "none":
@@ -428,8 +436,15 @@ def decide(inv: Optional[Dict] = None, decl: Optional[Dict] = None,
                 "few for the management and control planes. DPDK will still run, "
                 "sharing cores with the scheduler." % ncpu)
             return p
-        frac = float(decl.get("data_fraction", 0.5))
-        cores, warns = _pick_dpdk_cores(ncpu, sibs, nic_node, frac, cpu_ids)
+        if 'data_fraction' in decl:
+            cores, warns = _pick_dpdk_cores(ncpu, sibs, nic_node, float(decl['data_fraction']), cpu_ids)
+        else:
+            from ffn_cpu_planes import balanced_plan
+            p.planes = balanced_plan(cpu_ids, sibs)
+            cores = p.planes['data']
+            if set(cores) & set(p.planes['mgmt']):
+                cores = []
+            warns = []
         p.cores = cores
         p.warnings.extend(warns)
         p.isolate = bool(cores)
@@ -437,6 +452,8 @@ def decide(inv: Optional[Dict] = None, decl: Optional[Dict] = None,
             "datapath=dpdk on generic hardware: a poll-mode driver spins at "
             "100% and never yields, so its cores are isolated from the "
             "scheduler, the timer tick and RCU callbacks.")
+        if not cores:
+            p.reason = "Too few physical cores for separate MP/CP/DP pools; CPUs remain shared."
 
     # ---- shared post-processing for the isolating cases -----------------
     p.cores = [c for c in sorted(set(p.cores)) if c in cpu_ids]
@@ -735,7 +752,7 @@ def selftest() -> int:
                      "cpu_isolation": "auto"}, ncpu=16, mem_gb=64, sibs={})
     check("isolate is False", p.isolate is False)
 
-    print("[3] generic DPDK host isolates the top half, never CPU 0")
+    print("[3] generic DPDK host gives DP the largest pool, never CPU 0")
     p = decide(decl=None, ncpu=16, mem_gb=64, sibs={})
     check("isolates", p.isolate is True)
     check("0 not isolated", 0 not in p.cores, format_cpu_list(p.cores))
@@ -793,7 +810,7 @@ def selftest() -> int:
     check("isolates", p.isolate is True)
     check("leaves more than 2 housekeeping cores", len(p.housekeeping) > 2,
           "housekeeping=%s" % format_cpu_list(p.housekeeping))
-    check("isolates about half, not almost all", len(p.cores) <= 28,
+    check("DP gets three quarters, retaining MP and CP", len(p.cores) == 36,
           "isolated %d of 48" % len(p.cores))
     check("no split SMT core",
           all(all(s in p.cores for s in sibs48[c]) for c in p.cores),
