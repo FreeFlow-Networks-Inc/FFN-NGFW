@@ -9463,6 +9463,8 @@ async def _platform_profile() -> dict:
         return d
 
     features = {
+        "plane_control": feat(bool(os.environ.get("FFN_PLANE_SOCKET")), bool(os.environ.get("FFN_PLANE_SOCKET")),
+                              "Control daemon must be explicitly selected"),
         # The host-side datapaths. Both are FFN's own board's design; an
         # offload chassis has neither and needs neither.
         "dpdk": feat(datapath == "dpdk", dpdk_running,
@@ -12308,6 +12310,9 @@ _install_patch_api(app, get_current_user, _require_admin, _extension_audit, _upd
 
 from ffn_config_objects import install as _install_object_api
 _install_object_api(app, get_current_user, _require_admin, _extension_audit, config_mgr, CANDIDATE_CONFIG)
+
+from ffn_plane_api import install as _install_plane_api
+_install_plane_api(app, get_current_user, _require_admin, _extension_audit)
 
 
 if __name__ == "__main__":

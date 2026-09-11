@@ -1,0 +1,10 @@
+{
+  "role": "mp",
+  "peer": [
+    "/usr/bin/python3",
+    "/usr/local/lib/ffn/ffn_planed.py",
+    "call",
+    "--socket",
+    "/run/ffn-plane-dp/control.sock"
+  ]
+}

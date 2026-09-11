@@ -1,0 +1,35 @@
+{
+  "role": "dp",
+  "commands": {
+    "network": {
+      "status": [
+        "/usr/bin/python3",
+        "/usr/local/lib/ffn/ffn_linux_network.py",
+        "status",
+        "--backend",
+        "native"
+      ],
+      "validate": [
+        "/usr/bin/python3",
+        "/usr/local/lib/ffn/ffn_linux_network.py",
+        "validate",
+        "--backend",
+        "native"
+      ],
+      "apply": [
+        "/usr/bin/python3",
+        "/usr/local/lib/ffn/ffn_linux_network.py",
+        "patch",
+        "--backend",
+        "native"
+      ],
+      "lookup": [
+        "/usr/bin/python3",
+        "/usr/local/lib/ffn/ffn_linux_network.py",
+        "lookup",
+        "--backend",
+        "native"
+      ]
+    }
+  }
+}
