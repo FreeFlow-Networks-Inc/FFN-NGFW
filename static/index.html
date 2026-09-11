@@ -1029,9 +1029,10 @@ async function doCommit() {
     }
     if (data.status === 'committed') {
       const apply = data.apply_status;
-      const applied = apply && apply.overall === 'applied' && !(apply.errors || []).length && !(apply.validation_errors || []).length;
+      const skipped = apply && (apply.skipped || []).length || 0;
+      const applied = apply && apply.overall === 'applied' && !(apply.errors || []).length && !(apply.validation_errors || []).length && !skipped;
       msg.textContent = `Configuration saved (${data.type}) — snapshot: ${data.snapshot}. ` +
-        (applied ? 'Applied successfully.' : `Apply status: ${apply && apply.overall || 'not reported'}. Open Tasks for details.`);
+        (applied ? 'Applied successfully.' : `Apply status: ${apply && apply.overall || 'not reported'}${skipped ? '; '+skipped+' settings skipped' : ''}. Open Tasks for details.`);
       msg.style.color = applied ? 'var(--green)' : 'var(--orange)';
       await loadCommitDiff();
       await refreshCommitIndicator();
@@ -4479,154 +4480,103 @@ const ZONE_TYPES = [
   {value:'external',     label:'External'},
 ];
 
-let _zonesVsys = 'vsys1';
-
+let _zonesVsys = 'vsys1', zoneSnapshot = null, zoneRequestId = 0;
 function renderNetworkZones(c) {
-  c.innerHTML = `
-    <div class="page-header"><h2>Security Zones</h2>
-      <div class="actions">
-        <select id="zones-vsys-select" onchange="loadZones()" style="margin-right:8px"></select>
-        <button class="btn btn-primary btn-sm" onclick="openZoneModal()">+ Add Zone</button>
-      </div>
-    </div>
-    <p class="text-dim" style="font-size:11px;margin-bottom:10px">
-      Zones scope security policy. Each zone belongs to a vsys and has a type matching
-      the interfaces attached to it. Assigning an interface to a zone writes
-      <code>vsys/entry[@name=X]/zone/entry[@name=Y]/network/&lt;type&gt;/member</code>.
-    </p>
-    <div class="card"><div class="table-wrap">
-      <table>
-        <thead><tr>
-          <th>Zone</th><th>Type</th><th>Interfaces</th><th>User-ID</th>
-          <th>Protection Profile</th><th>Log Setting</th><th>Comment</th><th></th>
-        </tr></thead>
-        <tbody id="zones-tbody"></tbody>
-      </table>
-    </div></div>`;
-  loadZonesVsysList().then(loadZones);
+  zoneSnapshot = null;
+  c.innerHTML = `<div class="page-header"><h2>Zones</h2></div>
+    <div class="filters-bar"><label>Virtual System <select id="zones-vsys-select" onchange="loadZones()"></select></label>
+      <label>Configuration <select id="zones-source" onchange="loadZones()"><option value="candidate">Candidate</option><option value="running">Running</option></select></label>
+      <button class="btn" onclick="loadZones()">Refresh</button><button id="zones-add" class="btn btn-primary" disabled onclick="openZoneModal()">Add</button></div>
+    <p id="zones-notice" role="status" class="mb-8">Loading virtual systems…</p>
+    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Interfaces</th><th>User-ID</th><th>Protection Profile</th><th>Log Setting</th><th>Comment</th><th>Actions</th></tr></thead><tbody id="zones-tbody"></tbody></table></div>`;
+  loadZonesVsysList();
 }
-
 async function loadZonesVsysList() {
-  const d = await api('/api/vsys');
-  const sel = document.getElementById('zones-vsys-select');
-  if (!sel) return;
-  const entries = (d && d.entries) || [{name:'vsys1'}];
-  sel.innerHTML = entries.map(v=>`<option value="${_escSP(v.name)}" ${v.name===_zonesVsys?'selected':''}>${_escSP(v.name)} (${_escSP(v.display_name||v.name)})</option>`).join('');
+  const select = document.getElementById('zones-vsys-select');
+  try {
+    const data = await consoleRequest('/api/vsys');
+    if (!select.isConnected) return;
+    if (!Array.isArray(data.entries) || !data.entries.length) throw new Error('No virtual systems are configured.');
+    select.innerHTML = data.entries.map(v=>`<option value="${_escSP(v.name)}">${_escSP(v.display_name || v.name)}</option>`).join('');
+    if (data.entries.some(v=>v.name===_zonesVsys)) select.value = _zonesVsys;
+    await loadZones();
+  } catch(e) { if(select.isConnected) document.getElementById('zones-notice').textContent = e.message; }
 }
-
 async function loadZones() {
-  const sel = document.getElementById('zones-vsys-select');
-  _zonesVsys = sel ? sel.value : 'vsys1';
-  const d = await api(`/api/vsys/${encodeURIComponent(_zonesVsys)}/zones`);
-  const tbody = document.getElementById('zones-tbody');
-  if (!tbody) return;
-  const entries = (d && d.entries) || [];
-  if (!entries.length) {
-    tbody.innerHTML = `<tr><td colspan="8" class="text-dim">No zones in ${_escSP(_zonesVsys)}. Click <strong>+ Add Zone</strong> to create one.</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = entries.map((z,i)=>`<tr>
-    <td><strong>${_escSP(z.name)}</strong></td>
-    <td><span class="badge" style="background:#1a4f9e;color:#fff">${_escSP(z.zone_type)}</span></td>
-    <td class="mono" style="font-size:10px">${_escSP((z.interfaces||[]).join(', ')||'--')}</td>
-    <td>${z.enable_user_identification?'<span class="badge badge-up">on</span>':'<span class="text-dim">off</span>'}</td>
-    <td>${_escSP(z.zone_protection_profile||'--')}</td>
-    <td>${_escSP(z.log_setting||'--')}</td>
-    <td class="text-dim" style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${_escSP(z.comment||'')}</td>
-    <td>
-      <button class="btn btn-xs" data-zone="${i}" data-action="edit">Edit</button>
-      <button class="btn btn-xs btn-danger" data-zone="${i}" data-action="delete">Del</button>
-    </td>
-  </tr>`).join('');
-  tbody.onclick = event => {
-    const button = event.target.closest('[data-zone]'); if (!button) return;
-    const zone = entries[Number(button.dataset.zone)]; if (!zone) return;
-    if (button.dataset.action === 'edit') editZone(zone);
-    else if (button.dataset.action === 'delete') deleteZone(zone.name);
-  };
+  const id = ++zoneRequestId, notice = document.getElementById('zones-notice'), body = document.getElementById('zones-tbody');
+  const vsys = document.getElementById('zones-vsys-select').value;
+  if (!vsys) return;
+  _zonesVsys = vsys; zoneSnapshot = null;
+  document.getElementById('zones-add').disabled = true;
+  notice.textContent = 'Loading zones…'; body.innerHTML = '';
+  try {
+    const source = document.getElementById('zones-source').value;
+    const result = await consoleRequest(`/api/vsys/${encodeURIComponent(vsys)}/zones?source=${source}`);
+    if (id !== zoneRequestId || !body.isConnected) return;
+    zoneSnapshot = result;
+    document.getElementById('zones-add').disabled = !result.can_edit;
+    notice.textContent = (source==='running'?'Running configuration is read-only. ':'Candidate changes require Commit. ') + result.enforcement;
+    body.innerHTML = result.entries.map((z,i)=>`<tr><td>${_escSP(z.name)}</td><td>${_escSP(z.zone_type)}</td>
+      <td>${_escSP(z.interfaces.join(', ') || '—')}</td><td>${z.enable_user_identification?'Enabled':'Disabled'}</td>
+      <td>${_escSP(z.zone_protection_profile || '—')}</td><td>${_escSP(z.log_setting || '—')}</td><td>${_escSP(z.comment)}</td>
+      <td><button class="btn btn-xs" data-zone="${i}" data-action="edit" ${result.can_edit&&z.editable?'':'disabled'}>Edit</button>
+      <button class="btn btn-xs" data-zone="${i}" data-action="delete" ${result.can_edit?'':'disabled'}>Delete</button></td></tr>`).join('') || '<tr><td colspan="8">No zones in this virtual system.</td></tr>';
+    body.onclick = event => {
+      const button = event.target.closest('[data-zone]');
+      if (!button || button.disabled || result !== zoneSnapshot) return;
+      const zone = result.entries[Number(button.dataset.zone)];
+      if (button.dataset.action === 'edit') openZoneModal(zone); else deleteZone(zone.name);
+    };
+  } catch(e) { if(id===zoneRequestId && body.isConnected) notice.textContent = 'Unable to load zones: '+e.message; }
 }
-
 function openZoneModal(existing) {
-  const modeOpts = ZONE_TYPES.map(t=>`<option value="${t.value}">${t.label}</option>`).join('');
-  // Build available interface list
-  const allIfs = [
-    ...(_ifaceState.configured.ethernet||[]).map(e=>e.name),
-    ...(_ifaceState.configured['aggregate-ethernet']||[]).map(e=>e.name),
-  ];
-  for (const eth of _ifaceState.configured.ethernet||[]) {
-    (eth.sub_interfaces||[]).forEach(s=>allIfs.push(s));
-  }
-  const ifsOpts = allIfs.map(n=>`<option value="${n}">${n}</option>`).join('');
-
-  document.getElementById('info-modal-title').textContent = (existing?'Edit':'Create')+' Zone';
-  document.getElementById('info-modal-body').innerHTML = `
-    <div class="form-group"><label>Name</label><input id="zm-name" type="text" style="width:100%" ${existing?'readonly':''}></div>
-    <div class="form-group"><label>Type</label><select id="zm-type" style="width:100%">${modeOpts}</select></div>
-    <div class="form-group"><label>Interfaces (hold Ctrl to multi-select)</label>
-      <select id="zm-ifs" multiple size="6" style="width:100%">${ifsOpts}</select>
-    </div>
-    <div class="form-row">
-      <div class="form-group"><label>Enable User-ID</label><select id="zm-userid" style="width:100%"><option value="no">No</option><option value="yes">Yes</option></select></div>
-      <div class="form-group"><label>Protection Profile</label><input id="zm-prot" type="text" style="width:100%" placeholder="e.g. strict"></div>
-      <div class="form-group"><label>Log Setting</label><input id="zm-log" type="text" style="width:100%"></div>
-    </div>
-    <div class="form-group"><label>Comment</label><input id="zm-comment" type="text" style="width:100%" placeholder="Describe this zone's purpose"></div>
-    <div style="margin-top:12px;display:flex;gap:8px">
-      <button class="btn btn-primary btn-sm" onclick="saveZone(${existing?`'${existing.name}'`:'null'})">Save to Candidate</button>
-      <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
-      <span id="zm-msg" style="font-size:11px;align-self:center"></span>
-    </div>`;
-
-  if (existing) {
-    document.getElementById('zm-name').value = existing.name;
-    document.getElementById('zm-type').value = existing.zone_type || 'layer3';
-    const sel = document.getElementById('zm-ifs');
-    for (const opt of sel.options) {
-      opt.selected = (existing.interfaces||[]).includes(opt.value);
-    }
-    document.getElementById('zm-userid').value = existing.enable_user_identification ? 'yes':'no';
-    document.getElementById('zm-prot').value = existing.zone_protection_profile || '';
-    document.getElementById('zm-log').value = existing.log_setting || '';
-    document.getElementById('zm-comment').value = existing.comment || '';
-  }
+  const snapshot = zoneSnapshot;
+  if (!snapshot || !snapshot.can_edit) return;
+  const zone = existing || {name:'',zone_type:'layer3',interfaces:[],comment:''};
+  const choices = [...snapshot.interface_choices];
+  for (const name of zone.interfaces) if (!choices.some(c=>c.name===name)) choices.push({name,mode:'unresolved',zone:zone.name});
+  document.getElementById('info-modal-title').textContent = existing?'Edit Zone: '+zone.name:'New Zone';
+  document.getElementById('info-modal-body').innerHTML = `<form id="zone-form">
+    <div class="form-group"><label for="zm-name">Name</label><input id="zm-name" required maxlength="63" pattern="[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}" ${existing?'readonly':''} value="${_escSP(zone.name)}"></div>
+    <div class="form-group"><label for="zm-type">Type</label><select id="zm-type">${ZONE_TYPES.map(t=>`<option value="${t.value}" ${zone.zone_type===t.value?'selected':''}>${t.label}</option>`).join('')}</select></div>
+    <div class="form-group"><label for="zm-ifs">Interfaces</label><select id="zm-ifs" multiple size="6">${choices.map(c=>`<option value="${_escSP(c.name)}" ${zone.interfaces.includes(c.name)?'selected':''} ${c.zone&&c.zone!==zone.name?'disabled':''}>${_escSP(c.name)} · ${_escSP(c.mode)}${c.zone?' · '+_escSP(c.zone):''}</option>`).join('')}</select>
+    <p class="text-dim">Select interfaces matching the zone type. Interfaces assigned to another zone cannot be selected. Unresolved existing members are retained.</p></div>
+    <div class="form-row"><div class="form-group"><label for="zm-userid">User Identification</label><select id="zm-userid"><option value="no">Disabled</option><option value="yes" ${zone.enable_user_identification?'selected':''}>Enabled</option></select></div>
+    <div class="form-group"><label for="zm-prot">Protection Profile</label><input id="zm-prot" maxlength="63" value="${_escSP(zone.zone_protection_profile || '')}"></div>
+    <div class="form-group"><label for="zm-log">Log Setting</label><input id="zm-log" maxlength="63" value="${_escSP(zone.log_setting || '')}"></div></div>
+    <div class="form-group"><label for="zm-comment">Comment</label><input id="zm-comment" maxlength="1024" value="${_escSP(zone.comment)}"></div>
+    <p class="text-dim">${_escSP(snapshot.enforcement)}</p>
+    <div class="settings-toolbar"><span id="zm-msg" role="status"></span><button class="btn" type="button" onclick="closeModal('modal-info')">Cancel</button><button id="zm-save" class="btn btn-primary" type="submit">Save to Candidate</button></div></form>`;
+  document.getElementById('zone-form').onsubmit = event => {event.preventDefault();saveZone(existing&&existing.name,snapshot);};
   document.getElementById('modal-info').classList.add('show');
+  document.getElementById('zm-name').focus();
 }
-
-function editZone(z) { openZoneModal(z); }
-
-async function saveZone(existingName) {
-  const selIfs = Array.from(document.getElementById('zm-ifs').selectedOptions).map(o=>o.value);
-  const body = {
-    name: document.getElementById('zm-name').value.trim(),
-    zone_type: document.getElementById('zm-type').value,
-    interfaces: selIfs,
-    enable_user_identification: document.getElementById('zm-userid').value === 'yes',
-    zone_protection_profile: document.getElementById('zm-prot').value.trim(),
-    log_setting: document.getElementById('zm-log').value.trim(),
-    comment: document.getElementById('zm-comment').value,
-  };
-  if (!body.name) { document.getElementById('zm-msg').textContent='Name required'; document.getElementById('zm-msg').style.color='var(--red)'; return; }
-  let r;
-  if (existingName) {
-    r = await api(`/api/vsys/${encodeURIComponent(_zonesVsys)}/zones/${encodeURIComponent(existingName)}`, {method:'PUT', body: JSON.stringify(body)});
-  } else {
-    r = await api(`/api/vsys/${encodeURIComponent(_zonesVsys)}/zones`, {method:'POST', body: JSON.stringify(body)});
-  }
-  if (r && (r.status==='created' || r.status==='updated')) {
+async function saveZone(existingName, snapshot) {
+  if (!snapshot || !snapshot.can_edit) return;
+  const message = document.getElementById('zm-msg'), button = document.getElementById('zm-save');
+  if (button.disabled) return;
+  const payload = {revision:snapshot.revision,name:document.getElementById('zm-name').value.trim(),zone_type:document.getElementById('zm-type').value,
+    interfaces:Array.from(document.getElementById('zm-ifs').selectedOptions).map(o=>o.value),
+    enable_user_identification:document.getElementById('zm-userid').value==='yes',zone_protection_profile:document.getElementById('zm-prot').value.trim(),
+    log_setting:document.getElementById('zm-log').value.trim(),comment:document.getElementById('zm-comment').value};
+  button.disabled = true; message.textContent = 'Saving…';
+  try {
+    const path = `/api/vsys/${encodeURIComponent(snapshot.vsys)}/zones`+(existingName?'/'+encodeURIComponent(existingName):'');
+    const result = await consoleRequest(path,{method:existingName?'PUT':'POST',body:JSON.stringify(payload)});
+    if (!['created','updated'].includes(result.status)) throw new Error('Candidate update was not confirmed.');
     refreshCommitIndicator();
-    loadZones();
-    closeModal('modal-info');
-  } else {
-    document.getElementById('zm-msg').textContent = (r&&r.detail)||'Save failed';
-    document.getElementById('zm-msg').style.color = 'var(--red)';
-  }
+    if (message.isConnected) {message.textContent='Saved to candidate. Commit required.';button.textContent='Saved';}
+    if(zoneSnapshot===snapshot) await loadZones();
+  } catch(e) {if(message.isConnected){message.textContent=e.message;button.disabled=false;}}
 }
-
 async function deleteZone(name) {
-  if (!confirm(`Delete zone ${name} from ${_zonesVsys}?`)) return;
-  await api(`/api/vsys/${encodeURIComponent(_zonesVsys)}/zones/${encodeURIComponent(name)}`, {method:'DELETE'});
-  refreshCommitIndicator();
-  loadZones();
+  const snapshot = zoneSnapshot;
+  if (!snapshot || !snapshot.can_edit || !confirm('Delete zone '+name+' from candidate configuration?')) return;
+  const notice = document.getElementById('zones-notice');
+  try {
+    await consoleRequest(`/api/vsys/${encodeURIComponent(snapshot.vsys)}/zones/${encodeURIComponent(name)}?revision=${encodeURIComponent(snapshot.revision)}`,{method:'DELETE'});
+    refreshCommitIndicator(); if(zoneSnapshot===snapshot) await loadZones();
+  } catch(e) {if(notice.isConnected) notice.textContent='Unable to delete zone: '+e.message;}
 }
 
 /* ---- Network > VLANs ---- */

@@ -114,6 +114,10 @@ const run = code => vm.runInContext(code,context);
     assert.equal(element('commit-msg').textContent.includes('Applied successfully'),overall==='applied');
   }
   context.loadInterfacesFull=()=>{};
+  context.fetch=async()=>({ok:true,status:200,json:async()=>({status:'committed',type:'full',snapshot:'v8',apply_status:{overall:'applied',skipped:[{xpath:'zone-reconcile'}]}})});
+  await context.doCommit();
+  assert.match(element('commit-msg').textContent,/1 settings skipped/);
+  assert.equal(element('commit-msg').style.color,'var(--orange)');
   element('ifm-name').value='ethernet1/1'; element('ifm-mode').value='layer3';
   element('ifm-vr').value='default'; element('ifm-vr').dataset.original='default';
   const writes=[];
@@ -130,5 +134,18 @@ const run = code => vm.runInContext(code,context);
   element('ifm-ip').value='192.0.2.1/24';
   context.switchIfaceEditorTab('advanced');context.switchIfaceEditorTab('config');
   assert.equal(element('ifm-ip').value,'192.0.2.1/24');
+  element('zones-vsys-select').value='vsys1'; element('zones-source').value='candidate';
+  context.fetch=async()=>({ok:true,status:200,json:async()=>({vsys:'vsys1',revision:'a'.repeat(64),can_edit:true,
+    entries:[{name:'<img src=x>',zone_type:'layer3',interfaces:['ethernet1/1'],editable:true,comment:'test'}],
+    interface_choices:[{name:'ethernet1/1',mode:'layer3'}],enforcement:'Not enforced'})});
+  await context.loadZones();
+  assert.equal(element('zones-add').disabled,false);
+  assert(!element('zones-tbody').innerHTML.includes('<img'));
+  context.openZoneModal();
+  assert.match(element('info-modal-body').innerHTML,/ethernet1\/1/,'Zone editor loads its own interface choices');
+  context.fetch=async()=>({ok:false,status:503,json:async()=>({detail:'Unavailable'})});
+  await context.loadZones();
+  assert.equal(element('zones-add').disabled,true);
+  assert.match(element('zones-notice').textContent,/Unable to load zones/);
   console.log('Complete UI initialization, unique navigation, role/error handling, escaping and partial settings saves passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});

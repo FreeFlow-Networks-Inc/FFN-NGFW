@@ -10595,88 +10595,33 @@ async def vsys_delete(name: str, user: dict = Depends(get_current_user)):
 # --------------------------------------------------------------------------
 
 
-class ZoneEntry(BaseModel):
-    name: str
-    zone_type: str = "layer3"      # layer3 | layer2 | virtual-wire | tap | tunnel | external
-    interfaces: list = []          # interface names (members)
-    enable_user_identification: bool = False
-    zone_protection_profile: str = ""
-    log_setting: str = ""
-    comment: str = ""
-
-
-ZONE_TYPES = {"layer3", "layer2", "virtual-wire", "tap", "tunnel", "external"}
-
+from ffn_config_zones import ZoneEdit as ZoneEntry, ZoneStore, ZONE_TYPES
 
 @app.get("/api/vsys/{vsys}/zones")
-async def zone_list(vsys: str, user: dict = Depends(get_current_user)):
-    node = config_mgr.get_xpath(f"{DEV}.vsys.entry[@name={vsys}].zone", source="candidate")
-    entries = []
-    if node is not None:
-        for e in node.findall("entry"):
-            # Identify zone type by which <network> sub-tag is present
-            net = e.find("network") or ET.Element("_")
-            zt = next((c.tag for c in net if c.tag in ZONE_TYPES), "layer3")
-            ifs = [m.text for m in net.findall(f"./{zt}/member") if m.text]
-            entries.append({
-                "name": e.get("name"),
-                "zone_type": zt,
-                "interfaces": ifs,
-                "enable_user_identification": e.findtext("enable-user-identification", "no") == "yes",
-                "zone_protection_profile": e.findtext("./network/zone-protection-profile", ""),
-                "log_setting": e.findtext("./network/log-setting", ""),
-                "comment": e.findtext("comment", ""),
-            })
-    return {"vsys": vsys, "entries": entries}
-
+async def zone_list(vsys: str, source: str = "candidate", user: dict = Depends(get_current_user)):
+    if source not in ("candidate", "running"):
+        raise HTTPException(422, "Source must be candidate or running")
+    result = ZoneStore(config_mgr, CANDIDATE_CONFIG).listing(vsys, source)
+    result["can_edit"] = source == "candidate" and user.get("role") in ADMIN_ROLES
+    return result
 
 @app.post("/api/vsys/{vsys}/zones")
 async def zone_create(vsys: str, z: ZoneEntry, user: dict = Depends(get_current_user)):
-    _require_lock(user)
-    if z.zone_type not in ZONE_TYPES:
-        raise HTTPException(status_code=400, detail=f"zone_type must be one of {sorted(ZONE_TYPES)}")
-    xp = f"{DEV}.vsys.entry[@name={vsys}].zone.entry[@name={z.name}]"
-    payload = {
-        "network": {
-            z.zone_type: z.interfaces or None,
-        },
-        "enable-user-identification": "yes" if z.enable_user_identification else "no",
-        "comment": z.comment,
-    }
-    if z.zone_protection_profile:
-        payload["network"]["zone-protection-profile"] = z.zone_protection_profile
-    if z.log_setting:
-        payload["network"]["log-setting"] = z.log_setting
-    config_mgr.update_candidate(xp, payload, user["username"])
+    result = ZoneStore(config_mgr, CANDIDATE_CONFIG).mutate(vsys, z.name, z.revision, user, z, True)
     await _audit(user, "zone_create", f"{vsys}/{z.name}")
-    return {"status": "created", "vsys": vsys, "zone": z.name, "type": z.zone_type}
-
+    return result
 
 @app.put("/api/vsys/{vsys}/zones/{name}")
-async def zone_update(vsys: str, name: str, z: ZoneEntry,
-                      user: dict = Depends(get_current_user)):
-    _require_lock(user)
-    xp = f"{DEV}.vsys.entry[@name={vsys}].zone.entry[@name={name}]"
-    # Full replace — simpler + matches PAN-OS semantics
-    payload = {
-        "network": {z.zone_type: z.interfaces or None},
-        "enable-user-identification": "yes" if z.enable_user_identification else "no",
-        "comment": z.comment,
-    }
-    if z.zone_protection_profile:
-        payload["network"]["zone-protection-profile"] = z.zone_protection_profile
-    config_mgr.update_candidate(xp, payload, user["username"])
+async def zone_update(vsys: str, name: str, z: ZoneEntry, user: dict = Depends(get_current_user)):
+    result = ZoneStore(config_mgr, CANDIDATE_CONFIG).mutate(vsys, name, z.revision, user, z)
     await _audit(user, "zone_update", f"{vsys}/{name}")
-    return {"status": "updated"}
-
+    return result
 
 @app.delete("/api/vsys/{vsys}/zones/{name}")
-async def zone_delete(vsys: str, name: str, user: dict = Depends(get_current_user)):
-    _require_lock(user)
-    r = config_mgr.delete_candidate(
-        f"{DEV}.vsys.entry[@name={vsys}].zone.entry[@name={name}]", user["username"])
+async def zone_delete(vsys: str, name: str, revision: str, user: dict = Depends(get_current_user)):
+    result = ZoneStore(config_mgr, CANDIDATE_CONFIG).mutate(vsys, name, revision, user)
     await _audit(user, "zone_delete", f"{vsys}/{name}")
-    return r
+    return result
 
 
 # --------------------------------------------------------------------------
