@@ -7,7 +7,7 @@ const script = [...html.matchAll(/<script(?![^>]*src=)[^>]*>([\s\S]*?)<\/script>
 const elements = new Map();
 const element = id => {
   if (!elements.has(id)) elements.set(id, {innerHTML:'',textContent:'',value:'',isConnected:true,
-    disabled:false, style:{}, classList:{add(){},remove(){},toggle(){}},addEventListener(){},focus(){},setSelectionRange(){}});
+    disabled:false, style:{}, dataset:{}, setAttribute(key,value){this[key]=value;}, classList:{add(){},remove(){},toggle(){}},addEventListener(){},focus(){},setSelectionRange(){}});
   return elements.get(id);
 };
 const context = vm.createContext({console, window:{}, localStorage:{getItem(){return '';},removeItem(){}},
@@ -22,6 +22,12 @@ const run = code => vm.runInContext(code,context);
   context.switchTab('device');
   assert.equal(run('currentSubPage'), 'setup', 'First Device click must skip section headings');
   assert(element('content-area').innerHTML.includes('General Settings'));
+  element('setup-hostname').value='unsaved-name';
+  context.switchSetupTab('services');
+  assert.equal(element('setup-panel-management').hidden,true);
+  assert.equal(element('setup-panel-services').hidden,false);
+  context.switchSetupTab('management');
+  assert.equal(element('setup-hostname').value,'unsaved-name','Setup tab switches preserve edits');
   const menus=run('TAB_MENUS');
   const ids=Object.values(menus).flat().filter(x=>x.id).map(x=>x.id);
   assert.equal(new Set(ids).size,ids.length,'Every page must have one menu owner');
@@ -107,5 +113,22 @@ const run = code => vm.runInContext(code,context);
     assert.equal(element('commit-msg').style.color,overall==='applied'?'var(--green)':'var(--orange)');
     assert.equal(element('commit-msg').textContent.includes('Applied successfully'),overall==='applied');
   }
+  context.loadInterfacesFull=()=>{};
+  element('ifm-name').value='ethernet1/1'; element('ifm-mode').value='layer3';
+  element('ifm-vr').value='default'; element('ifm-vr').dataset.original='default';
+  const writes=[];
+  context.fetch=async(path)=>{writes.push(path);return {ok:true,status:200,json:async()=>({status:'created'})};};
+  await context.saveIface();
+  assert.deepEqual(writes,['/api/interfaces/ethernet1%2F1'],'Unchanged VR must not trigger a runtime write');
+  element('ifm-vr').value='new-router';
+  context.fetch=async(path)=>path.endsWith('/virtual-router') ?
+    {ok:false,status:503,json:async()=>({detail:'MP unavailable'})} :
+    {ok:true,status:200,json:async()=>({status:'created'})};
+  await context.saveIface();
+  assert.match(element('ifm-msg').textContent,/Interface saved to candidate; virtual-router assignment failed: MP unavailable/);
+  assert.equal(element('ifm-vr').dataset.original,'default','Failed VR write must remain retryable');
+  element('ifm-ip').value='192.0.2.1/24';
+  context.switchIfaceEditorTab('advanced');context.switchIfaceEditorTab('config');
+  assert.equal(element('ifm-ip').value,'192.0.2.1/24');
   console.log('Complete UI initialization, unique navigation, role/error handling, escaping and partial settings saves passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});

@@ -8,6 +8,18 @@
   --radius:2px;--sidebar-w:218px;--topnav-h:82px;--footer-h:28px;
 }
 body {font-family:Arial,Helvetica,sans-serif;font-size:12px}
+[hidden] {display:none!important}
+.setup-settings {max-width:720px}
+.setup-settings .form-group {display:grid;grid-template-columns:150px minmax(0,1fr);align-items:center;gap:10px}
+.setup-settings .form-group label {margin:0}
+.settings-toolbar {display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:10px 0;margin-top:12px;border-top:1px solid var(--border)}
+.settings-toolbar [role=status] {flex-basis:100%}
+#setup-panel-operations .page-header {margin:0 0 12px;background:transparent;border:0;padding-left:0}
+.modal:has(#ifm-name) {width:760px}
+.modal:has(#ifm-name) > .form-actions {display:none}
+#info-modal-body:has(#ifm-name) {line-height:1.5!important}
+#info-modal-body:has(#ifm-name) .settings-toolbar {justify-content:flex-end}
+#ifm-panel-config,#ifm-panel-advanced {min-height:260px}
 .topnav {height:82px;padding:0;display:grid;grid-template-columns:auto 1fr;grid-template-rows:44px 38px;gap:0;background:#34383c;color:#fff;border:0;align-content:stretch}
 .topnav .brand {grid-row:1;grid-column:1;margin:0;padding:0 18px;font-size:17px;color:#fff;letter-spacing:.2px}
 .topnav .brand svg {width:26px;height:26px}

@@ -25,3 +25,25 @@ an archive of all daemon jobs.
 Verification: full console script execution, navigation, hardware and extension
 renderer regressions, patch and plane UI tests, task error/escaping tests, commit
 partial-failure handling, and browser review of Device, Interfaces, and Tasks.
+
+## Setup and interface workflows
+
+Device > Setup groups Management (hostname/timezone), Services (DNS/NTP), and
+Operations (existing configuration/snapshot actions). In-page tab changes retain
+unsaved field values. The redundant Configuration & Backups sidebar entry is
+removed; its existing direct route remains available. Tabs support arrow keys,
+Home/End, accessible names and selected states.
+
+The interface dialog separates Config from Advanced link/LLDP settings, keeps
+field values when switching tabs, and uses one action row. Saving leaves success
+or failure visible. Unchanged virtual-router membership does not trigger a write;
+failed inventory lookup disables membership editing. A virtual-router write
+failure after a candidate save is explicitly partial, preserves the original
+assignment baseline, and remains retryable. Concurrent duplicate saves are
+blocked while the request is pending. VR assignments still use the existing
+immediate runtime API; the interface candidate itself requires commit.
+
+Verified with fixture browser interactions and regressions for retained edits,
+unchanged VR writes, partial save failure, and candidate/commit state reporting.
+The appliance deployment changes static frontend files only; no configuration
+commit, service restart, or reboot is performed.
