@@ -124,6 +124,12 @@ const run = code => vm.runInContext(code,context);
   context.fetch=async(path)=>{writes.push(path);return {ok:true,status:200,json:async()=>({status:'created'})};};
   await context.saveIface();
   assert.deepEqual(writes,['/api/interfaces/ethernet1%2F1'],'Unchanged VR must not trigger a runtime write');
+  element('ifm-addressing').value='dhcp';element('ifm-ip').value='192.0.2.1/24';
+  let dhcpBody;
+  context.fetch=async(path,opts)=>{dhcpBody=JSON.parse(opts.body);return {ok:true,status:200,json:async()=>({status:'created'})};};
+  await context.saveIface();
+  assert.equal(dhcpBody.dhcp_client,true);assert.deepEqual(dhcpBody.ip_addresses,[]);
+  element('ifm-addressing').value='static';
   element('ifm-vr').value='new-router';
   context.fetch=async(path)=>path.endsWith('/virtual-router') ?
     {ok:false,status:503,json:async()=>({detail:'MP unavailable'})} :
