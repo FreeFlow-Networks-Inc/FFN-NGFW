@@ -272,7 +272,7 @@ class LoginRequest(BaseModel):
     password: str
 
 
-from ffn_policy_validation import validate_policy_rule
+from ffn_policy_validation import validate_policy_rule, policy_compilation_report
 
 
 class PolicyRule(BaseModel):
@@ -5490,8 +5490,11 @@ async def policy_list(show_hidden: bool = False, show_defaults: bool = True, use
         )
         rows = [dict(r) for r in await cursor.fetchall()]
 
+        report = policy_compilation_report(rows)
+        compatibility = {entry["id"]: entry for entry in report["rules"]}
         out = []
         for r in rows:
+            r["compilation"] = compatibility[r["id"]]
             kind = r.get("kind", "user")
             if not show_defaults and kind != "user":
                 continue
@@ -5501,7 +5504,7 @@ async def policy_list(show_hidden: bool = False, show_defaults: bool = True, use
             r["is_default"] = kind != "user"
             r["is_immutable"] = bool(r.get("immutable", 0))
             out.append(r)
-        return {"rules": out, "can_edit": user.get("role") in ADMIN_ROLES, "storage": "policy-database"}
+        return {"rules": out, "can_edit": user.get("role") in ADMIN_ROLES, "storage": "policy-database", "compilation": report}
 
 
 @app.post("/api/policy/rules")
@@ -5624,8 +5627,11 @@ async def _compile_policy_bin(path: str = None) -> dict:
             "       proto, action, vsys, src_iface, dst_iface FROM policy_rules "
             " WHERE enabled=1 AND COALESCE(hidden,0)=0 "
             " ORDER BY position, id")
-        for r in await cur.fetchall():
-            validate_policy_rule(dict(r), compilation=True)
+        selected = [dict(r) for r in await cur.fetchall()]
+        report = policy_compilation_report([{**r, "enabled": True} for r in selected])
+        if not report["valid"]:
+            raise HTTPException(422, {"message": "Policy is not compatible with the fast-path format", "blockers": report["blockers"]})
+        for r in selected:
             src, srcm = _cidr_to_pair(r["src_ip"])
             dst, dstm = _cidr_to_pair(r["dst_ip"])
             sp = int(r["src_port"] or 0)
@@ -5639,7 +5645,7 @@ async def _compile_policy_bin(path: str = None) -> dict:
                 "sport_lo": sp or 0, "sport_hi": sp or 0xFFFF,
                 "dport_lo": dp_ or 0, "dport_hi": dp_ or 0xFFFF,
                 "proto": _proto_to_num(r["proto"]),
-                "vsys": int(r["vsys"] or 0) & 0xFF,
+                "vsys": int(r["vsys"] or 0),
                 # The dataplane's decision codes from ffn_dp_oct.h:
                 # FP_FORWARD_W 0, FP_INSPECT_W 1, FP_DROP_W 3. Inline for the
                 # same reason as the protocol table above.
@@ -5651,7 +5657,7 @@ async def _compile_policy_bin(path: str = None) -> dict:
                 # forwarding, and the dataplane routes when a rule does not name
                 # one. DP_EGRESS_NONE.
                 "egress_port": 0xFFFF,
-                "rule_id": int(r["id"]) & 0xFFFF,
+                "rule_id": int(r["id"]),
             })
 
     c = fpc.FastPathCompiler()
@@ -5675,6 +5681,8 @@ async def policy_compile(user: dict = Depends(get_current_user)):
     _require_admin(user)
     try:
         return await _compile_policy_bin()
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500,
                             detail="policy compile failed: %s" % _public_error(exc))

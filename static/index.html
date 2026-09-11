@@ -2841,7 +2841,7 @@ function renderPolicySecurity(c) {
     <button class="btn" onclick="loadPolicies()">Refresh</button><button id="policy-add" class="btn btn-primary" disabled onclick="openRuleModal()">Add</button></div>
     <p id="policy-notice" role="status" class="mb-8">Loading policy rules…</p>
     <p class="text-dim mb-8">Rules are stored in the policy database. Storage does not confirm dataplane application. Zone and application matching are not implemented here; the fast-path compiler rejects unsupported IPv6, interface and reset conditions.</p>
-    <div class="table-wrap"><table id="policy-table"><thead><tr><th>#</th><th>Name</th><th>Enabled</th><th>Source Interface</th><th>Destination Interface</th><th>Source</th><th>Destination</th><th>Service</th><th>Vsys</th><th>Action</th><th>Hits</th><th>Actions</th></tr></thead><tbody id="policy-table-body"></tbody></table></div>`;
+    <div class="table-wrap"><table id="policy-table"><thead><tr><th>#</th><th>Name</th><th>Enabled</th><th>Source Interface</th><th>Destination Interface</th><th>Source</th><th>Destination</th><th>Service</th><th>Vsys</th><th>Action</th><th>Hits</th><th>Compilation</th><th>Actions</th></tr></thead><tbody id="policy-table-body"></tbody></table></div>`;
   loadPolicies();refreshTimer=setInterval(loadPolicies,10000);
 }
 async function loadPolicies() {
@@ -2853,6 +2853,8 @@ async function loadPolicies() {
     policyRows=data.rules;policyCanEdit=!!data.can_edit;
     document.getElementById('policy-add').disabled=!policyCanEdit;
     document.getElementById('policy-notice').textContent=policyRows.length+' rules · '+(policyCanEdit?'Policy database':'Read-only');
+    const report=data.compilation;
+    if(report)document.getElementById('policy-notice').textContent+=' · '+(report.valid?'Compatible with fast-path format':report.blockers.length+' rule(s) block compilation')+' · Dataplane application unconfirmed';
     renderPolicyRows();
   } catch(e) {
     if(generation!==policyLoadGeneration || !body.isConnected) return;
@@ -2868,8 +2870,8 @@ function renderPolicyRows() {
       (!r.is_immutable&&policyCanEdit?` <button class="btn btn-xs" data-rule="${index}" data-action="clone">Clone</button> <button class="btn btn-xs" data-rule="${index}" data-action="delete">Delete</button>`:'');
     return `<tr class="${r.enabled?'':'policy-disabled'}"><td>${_escSP(r.position)}</td><td>${_escSP(r.name || r.description || 'Rule '+r.id)}${r.is_immutable?' (default)':''}</td>
       <td>${r.enabled?'Yes':'No'}</td><td>${_escSP(r.src_iface || 'Any')}</td><td>${_escSP(r.dst_iface || 'Any')}</td><td>${_escSP(r.src_ip)}</td><td>${_escSP(r.dst_ip)}</td>
-      <td>${_escSP(r.proto)} · ${_escSP(r.src_port || '*')} → ${_escSP(r.dst_port || '*')}</td><td>${_escSP(r.vsys || 'All')}</td><td>${_escSP(r.action)}</td><td>${fmt(r.hit_count || 0)}</td><td>${actions}</td></tr>`;
-  }).join('') || '<tr><td colspan="12">No matching rules.</td></tr>';
+      <td>${_escSP(r.proto)} · ${_escSP(r.src_port || '*')} → ${_escSP(r.dst_port || '*')}</td><td>${_escSP(r.vsys || 'All')}</td><td>${_escSP(r.action)}</td><td>${fmt(r.hit_count || 0)}</td><td>${_escSP(r.compilation ? (r.compilation.included ? (r.compilation.compatible ? 'Compatible' : 'Blocked: '+r.compilation.issue) : 'Excluded'+(r.compilation.issue ? ': '+r.compilation.issue : '')) : 'Unknown')}</td><td>${actions}</td></tr>`;
+  }).join('') || '<tr><td colspan="13">No matching rules.</td></tr>';
   body.onclick=event=>{
     const button=event.target.closest('[data-rule]');if(!button)return;
     const rule=policyRows[Number(button.dataset.rule)];if(!rule)return;

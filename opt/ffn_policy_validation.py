@@ -27,6 +27,28 @@ def validate_policy_rule(rule, compilation=False):
         if value and (len(value)>63 or not re.fullmatch(r'[A-Za-z0-9_.*?/-]+',value)): reject('Invalid interface match')
         if compilation and value not in (None,'','*'): reject('Fast-path interface-constrained policy is not implemented')
     if not isinstance(rule.get('position',0),int) or rule.get('position',0)<0: reject('Rule position must be nonnegative')
+    vsys=rule.get('vsys',0) or 0
+    if not isinstance(vsys,int) or not 0<=vsys<=255: reject('Virtual system must be 0-255; zero means all')
+    if compilation and not 0<=rule.get('id',0)<=65535: reject('Rule ID exceeds the fast-path format')
+    if compilation and proto.isdigit() and int(proto)==0: reject('Protocol zero cannot be distinguished from any in the fast-path format')
     for key,limit in (('name',127),('description',1024)):
         value=rule.get(key) or ''
         if len(value)>limit or any(ord(c)<32 and c not in '\t\n\r' for c in value): reject('Invalid '+key)
+
+
+def policy_compilation_report(rules):
+    """Read-only compatibility assessment; never claims installation or enforcement."""
+    entries=[]
+    for rule in rules:
+        included=bool(rule.get('enabled')) and not bool(rule.get('hidden'))
+        issue=None
+        try:
+            validate_policy_rule(rule, compilation=True)
+        except HTTPException as exc:
+            issue=str(exc.detail)
+        entries.append({'id':rule['id'], 'name':rule.get('name') or '',
+                        'included':included, 'compatible':issue is None, 'issue':issue})
+    blockers=[entry for entry in entries if entry['included'] and not entry['compatible']]
+    return {'target':'fast-path-policy-v1', 'valid':not blockers,
+            'included_rules':sum(entry['included'] for entry in entries),
+            'blockers':blockers, 'rules':entries, 'dataplane_applied':None}

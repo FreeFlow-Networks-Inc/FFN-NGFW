@@ -25,3 +25,14 @@ failure; UI tests cover escaped rows, field preservation, disabled cloning and
 failed saves. Browser fixture review verifies the rule table and clone dialog.
 The appliance deployment reads the authenticated API and checks existing rule
 compatibility; it does not change rules, compile a policy or commit config.
+
+The rule inventory now includes a read-only fast-path compilation report and
+per-rule compatibility status. Disabled and hidden rules are excluded from
+compilation; their incompatibilities remain visible without blocking enabled
+rules. The WebUI displays blocking reasons and keeps dataplane application
+explicitly unconfirmed. A compatible format does not prove forwarding readiness.
+Compilation returns HTTP 422 with all blocking rule IDs and reasons before
+writing any binary. Virtual-system IDs and rule IDs must fit the wire format;
+numeric protocol zero is rejected during compilation because it aliases the
+format's wildcard. Ten isolated API/compiler tests also cover a successful
+binary round trip, aggregate errors, excluded rules and identity overflow.

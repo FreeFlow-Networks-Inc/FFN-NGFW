@@ -7,7 +7,7 @@ from fastapi import FastAPI,Depends,HTTPException
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'opt'))
-from ffn_policy_validation import validate_policy_rule
+from ffn_policy_validation import validate_policy_rule, policy_compilation_report
 
 class PolicyEditorTests(unittest.TestCase):
     def setUp(self):
@@ -22,10 +22,10 @@ class PolicyEditorTests(unittest.TestCase):
         self.app=FastAPI()
         self.ns=dict(app=self.app,Depends=Depends,HTTPException=HTTPException,Optional=Optional,BaseModel=BaseModel,aiosqlite=aiosqlite,
                      DB_PATH=self.path,get_current_user=current,_require_admin=admin,ADMIN_ROLES={'admin'},audit=audit,_check_vsys=lambda v:v,
-                     IMMUTABLE_RULE_NAMES={'intrazone-default','interzone-default'},validate_policy_rule=validate_policy_rule,os=os)
+                     IMMUTABLE_RULE_NAMES={'intrazone-default','interzone-default'},validate_policy_rule=validate_policy_rule,policy_compilation_report=policy_compilation_report,os=os)
         tree=ast.parse((Path(__file__).resolve().parents[1]/'opt/ffn_manager.py').read_text(encoding='utf-8'))
         for node in tree.body:
-            if isinstance(node,(ast.ClassDef,ast.AsyncFunctionDef)) and node.name in ('PolicyRule','policy_list','policy_add','policy_update','policy_delete','_compile_policy_bin'):
+            if isinstance(node,(ast.ClassDef,ast.AsyncFunctionDef,ast.FunctionDef)) and node.name in ('_cidr_to_pair','_proto_to_num','PolicyRule','policy_list','policy_add','policy_update','policy_delete','_compile_policy_bin','policy_compile'):
                 exec(compile(ast.Module(body=[node],type_ignores=[]),'<policy>','exec'),self.ns)
         self.client=TestClient(self.app)
     def tearDown(self):self.tmp.cleanup()
@@ -67,6 +67,38 @@ class PolicyEditorTests(unittest.TestCase):
         with patch.dict(sys.modules,{'ffn_fastpath_compile':module}):
             with self.assertRaises(HTTPException):asyncio.run(self.ns['_compile_policy_bin'](str(blob)))
         self.assertEqual(blob.read_bytes(),b'existing-policy')
+    def test_supported_rule_compiles_with_exact_match_fields(self):
+        self.create(enabled=True,vsys=3)
+        blob=Path(self.tmp.name)/'policy.bin'
+        result=asyncio.run(self.ns['_compile_policy_bin'](str(blob)))
+        import struct,ffn_fastpath_compile as fpc
+        row=struct.unpack(fpc.POLICY_FMT,blob.read_bytes()[struct.calcsize(fpc.HDR_FMT):])
+        self.assertEqual(result['rules'],1)
+        self.assertEqual(row[:4],(0xc0000200,0xffffff00,0xc6336400,0xffffff00))
+        self.assertEqual(row[4:10],(0,65535,443,443,6,3))
+    def test_report_covers_all_blockers_and_excluded_rules(self):
+        self.create(src_iface='ethernet1/1',enabled=True)
+        self.create(src_ip='2001:db8::/64',enabled=True)
+        self.create(action='reset',enabled=False)
+        report=self.client.get('/api/policy/rules').json()['compilation']
+        self.assertFalse(report['valid']);self.assertEqual(len(report['blockers']),2)
+        self.assertEqual(report['included_rules'],2);self.assertIsNone(report['dataplane_applied'])
+        self.assertFalse(report['rules'][2]['included']);self.assertFalse(report['rules'][2]['compatible'])
+    def test_compile_endpoint_preserves_validation_status(self):
+        self.create(src_iface='ethernet1/1',enabled=True)
+        self.create(src_ip='2001:db8::/64',enabled=True)
+        self.ns['_FASTPATH_DIR']=self.tmp.name
+        from unittest.mock import patch
+        with patch.dict(sys.modules,{'ffn_fastpath_compile':types.ModuleType('ffn_fastpath_compile')}):
+            response=self.client.post('/api/policy/compile')
+        self.assertEqual(response.status_code,422)
+        self.assertEqual(len(response.json()['detail']['blockers']),2)
+        self.assertFalse((Path(self.tmp.name)/'ffn_fastpath.policy.bin').exists())
+    def test_rejects_truncated_identity(self):
+        self.assertEqual(self.create(vsys=256).status_code,422)
+        base=dict(id=65536,enabled=True,proto='any',action='permit')
+        self.assertFalse(policy_compilation_report([base])['valid'])
+        self.assertFalse(policy_compilation_report([{**base,'id':1,'proto':'0'}])['valid'])
     def test_unsupported_compile_conditions(self):
         base=dict(src_ip='0.0.0.0/0',dst_ip='0.0.0.0/0',src_port=0,dst_port=0,proto='any',action='permit')
         for change in [dict(src_ip='2001:db8::/64'),dict(action='reset'),dict(dst_iface='eth*'),dict(proto='unknown')]:
