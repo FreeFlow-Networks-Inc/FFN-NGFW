@@ -272,7 +272,11 @@ class LoginRequest(BaseModel):
     password: str
 
 
+from ffn_policy_validation import validate_policy_rule
+
+
 class PolicyRule(BaseModel):
+    enabled: Optional[bool] = None
     name: Optional[str] = None
     src_ip: str = "0.0.0.0/0"
     dst_ip: str = "0.0.0.0/0"
@@ -5497,11 +5501,13 @@ async def policy_list(show_hidden: bool = False, show_defaults: bool = True, use
             r["is_default"] = kind != "user"
             r["is_immutable"] = bool(r.get("immutable", 0))
             out.append(r)
-        return {"rules": out}
+        return {"rules": out, "can_edit": user.get("role") in ADMIN_ROLES, "storage": "policy-database"}
 
 
 @app.post("/api/policy/rules")
 async def policy_add(rule: PolicyRule, user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    validate_policy_rule(rule.dict())
     # Don't let users create rules with reserved implicit-default names.
     if rule.name and rule.name.lower() in IMMUTABLE_RULE_NAMES:
         raise HTTPException(status_code=400,
@@ -5517,12 +5523,12 @@ async def policy_add(rule: PolicyRule, user: dict = Depends(get_current_user)):
         cursor = await db.execute(
             "INSERT INTO policy_rules "
             "(position, name, src_ip, dst_ip, src_iface, dst_iface, "
-            " src_port, dst_port, proto, action, vsys, description, kind) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'user')",
+            " src_port, dst_port, proto, action, vsys, description, enabled, kind) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'user')",
             (rule.position, rule.name, rule.src_ip, rule.dst_ip,
              rule.src_iface, rule.dst_iface,
              rule.src_port, rule.dst_port,
-             rule.proto, rule.action, _check_vsys(rule.vsys), rule.description),
+             rule.proto, rule.action, _check_vsys(rule.vsys), rule.description, int(rule.enabled if rule.enabled is not None else True)),
         )
         await audit(db, user["username"], "add_rule", f"id={cursor.lastrowid}")
         return {"id": cursor.lastrowid, "status": "created"}
@@ -5615,10 +5621,11 @@ async def _compile_policy_bin(path: str = None) -> dict:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT id, position, name, src_ip, dst_ip, src_port, dst_port, "
-            "       proto, action, vsys FROM policy_rules "
+            "       proto, action, vsys, src_iface, dst_iface FROM policy_rules "
             " WHERE enabled=1 AND COALESCE(hidden,0)=0 "
             " ORDER BY position, id")
         for r in await cur.fetchall():
+            validate_policy_rule(dict(r), compilation=True)
             src, srcm = _cidr_to_pair(r["src_ip"])
             dst, dstm = _cidr_to_pair(r["dst_ip"])
             sp = int(r["src_port"] or 0)
@@ -5665,6 +5672,7 @@ async def _compile_policy_bin(path: str = None) -> dict:
 @app.post("/api/policy/compile")
 async def policy_compile(user: dict = Depends(get_current_user)):
     """Build policy.bin from the live rulebase. Also run at commit."""
+    _require_admin(user)
     try:
         return await _compile_policy_bin()
     except Exception as exc:
@@ -5675,6 +5683,7 @@ async def policy_compile(user: dict = Depends(get_current_user)):
 @app.put("/api/policy/rules/{rule_id}")
 async def policy_update(rule_id: int, rule: PolicyRule,
                         user: dict = Depends(get_current_user)):
+    _require_admin(user)
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
@@ -5698,16 +5707,17 @@ async def policy_update(rule_id: int, rule: PolicyRule,
             return {"status": "updated", "immutable": True,
                     "message": "Immutable default rule — only description updated"}
 
+        validate_policy_rule(rule.dict())
         await db.execute(
             "UPDATE policy_rules SET name=?, src_ip=?, dst_ip=?, "
             "  src_iface=?, dst_iface=?, src_port=?, dst_port=?, "
-            "  proto=?, action=?, vsys=?, description=?, position=?, "
+            "  proto=?, action=?, vsys=?, description=?, position=?, enabled=COALESCE(?, enabled), "
             "  updated_at=datetime('now') WHERE id=?",
             (rule.name, rule.src_ip, rule.dst_ip,
              rule.src_iface, rule.dst_iface,
              rule.src_port, rule.dst_port,
              rule.proto, rule.action, _check_vsys(rule.vsys),
-             rule.description, rule.position, rule_id),
+             rule.description, rule.position, int(rule.enabled) if rule.enabled is not None else None, rule_id),
         )
         await audit(db, user["username"], "update_rule", f"id={rule_id}")
         return {"status": "updated"}
@@ -5715,6 +5725,7 @@ async def policy_update(rule_id: int, rule: PolicyRule,
 
 @app.delete("/api/policy/rules/{rule_id}")
 async def policy_delete(rule_id: int, user: dict = Depends(get_current_user)):
+    _require_admin(user)
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(

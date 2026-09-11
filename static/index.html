@@ -358,14 +358,15 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
 <div class="modal-overlay" id="modal-rule">
   <div class="modal">
     <h3 id="rule-modal-title">Add Security Rule</h3>
+    <p class="text-dim mb-8">Saved in the policy database. Saving does not confirm dataplane application. Interface matches, IPv6 and Reset are unsupported by the fast-path compiler.</p>
     <input type="hidden" id="rule-edit-id">
     <div class="form-row">
       <div class="form-group"><label>Name</label><input type="text" id="rule-name" placeholder="Rule name"></div>
       <div class="form-group"><label>Position</label><input type="number" id="rule-position" value="0" min="0"></div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label>Source Zone</label><input type="text" id="rule-src-zone" value="any"></div>
-      <div class="form-group"><label>Dest Zone</label><input type="text" id="rule-dst-zone" value="any"></div>
+      <div class="form-group"><label>Source Interface Match</label><input type="text" id="rule-src-iface" placeholder="Any"></div>
+      <div class="form-group"><label>Destination Interface Match</label><input type="text" id="rule-dst-iface" placeholder="Any"></div>
     </div>
     <div class="form-row">
       <div class="form-group"><label>Source IP (CIDR)</label><input type="text" id="rule-src" value="0.0.0.0/0"></div>
@@ -377,13 +378,13 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
     </div>
     <div class="form-row">
       <div class="form-group"><label>Protocol</label><select id="rule-proto"><option value="any">Any</option><option value="tcp">TCP</option><option value="udp">UDP</option><option value="icmp">ICMP</option></select></div>
-      <div class="form-group"><label>Action</label><select id="rule-action"><option value="permit">Allow</option><option value="deny">Deny</option><option value="drop">Drop</option><option value="reset">Reset</option></select></div>
+      <div class="form-group"><label>Action</label><select id="rule-action"><option value="permit">Allow</option><option value="deny">Deny</option><option value="drop">Drop</option><option value="inspect">Inspect</option><option value="reset">Reset (not supported by fast path)</option></select></div>
     </div>
-    <div class="form-group"><label>Application</label><input type="text" id="rule-app" value="any"></div>
+    <div class="form-row"><div class="form-group"><label>Virtual System ID (0 = all)</label><input type="number" id="rule-vsys" min="0" max="255" value="0"></div><div class="form-group"><label><input type="checkbox" id="rule-enabled" checked> Enabled</label></div></div>
     <div class="form-group"><label>Description</label><input type="text" id="rule-desc"></div>
     <div class="form-actions">
       <button class="btn" onclick="closeModal('modal-rule')">Cancel</button>
-      <button class="btn btn-primary" onclick="saveRule()">Save</button>
+      <span id="rule-msg" role="status"></span><button id="rule-save" class="btn btn-primary" onclick="saveRule()">Save Rule</button>
     </div>
   </div>
 </div>
@@ -2831,124 +2832,95 @@ function showSessionDetail(i) {
    =========================================================================== */
 
 /* ---- Policy > Security ---- */
+let policyRows = [], policyCanEdit = false, policyLoadGeneration = 0;
+let policyEditor = null;
 function renderPolicySecurity(c) {
-  c.innerHTML = `
-    <div class="page-header"><h2>Security Policy Rules</h2>
-      <div class="actions">
-        <label style="font-size:11px;color:var(--text-dim);margin-right:10px;cursor:pointer">
-          <input type="checkbox" id="policy-show-hidden" onchange="loadPolicies()" style="vertical-align:middle">
-          Show intrazone-default (implicit)
-        </label>
-        <button class="btn btn-primary" onclick="openRuleModal()">+ Add Rule</button>
-      </div>
-    </div>
-    <div class="card"><div class="table-wrap">
-      <table id="policy-table">
-        <thead><tr><th>#</th><th>Name</th><th>Src Zone</th><th>Dst Zone</th><th>Source</th><th>Destination</th><th>Service</th><th>App</th><th>Action</th><th>Profile</th><th>Hits</th><th></th></tr></thead>
-        <tbody id="policy-table-body"></tbody>
-      </table>
-    </div></div>`;
-  loadPolicies();
-  refreshTimer = setInterval(loadPolicies,10000);
+  c.innerHTML = `<div class="page-header"><h2>Security Policy</h2></div>
+    <div class="filters-bar"><input id="policy-search" aria-label="Filter security rules" placeholder="Filter rules" oninput="renderPolicyRows()">
+    <label><input type="checkbox" id="policy-show-hidden" onchange="loadPolicies()"> Show implicit defaults</label>
+    <button class="btn" onclick="loadPolicies()">Refresh</button><button id="policy-add" class="btn btn-primary" disabled onclick="openRuleModal()">Add</button></div>
+    <p id="policy-notice" role="status" class="mb-8">Loading policy rules…</p>
+    <p class="text-dim mb-8">Rules are stored in the policy database. Storage does not confirm dataplane application. Zone and application matching are not implemented here; the fast-path compiler rejects unsupported IPv6, interface and reset conditions.</p>
+    <div class="table-wrap"><table id="policy-table"><thead><tr><th>#</th><th>Name</th><th>Enabled</th><th>Source Interface</th><th>Destination Interface</th><th>Source</th><th>Destination</th><th>Service</th><th>Vsys</th><th>Action</th><th>Hits</th><th>Actions</th></tr></thead><tbody id="policy-table-body"></tbody></table></div>`;
+  loadPolicies();refreshTimer=setInterval(loadPolicies,10000);
 }
-
 async function loadPolicies() {
-  const showHidden = !!document.getElementById('policy-show-hidden')?.checked;
-  const data = await api('/api/policy/rules?show_hidden=' + (showHidden ? 'true' : 'false'));
-  if (!data) return;
-  const tbody = document.getElementById('policy-table-body');
-  if (!tbody) return;
-  // Render user rules and default rules together. Default rules get a
-  // shaded row (matching PAN-OS UI — yellow tint), a lock glyph on the
-  // name, and disabled Edit/Delete buttons (description-only edit is
-  // still permitted via the backend but not exposed here for brevity).
-  tbody.innerHTML = data.rules.map(r => {
-    const isDefault = !!r.is_default;
-    const isImmutable = !!r.is_immutable;
-    const actionBadge = `<span class="badge badge-${r.action}">${r.action === 'permit' ? 'Allow' : (r.action === 'deny' ? 'Deny' : r.action)}</span>`;
-    const rowStyle = isDefault ? 'style="background:rgba(255,221,128,0.10)"' : '';
-    const lock = isImmutable ? '<span title="Immutable default rule" style="color:var(--text-dim);margin-right:4px">⚙</span>' : '';
-    const srcZone = r.kind === 'intrazone-default' ? '<span class="text-dim">(intrazone)</span>'
-                   : (r.kind === 'interzone-default' ? '<span class="text-dim">any</span>' : 'any');
-    const dstZone = srcZone;
-    const name = r.name || r.description || ('Rule '+r.id);
-    const editBtn = isImmutable
-      ? `<button class="btn btn-xs" onclick='editRule(${JSON.stringify(r).replace(/'/g,"&#39;")})' title="Only description editable">Edit</button>`
-      : `<button class="btn btn-xs" onclick='editRule(${JSON.stringify(r).replace(/'/g,"&#39;")})'>Edit</button>`;
-    const delBtn = isImmutable
-      ? `<button class="btn btn-xs btn-danger" disabled title="Cannot delete immutable default rule" style="opacity:0.4;cursor:not-allowed">Del</button>`
-      : `<button class="btn btn-xs btn-danger" onclick="deleteRule(${r.id})">Del</button>`;
-    return `<tr draggable="${!isImmutable}" data-id="${r.id}" ${rowStyle}>
-      <td>${r.position}</td>
-      <td>${lock}${name}</td>
-      <td>${srcZone}</td><td>${dstZone}</td>
-      <td class="mono">${r.src_ip}</td>
-      <td class="mono">${r.dst_ip}</td>
-      <td>${r.proto}/${r.dst_port||'*'}</td>
-      <td>any</td>
-      <td>${actionBadge}</td>
-      <td>default</td>
-      <td>${fmt(r.hit_count)}</td>
-      <td>${editBtn} ${delBtn}</td>
-    </tr>`;
-  }).join('');
+  const generation=++policyLoadGeneration, body=document.getElementById('policy-table-body');
+  try {
+    const data=await consoleRequest('/api/policy/rules?show_hidden='+(document.getElementById('policy-show-hidden')?.checked?'true':'false'));
+    if(generation!==policyLoadGeneration || !body.isConnected) return;
+    if(!Array.isArray(data.rules)) throw new Error('Invalid rule inventory');
+    policyRows=data.rules;policyCanEdit=!!data.can_edit;
+    document.getElementById('policy-add').disabled=!policyCanEdit;
+    document.getElementById('policy-notice').textContent=policyRows.length+' rules · '+(policyCanEdit?'Policy database':'Read-only');
+    renderPolicyRows();
+  } catch(e) {
+    if(generation!==policyLoadGeneration || !body.isConnected) return;
+    policyRows=[];policyCanEdit=false;body.innerHTML='';document.getElementById('policy-add').disabled=true;
+    document.getElementById('policy-notice').textContent='Unable to load rules: '+e.message;
+  }
 }
-
-function openRuleModal() {
-  document.getElementById('rule-modal-title').textContent='Add Security Rule';
-  document.getElementById('rule-edit-id').value='';
-  document.getElementById('rule-name').value='';
-  document.getElementById('rule-position').value='0';
-  document.getElementById('rule-src-zone').value='any';
-  document.getElementById('rule-dst-zone').value='any';
-  document.getElementById('rule-src').value='0.0.0.0/0';
-  document.getElementById('rule-dst').value='0.0.0.0/0';
-  document.getElementById('rule-sport').value='0';
-  document.getElementById('rule-dport').value='0';
-  document.getElementById('rule-proto').value='any';
-  document.getElementById('rule-action').value='permit';
-  document.getElementById('rule-app').value='any';
-  document.getElementById('rule-desc').value='';
-  document.getElementById('modal-rule').classList.add('show');
-}
-
-function editRule(r) {
-  document.getElementById('rule-modal-title').textContent='Edit Rule #'+r.id;
-  document.getElementById('rule-edit-id').value=r.id;
-  document.getElementById('rule-name').value=r.description||'';
-  document.getElementById('rule-position').value=r.position||0;
-  document.getElementById('rule-src').value=r.src_ip;
-  document.getElementById('rule-dst').value=r.dst_ip;
-  document.getElementById('rule-sport').value=r.src_port;
-  document.getElementById('rule-dport').value=r.dst_port;
-  document.getElementById('rule-proto').value=r.proto;
-  document.getElementById('rule-action').value=r.action;
-  document.getElementById('rule-desc').value=r.description;
-  document.getElementById('modal-rule').classList.add('show');
-}
-
-async function saveRule() {
-  const id = document.getElementById('rule-edit-id').value;
-  const body = {
-    src_ip: document.getElementById('rule-src').value,
-    dst_ip: document.getElementById('rule-dst').value,
-    src_port: parseInt(document.getElementById('rule-sport').value),
-    dst_port: parseInt(document.getElementById('rule-dport').value),
-    proto: document.getElementById('rule-proto').value,
-    action: document.getElementById('rule-action').value,
-    description: document.getElementById('rule-desc').value||document.getElementById('rule-name').value,
-    position: parseInt(document.getElementById('rule-position').value),
+function renderPolicyRows() {
+  const body=document.getElementById('policy-table-body');if(!body)return;
+  const query=(document.getElementById('policy-search').value||'').toLowerCase();
+  body.innerHTML=policyRows.map((r,index)=>({r,index})).filter(({r})=>[r.name,r.description,r.src_ip,r.dst_ip,r.src_iface,r.dst_iface,r.action,r.proto].join(' ').toLowerCase().includes(query)).map(({r,index})=>{
+    const actions=`<button class="btn btn-xs" data-rule="${index}" data-action="edit">${policyCanEdit?'Edit':'View'}</button>`+
+      (!r.is_immutable&&policyCanEdit?` <button class="btn btn-xs" data-rule="${index}" data-action="clone">Clone</button> <button class="btn btn-xs" data-rule="${index}" data-action="delete">Delete</button>`:'');
+    return `<tr class="${r.enabled?'':'policy-disabled'}"><td>${_escSP(r.position)}</td><td>${_escSP(r.name || r.description || 'Rule '+r.id)}${r.is_immutable?' (default)':''}</td>
+      <td>${r.enabled?'Yes':'No'}</td><td>${_escSP(r.src_iface || 'Any')}</td><td>${_escSP(r.dst_iface || 'Any')}</td><td>${_escSP(r.src_ip)}</td><td>${_escSP(r.dst_ip)}</td>
+      <td>${_escSP(r.proto)} · ${_escSP(r.src_port || '*')} → ${_escSP(r.dst_port || '*')}</td><td>${_escSP(r.vsys || 'All')}</td><td>${_escSP(r.action)}</td><td>${fmt(r.hit_count || 0)}</td><td>${actions}</td></tr>`;
+  }).join('') || '<tr><td colspan="12">No matching rules.</td></tr>';
+  body.onclick=event=>{
+    const button=event.target.closest('[data-rule]');if(!button)return;
+    const rule=policyRows[Number(button.dataset.rule)];if(!rule)return;
+    if(button.dataset.action==='edit')editRule(rule);
+    else if(button.dataset.action==='clone')cloneRule(rule);
+    else deleteRule(rule.id);
   };
-  if (id) await api(`/api/policy/rules/${id}`,{method:'PUT',body:JSON.stringify(body)});
-  else await api('/api/policy/rules',{method:'POST',body:JSON.stringify(body)});
-  closeModal('modal-rule');
-  loadPolicies();
 }
-
+const RULE_FIELDS={name:'name',position:'position',src_iface:'src-iface',dst_iface:'dst-iface',src_ip:'src',dst_ip:'dst',src_port:'sport',dst_port:'dport',proto:'proto',action:'action',vsys:'vsys',description:'desc'};
+function openRuleModal(){if(policyCanEdit)editRule(null);}
+function cloneRule(rule){if(policyCanEdit&&!rule.is_immutable)editRule({...rule,id:null,name:((rule.name||'rule')+'-copy').slice(0,127),position:0,enabled:0});}
+function editRule(rule) {
+  const data=rule || {name:'',position:0,src_iface:'',dst_iface:'',src_ip:'0.0.0.0/0',dst_ip:'0.0.0.0/0',src_port:0,dst_port:0,proto:'any',action:'permit',vsys:0,description:'',enabled:1};
+  policyEditor={...data};
+  document.getElementById('rule-modal-title').textContent=data.id?'Security Rule: '+(data.name||data.id):'Add Security Rule';
+  document.getElementById('rule-edit-id').value=data.id||'';
+  for(const [key,id] of Object.entries(RULE_FIELDS)) {
+    const element=document.getElementById('rule-'+id);
+    if((key==='proto'||key==='action') && !Array.from(element.options||[]).some(o=>o.value===String(data[key]))) {
+      const option=document.createElement('option');option.value=data[key];option.textContent=data[key];element.appendChild(option);
+    }
+    element.value=data[key]??'';
+    element.disabled=!policyCanEdit || !!data.is_immutable && key!=='description';
+  }
+  document.getElementById('rule-enabled').checked=!!data.enabled;
+  document.getElementById('rule-enabled').disabled=!policyCanEdit || !!data.is_immutable;
+  document.getElementById('rule-save').disabled=!policyCanEdit;
+  document.getElementById('rule-msg').textContent=data.is_immutable?'Default rule: only the description can be changed.':(!data.enabled?'Disabled rule. Enable explicitly when ready.':'');
+  document.getElementById('modal-rule').classList.add('show');
+}
+async function saveRule() {
+  if(!policyCanEdit || !policyEditor)return;
+  const button=document.getElementById('rule-save'),message=document.getElementById('rule-msg');
+  if(button.disabled)return;
+  const editor=policyEditor, payload={};
+  for(const [key,id] of Object.entries(RULE_FIELDS)) payload[key]=document.getElementById('rule-'+id).value;
+  for(const key of ['position','src_port','dst_port','vsys'])payload[key]=Number(payload[key]);
+  for(const key of ['src_iface','dst_iface'])payload[key]=payload[key].trim()||null;
+  payload.enabled=document.getElementById('rule-enabled').checked;
+  button.disabled=true;message.textContent='Saving rule…';
+  try {
+    const result=await consoleRequest('/api/policy/rules'+(editor.id?'/'+editor.id:''),{method:editor.id?'PUT':'POST',body:JSON.stringify(payload)});
+    if(!['created','updated'].includes(result.status))throw new Error('Rule save was not confirmed.');
+    if(policyEditor===editor){message.textContent='Saved to policy database. Dataplane application is not confirmed.';}
+    await loadPolicies();
+  } catch(e){if(policyEditor===editor){message.textContent=e.message;button.disabled=false;}}
+}
 async function deleteRule(id) {
-  if (!confirm('Delete rule #'+id+'?')) return;
-  await api(`/api/policy/rules/${id}`,{method:'DELETE'});
-  loadPolicies();
+  if(!policyCanEdit || !confirm('Delete rule #'+id+' from the policy database?'))return;
+  try{await consoleRequest('/api/policy/rules/'+id,{method:'DELETE'});await loadPolicies();}
+  catch(e){document.getElementById('policy-notice').textContent='Unable to delete rule: '+e.message;}
 }
 
 /* ---- Policy > NAT ---- */
