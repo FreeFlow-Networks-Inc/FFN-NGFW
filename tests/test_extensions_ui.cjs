@@ -25,6 +25,11 @@ async function check(enabled) {
     context.window.ffnExtensions.registerPage('unselected','ports',()=>{});
     assert.equal(context.TAB_MENUS.device.length,1);
     assert.equal(context.TAB_MENUS.device[0].label,'Hardware ports');
+    vm.runInContext("extensionDeclarations.set('fixture', [{id:'agent',tab:'device',label:'Dataplane Status',after:'extension-fixture--ports'}])",context);
+    context.TAB_MENUS.device.push({id:'unrelated',label:'Other'});
+    context.window.ffnExtensions.registerPage('fixture','agent',()=>{});
+    assert.equal(context.TAB_MENUS.device[1].label,'Dataplane Status');
+    assert.equal(context.TAB_MENUS.device[2].id,'unrelated');
   }
 }
 (async()=>{await check(false);await check(true);console.log('Core extension UI isolation tests passed');})().catch(e=>{console.error(e);process.exit(1);});

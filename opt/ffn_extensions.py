@@ -41,7 +41,10 @@ def install(app, current_user, require_admin, record_audit, selected=None):
                 raise ValueError('invalid extension pages')
             page_ids = set()
             for page in pages:
-                if (not isinstance(page, dict) or set(page) != {'id', 'label', 'tab'} or
+                if (not isinstance(page, dict) or not {'id', 'label', 'tab'} <= set(page) or
+                        set(page) - {'id', 'label', 'tab', 'after'} or
+                        ('after' in page and (not isinstance(page['after'], str) or
+                         not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', page['after']))) or
                         not isinstance(page['id'], str) or
                         not re.fullmatch(r'[a-z][a-z0-9-]{0,31}', page['id']) or
                         page['id'] in page_ids or

@@ -1270,7 +1270,11 @@ window.ffnExtensions = {
     const page = 'extension-' + id + '--' + pageId;
     if (extensionPages.has(page)) return;
     extensionPages.set(page, render);
-    TAB_MENUS[declaration.tab].push({id: page, label: declaration.label});
+    const menu = TAB_MENUS[declaration.tab];
+    const anchor = menu.findIndex(item => item.id === declaration.after);
+    const entry = {id: page, label: declaration.label};
+    if (declaration.after && anchor >= 0) menu.splice(anchor + 1, 0, entry);
+    else menu.push(entry);
   },
   async request(path, options = {}) {
     const response = await fetch(path, {...options, headers: {
