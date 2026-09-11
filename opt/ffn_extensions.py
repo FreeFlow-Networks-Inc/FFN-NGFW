@@ -13,6 +13,7 @@ import re
 
 from fastapi import Depends, HTTPException
 from fastapi.staticfiles import StaticFiles
+from starlette.routing import Mount
 
 
 def install(app, current_user, require_admin, record_audit, selected=None):
@@ -40,7 +41,10 @@ def install(app, current_user, require_admin, record_audit, selected=None):
                 raise ValueError('invalid extension pages')
             page_ids = set()
             for page in pages:
-                if (not isinstance(page, dict) or set(page) != {'id', 'label', 'tab'} or
+                if (not isinstance(page, dict) or not {'id', 'label', 'tab'} <= set(page) or
+                        set(page) - {'id', 'label', 'tab', 'after'} or
+                        ('after' in page and (not isinstance(page['after'], str) or
+                         not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', page['after']))) or
                         not isinstance(page['id'], str) or
                         not re.fullmatch(r'[a-z][a-z0-9-]{0,31}', page['id']) or
                         page['id'] in page_ids or
@@ -52,6 +56,10 @@ def install(app, current_user, require_admin, record_audit, selected=None):
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
             routes = mod.router(current_user, require_admin, record_audit)
+            legacy_routes = (mod.legacy_router(current_user, require_admin, record_audit)
+                             if hasattr(mod, 'legacy_router') else None)
+            if legacy_routes is not None and legacy_routes.prefix != '/api/bcm':
+                raise ValueError('invalid legacy hardware router prefix')
             runtime_routes = None
             if manifest.get('runtime_api_version') is not None:
                 if manifest['runtime_api_version'] != 1:
@@ -61,10 +69,25 @@ def install(app, current_user, require_admin, record_audit, selected=None):
                     raise ValueError('invalid runtime router prefix')
             assets = StaticFiles(directory=str(root / 'static'))
             app.include_router(routes)
+            if legacy_routes is not None:
+                # Selected hardware owns legacy mutation URLs as well. Place
+                # these before the old generic BCM routes to prevent bypass.
+                count = len(app.router.routes)
+                app.include_router(legacy_routes)
+                installed = app.router.routes[count:]
+                del app.router.routes[count:]
+                app.router.routes[0:0] = installed
             if runtime_routes is not None:
                 app.include_router(runtime_routes)
                 runtime = {'provider': ident, 'api_version': 1, 'base': '/api/system/runtime'}
-            app.mount('/static/extensions/' + ident, assets, name='extension-' + ident)
+            # Starlette uses the first matching route. The manager's earlier
+            # /static mount otherwise consumes extension URLs and returns 404.
+            asset_path = '/static/extensions/' + ident
+            position = next((i for i, route in enumerate(app.router.routes)
+                             if isinstance(route, Mount) and
+                             asset_path.startswith(route.path.rstrip('/') + '/')),
+                            len(app.router.routes))
+            app.router.routes.insert(position, Mount(asset_path, app=assets, name='extension-' + ident))
             descriptors.append({'id': ident, 'label': label,
                                 'script': '/static/extensions/' + ident + '/ui.js', 'pages': pages})
             state = 'enabled'

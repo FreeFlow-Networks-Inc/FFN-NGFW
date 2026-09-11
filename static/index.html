@@ -257,6 +257,7 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
   .workflow-actions input {width:100%}
 }
 </style>
+<link rel="stylesheet" href="/static/console-shell.css">
 </head>
 <body>
 
@@ -298,9 +299,9 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
   </div>
   <div class="main-tabs" id="main-tabs">
     <button class="active" data-tab="dashboard">Dashboard</button>
-    <button data-tab="monitor">Monitor</button>
     <button data-tab="acc">ACC</button>
-    <button data-tab="policy">Policy</button>
+    <button data-tab="monitor">Monitor</button>
+    <button data-tab="policy">Policies</button>
     <button data-tab="objects">Objects</button>
     <button data-tab="network">Network</button>
     <button data-tab="device">Device</button>
@@ -311,9 +312,6 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
     <button id="commit-btn" class="btn btn-sm" onclick="openCommitModal()" title="Open commit dialog">
       <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--text-muted);margin-right:4px" id="commit-dot"></span>
       Commit
-    </button>
-    <button id="history-btn" class="btn btn-sm" onclick="openHistoryModal()" title="Commit history / rollback" style="font-size:10px">
-      History <span id="history-latest-badge" class="badge" style="margin-left:4px;display:none"></span>
     </button>
     <button id="lock-btn" class="btn btn-sm btn-xs" onclick="openLockInfo()" style="font-size:10px">
       <span id="lock-icon">🔓</span> <span id="lock-status-label">Unlocked</span>
@@ -333,7 +331,24 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
 <div class="content" id="content-area"></div>
 
 </div><!-- .app-body -->
+<footer class="console-footer">
+  <span class="footer-location" id="footer-location">Dashboard</span>
+  <span>FFN NGFW</span>
+  <button id="history-btn" onclick="openHistoryModal()" title="Configuration versions and rollback">Config History <span id="history-latest-badge" class="badge" style="display:none"></span></button>
+  <button id="tasks-btn" onclick="openTasksModal()" title="Configuration apply results">Tasks</button>
+</footer>
 </div><!-- #app -->
+
+<div class="modal-overlay" id="modal-tasks" role="dialog" aria-modal="true" aria-labelledby="tasks-title">
+  <div class="modal task-dialog">
+    <h3 id="tasks-title">Task Manager</h3>
+    <div class="filters-bar"><strong>Latest configuration apply</strong><button id="tasks-refresh" class="btn btn-sm" onclick="loadTasks()">Refresh</button></div>
+    <p id="tasks-summary" role="status" class="mb-8"></p>
+    <div class="table-wrap"><table><thead><tr><th>Result</th><th>Configuration path</th><th>Details</th></tr></thead><tbody id="tasks-body"></tbody></table></div>
+    <p class="text-dim mt-8">Results reported by configd. Saving a configuration version does not confirm that every setting was applied.</p>
+    <div class="form-actions"><button class="btn" onclick="closeTasksModal()">Close</button></div>
+  </div>
+</div>
 
 <!-- ============================================================ -->
 <!-- MODALS                                                        -->
@@ -669,8 +684,7 @@ const TAB_MENUS = {
     {id:'sdwan-iface-profile',label:'SD-WAN Interface Profile'},
   ],
   device: [
-    {id:'setup',label:'General Settings'},
-    {id:'config-audit',label:'Configuration & Backups'},
+    {id:'setup',label:'Setup'},
     {section:'Hardware & Runtime'},
     {id:'dash-hardware',label:'Hardware Inventory'},
     {id:'dash-system',label:'System Health'},
@@ -842,6 +856,42 @@ function doLogout() {
    =========================================================================== */
 let commitPollTimer = null;
 
+let taskLoadGeneration = 0;
+async function openTasksModal() {
+  document.getElementById('modal-tasks').classList.add('show');
+  const refresh = document.getElementById('tasks-refresh');
+  if (refresh) refresh.focus();
+  await loadTasks();
+}
+function closeTasksModal() {
+  ++taskLoadGeneration;
+  closeModal('modal-tasks');
+  document.getElementById('tasks-btn').focus();
+}
+async function loadTasks() {
+  const generation = ++taskLoadGeneration;
+  const summary = document.getElementById('tasks-summary');
+  const body = document.getElementById('tasks-body');
+  summary.textContent = 'Loading configuration apply status…';
+  body.innerHTML = '';
+  try {
+    const status = await consoleRequest('/api/config/apply-status');
+    if (generation !== taskLoadGeneration) return;
+    summary.textContent = [status.overall || 'Unknown', status.started_at && 'Started: '+status.started_at,
+      status.finished_at && 'Finished: '+status.finished_at, status.message, status.error].filter(Boolean).join(' · ');
+    const groups = [['errors','Failed'],['validation_errors','Validation failed'],['skipped','Skipped'],['applied','Applied']];
+    const rows = groups.flatMap(([key,label]) => (Array.isArray(status[key]) ? status[key] : []).map(item => {
+      const data = typeof item === 'object' && item !== null ? item : {message:String(item)};
+      return `<tr><td>${_escSP(label)}</td><td>${_escSP(data.xpath || data.path || '—')}</td><td>${_escSP(data.message || data.error || data.reason || JSON.stringify(data))}</td></tr>`;
+    }));
+    body.innerHTML = rows.join('') || '<tr><td colspan="3">No per-setting results reported.</td></tr>';
+  } catch (error) {
+    if (generation !== taskLoadGeneration) return;
+    summary.textContent = 'Unable to read apply status: '+error.message;
+    body.innerHTML = '<tr><td colspan="3">Apply state is unknown. Refresh to retry.</td></tr>';
+  }
+}
+
 async function refreshCommitIndicator() {
   const [diff, lock] = await Promise.all([
     api('/api/config/diff'),
@@ -978,11 +1028,14 @@ async function doCommit() {
       return;
     }
     if (data.status === 'committed') {
-      msg.textContent = `✓ Committed (${data.type}) — snapshot: ${data.snapshot}`;
-      msg.style.color = 'var(--green)';
+      const apply = data.apply_status;
+      const applied = apply && apply.overall === 'applied' && !(apply.errors || []).length && !(apply.validation_errors || []).length;
+      msg.textContent = `Configuration saved (${data.type}) — snapshot: ${data.snapshot}. ` +
+        (applied ? 'Applied successfully.' : `Apply status: ${apply && apply.overall || 'not reported'}. Open Tasks for details.`);
+      msg.style.color = applied ? 'var(--green)' : 'var(--orange)';
       await loadCommitDiff();
       await refreshCommitIndicator();
-      setTimeout(()=>closeModal('modal-commit'), 1500);
+      if (applied) setTimeout(()=>closeModal('modal-commit'), 1500);
     } else if (data.status === 'no-changes') {
       msg.textContent = 'No changes to commit';
       msg.style.color = 'var(--text-dim)';
@@ -1206,7 +1259,7 @@ function renderUnavailable(c, label) {
 function switchTab(tab) {
   if (!TAB_MENUS[tab]) return;
   const menu = TAB_MENUS[tab];
-  const previous = menu.find(it => it.id === lastTabPages[tab] && platformApplies(it.needs));
+  const previous = menu.find(it => it.id && it.id === lastTabPages[tab] && platformApplies(it.needs));
   const first = previous || menu.find(it => it.id && platformApplies(it.needs));
   currentTab = tab;
   if (first) switchSubPage(first.id);
@@ -1270,7 +1323,11 @@ window.ffnExtensions = {
     const page = 'extension-' + id + '--' + pageId;
     if (extensionPages.has(page)) return;
     extensionPages.set(page, render);
-    TAB_MENUS[declaration.tab].push({id: page, label: declaration.label});
+    const menu = TAB_MENUS[declaration.tab];
+    const anchor = menu.findIndex(item => item.id === declaration.after);
+    const entry = {id: page, label: declaration.label};
+    if (declaration.after && anchor >= 0) menu.splice(anchor + 1, 0, entry);
+    else menu.push(entry);
   },
   async request(path, options = {}) {
     const response = await fetch(path, {...options, headers: {
@@ -1397,6 +1454,10 @@ function switchSubPage(pageId) {
   for (const chart of Object.values(charts)) if (chart && chart.destroy) chart.destroy();
   charts = {}; _dashChartInitialized = false;
   currentSubPage = pageId;
+  const location = document.getElementById('footer-location');
+  const tabLabels = {dashboard:'Dashboard',acc:'ACC',monitor:'Monitor',policy:'Policies',objects:'Objects',network:'Network',device:'Device'};
+  const destination = (TAB_MENUS[currentTab] || []).find(item => item.id === pageId);
+  if (location) location.textContent = `${tabLabels[currentTab] || currentTab} › ${destination ? destination.label : pageId}`;
   lastTabPages[currentTab] = pageId;
   document.querySelectorAll('#main-tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab===currentTab));
   renderSidebar(TAB_MENUS[currentTab] || []);
@@ -3528,16 +3589,54 @@ let setupBaseline = null;
 function renderControlPlanes(c) { return window.ffnPlanes.render(c); }
 function renderDeviceSetup(c) {
   setupBaseline = null;
-  c.innerHTML = `<div class="page-header"><h2>General Settings</h2></div>
-    <p class="text-dim">Changes are saved to the candidate configuration. Review and commit to activate them.</p>
-    <div class="card"><div class="grid grid-2">${Object.entries(SETUP_FIELDS).map(([key,label]) =>
-      `<div class="form-group"><label for="setup-${key}">${label}</label><input id="setup-${key}" disabled></div>`).join('')}</div>
-    <button id="setup-save" class="btn btn-primary" disabled onclick="saveSetup()">Save Candidate</button>
-    <p id="setup-msg" role="status">Loading candidate settings…</p></div>
-    <div class="workflow-actions"><button class="btn" onclick="switchSubPage('interfaces')">Interface Ports</button>
-    <button class="btn" onclick="switchSubPage('certificates')">Certificates</button>
-    <button class="btn" onclick="switchSubPage('config-audit')">Configuration & Backups</button></div>`;
+  const fields = keys => keys.map(key => `<div class="form-group"><label for="setup-${key}">${SETUP_FIELDS[key]}</label><input id="setup-${key}" disabled></div>`).join('');
+  c.innerHTML = `<div class="page-header"><h2>Setup</h2></div>
+    <div class="setup-tabs" role="tablist" aria-label="Device setup" onkeydown="consoleTabKey(event)">
+      <button id="setup-tab-management" role="tab" aria-controls="setup-panel-management" aria-selected="true" class="active" onclick="switchSetupTab('management')">Management</button>
+      <button id="setup-tab-services" role="tab" tabindex="-1" aria-controls="setup-panel-services" aria-selected="false" onclick="switchSetupTab('services')">Services</button>
+      <button id="setup-tab-operations" role="tab" tabindex="-1" aria-controls="setup-panel-operations" aria-selected="false" onclick="switchSetupTab('operations')">Operations</button>
+    </div>
+    <div id="setup-panel-management" role="tabpanel" aria-labelledby="setup-tab-management">
+      <div class="card setup-settings"><h3>General Settings</h3>${fields(['hostname','timezone'])}</div>
+    </div>
+    <div id="setup-panel-services" role="tabpanel" aria-labelledby="setup-tab-services" hidden>
+      <div class="grid grid-2"><div class="card setup-settings"><h3>DNS</h3>${fields(['dns_primary','dns_secondary'])}</div>
+      <div class="card setup-settings"><h3>NTP</h3>${fields(['ntp_server'])}</div></div>
+    </div>
+    <div id="setup-settings-actions" class="settings-toolbar">
+      <span class="text-dim">Candidate configuration · Commit required to apply changes</span>
+      <button id="setup-save" class="btn btn-primary" disabled onclick="saveSetup()">Save Candidate</button>
+      <p id="setup-msg" role="status">Loading candidate settings…</p>
+    </div>
+    <div id="setup-panel-operations" role="tabpanel" aria-labelledby="setup-tab-operations" hidden></div>`;
   loadSetupInfo();
+}
+function consoleTabKey(event) {
+  if (!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+  const tabs = Array.from(event.currentTarget.querySelectorAll('[role="tab"]'));
+  const index = tabs.indexOf(event.target);
+  if (index < 0) return;
+  event.preventDefault();
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length-1 :
+    (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+  tabs[next].click(); tabs[next].focus();
+}
+function switchSetupTab(name) {
+  if (!['management','services','operations'].includes(name)) return;
+  for (const key of ['management','services','operations']) {
+    const selected = name === key;
+    const button = document.getElementById('setup-tab-'+key);
+    button.classList.toggle('active', selected);
+    button.setAttribute('aria-selected', String(selected));
+    button.tabIndex = selected ? 0 : -1;
+    document.getElementById('setup-panel-'+key).hidden = !selected;
+  }
+  document.getElementById('setup-settings-actions').hidden = name === 'operations';
+  const operations = document.getElementById('setup-panel-operations');
+  if (name === 'operations' && !operations.dataset.loaded) {
+    operations.dataset.loaded = 'true';
+    renderDeviceConfigAudit(operations);
+  }
 }
 async function loadSetupInfo() {
   const msg = document.getElementById('setup-msg');
@@ -3621,8 +3720,6 @@ function renderNetworkInterfaces(c) {
       </div>
     </div>
 
-    <div id="iface-detected" class="card"><div class="text-dim">Detecting ports and interfaces&hellip;</div></div>
-    <div class="section-title">Interface configuration</div>
     <div class="setup-tabs" id="iface-kind-tabs">
       <button data-kind="ethernet" class="active" onclick="switchIfaceKind('ethernet')">Ethernet</button>
       <button data-kind="vlan"     onclick="switchIfaceKind('vlan')">VLAN</button>
@@ -3656,7 +3753,10 @@ function renderNetworkInterfaces(c) {
       </table>
     </div></div>
 
-    <div class="section"><div class="section-title">Aggregate Ethernet Kernel State</div>
+    <details class="console-details"><summary>Detected hardware and port inventory</summary>
+      <div id="iface-detected" class="card"><div class="text-dim">Detecting ports and interfaces&hellip;</div></div>
+    </details>
+    <details class="console-details"><summary>Aggregate Ethernet Kernel State</summary>
       <div class="card"><div class="table-wrap">
         <table>
           <thead><tr>
@@ -3667,7 +3767,7 @@ function renderNetworkInterfaces(c) {
           <tbody id="iface-ae-body"></tbody>
         </table>
       </div></div>
-    </div>`;
+    </details>`;
 
   loadInterfacesFull();
   refreshTimer = setInterval(loadInterfacesFull, 10000);
@@ -3980,6 +4080,17 @@ function _renderConfiguredAE() {
   }).join('');
 }
 
+function switchIfaceEditorTab(name) {
+  if (!['config','advanced'].includes(name)) return;
+  for (const key of ['config','advanced']) {
+    const selected = key === name;
+    document.getElementById('ifm-panel-'+key).hidden = !selected;
+    const tab = document.getElementById('ifm-tab-'+key);
+    tab.classList.toggle('active', selected);
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+  }
+}
 async function openIfaceModal(name) {
   const ethList = _ifaceState.configured.ethernet||[];
   const aeList = _ifaceState.configured['aggregate-ethernet']||[];
@@ -4005,11 +4116,13 @@ async function openIfaceModal(name) {
     if (_pr && Array.isArray(_pr.entries)) _mgmtProfileNames = _pr.entries.map(e=>e.name);
   } catch (e) { _mgmtProfileNames = []; }
   // Virtual Router options + this interface's current VR (SQLite VR store)
-  let _vrNames = []; let _vrCurrent = '';
+  let _vrNames = []; let _vrCurrent = ''; let _vrLoaded = false;
   const _devName = (_ifaceState.panToLinux||{})[name] || name;
   try {
-    const _vrresp = await api('/api/network/virtual-routers');
-    const _vrs = (_vrresp && (_vrresp.virtual_routers||_vrresp.entries)) || [];
+    const _vrresp = await consoleRequest('/api/network/virtual-routers');
+    const _vrs = _vrresp.virtual_routers || _vrresp.entries;
+    if (!Array.isArray(_vrs)) throw new Error('Virtual router inventory unavailable');
+    _vrLoaded = true;
     for (const _v of _vrs) {
       if (_v.name === 'default') continue;
       _vrNames.push(_v.name);
@@ -4019,12 +4132,17 @@ async function openIfaceModal(name) {
 
   document.getElementById('info-modal-title').textContent = (existing?'Edit':'Create')+' Interface: '+name;
   document.getElementById('info-modal-body').innerHTML = `
-    <input type="hidden" id="ifm-name" value="${name}">
+    <input type="hidden" id="ifm-name" value="${_escSP(name)}">
     <div class="form-group"><label>Mode</label>
       <select id="ifm-mode" onchange="_ifmToggle()" style="width:100%">${modeOpts}</select>
     </div>
     <div class="form-group"><label>Comment</label><input id="ifm-comment" type="text" style="width:100%" placeholder="Description of this interface"></div>
 
+    <div class="setup-tabs" role="tablist" aria-label="Interface settings" onkeydown="consoleTabKey(event)">
+      <button id="ifm-tab-config" role="tab" aria-selected="true" aria-controls="ifm-panel-config" class="active" onclick="switchIfaceEditorTab('config')">Config</button>
+      <button id="ifm-tab-advanced" role="tab" tabindex="-1" aria-selected="false" aria-controls="ifm-panel-advanced" onclick="switchIfaceEditorTab('advanced')">Advanced</button>
+    </div>
+    <div id="ifm-panel-config" role="tabpanel" aria-labelledby="ifm-tab-config">
     <div id="ifm-l3-block" class="section">
       <div class="section-title">Layer 3 Settings</div>
       <div class="form-group"><label>IP Addresses (comma-separated CIDR)</label>
@@ -4039,7 +4157,7 @@ async function openIfaceModal(name) {
       </div>
       <div class="form-group"><label>Virtual Router</label>
         <select id="ifm-vr" style="width:100%"></select>
-        <div class="text-dim" style="font-size:10px;margin-top:3px">Assigns this interface to a virtual router (its own VRF / routing table). &quot;default (main table)&quot; keeps it in the global table. This mirrors the VR&#39;s member-interface list &mdash; changing it here updates the VR.</div>
+        <div class="text-dim" style="font-size:10px;margin-top:3px">Assigns this interface to a virtual router (its own VRF / routing table). &quot;default (main table)&quot; keeps it in the global table. Changing this assignment updates the virtual router immediately when saved. Other interface settings require Commit.</div>
       </div>
     </div>
 
@@ -4074,6 +4192,8 @@ async function openIfaceModal(name) {
       </div>
     </div>
 
+    </div>
+    <div id="ifm-panel-advanced" role="tabpanel" aria-labelledby="ifm-tab-advanced" hidden>
     <div class="section">
       <div class="section-title">Physical Link Settings</div>
       <p class="text-dim" style="font-size:10px;margin-bottom:8px">ethtool-reported capabilities: ${
@@ -4095,8 +4215,9 @@ async function openIfaceModal(name) {
       </div>
     </div>
 
-    <div style="margin-top:12px;display:flex;gap:8px">
-      <button class="btn btn-primary btn-sm" onclick="saveIface()">Save to Candidate</button>
+    </div>
+    <div class="settings-toolbar">
+      <button class="btn btn-primary btn-sm" id="ifm-save" onclick="saveIface()">Save to Candidate</button>
       <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
       <span id="ifm-msg" style="font-size:11px;align-self:center"></span>
     </div>`;
@@ -4123,6 +4244,9 @@ async function openIfaceModal(name) {
     _s.innerHTML = '<option value="">default (main table)</option>';
     for (const _n of _vrNames) { const _o=document.createElement('option'); _o.value=_n; _o.textContent=_n; _s.appendChild(_o); }
     _s.value = _vrCurrent;
+    _s.dataset.original = _vrCurrent;
+    _s.disabled = !_vrLoaded;
+    if (!_vrLoaded) _s.innerHTML = '<option value="">Unavailable — assignment will be preserved</option>';
   })();
   document.getElementById('ifm-agg').value = cur.aggregate_group || '';
   document.getElementById('ifm-speed').value = cur.link_speed || 'auto';
@@ -4149,7 +4273,9 @@ function _ifmToggle() {
   document.getElementById('ifm-bond-block').style.display = (isAE && mode==='layer3')?'block':'none';
 }
 
+let ifaceSavePending = false;
 async function saveIface() {
+  if (ifaceSavePending) return;
   const name = document.getElementById('ifm-name').value;
   const body = {
     name,
@@ -4171,23 +4297,33 @@ async function saveIface() {
   };
   const msg = document.getElementById('ifm-msg');
   if (msg) { msg.textContent = 'Saving...'; msg.style.color = 'var(--orange)'; }
-  const r = await api(`/api/interfaces/${encodeURIComponent(name)}`, {method:'PUT', body: JSON.stringify(body)});
-  if (r && r.status==='created') {
-    let _okmsg = 'Saved to candidate — commit to apply';
-    // Virtual Router membership: SQLite VR store, applied immediately (mirrors the VR's interface list)
-    const _vrSel = document.getElementById('ifm-vr');
-    if (_vrSel) {
-      const _dev = (_ifaceState.panToLinux||{})[name] || name;
-      const _vrr = await api(`/api/network/interfaces/${encodeURIComponent(_dev)}/virtual-router`, {method:'PUT', body: JSON.stringify({virtual_router: _vrSel.value})});
-      if (_vrr && _vrr.detail) _okmsg = 'Interface saved; VR assignment failed: ' + _vrr.detail;
+  const vr = document.getElementById('ifm-vr');
+  const requestedVR = vr ? vr.value : '';
+  const changeVR = body.mode === 'layer3' && vr && !vr.disabled && requestedVR !== vr.dataset.original;
+  const saveButton = document.getElementById('ifm-save');
+  if (saveButton) saveButton.disabled = true;
+  ifaceSavePending = true;
+  let candidateSaved = false;
+  try {
+    const r = await consoleRequest(`/api/interfaces/${encodeURIComponent(name)}`, {method:'PUT', body:JSON.stringify(body)});
+    if (r.status !== 'created') throw new Error('Candidate update was not confirmed.');
+    candidateSaved = true;
+    if (changeVR) {
+      const device = (_ifaceState.panToLinux || {})[name] || name;
+      await consoleRequest(`/api/network/interfaces/${encodeURIComponent(device)}/virtual-router`, {method:'PUT', body:JSON.stringify({virtual_router:requestedVR})});
+      vr.dataset.original = requestedVR;
     }
-    if (msg) { msg.textContent = _okmsg; msg.style.color = _okmsg.indexOf('failed')>=0 ? 'var(--orange)' : 'var(--green)'; }
-    refreshCommitIndicator();
-    loadInterfacesFull();
-    setTimeout(()=>closeModal('modal-info'), 800);
-  } else {
-    if (msg) { msg.textContent = (r && r.detail) || 'Save failed'; msg.style.color='var(--red)'; }
+    if (msg) { msg.textContent = 'Saved to candidate — review and commit to apply.'; msg.style.color = 'var(--green)'; }
+  } catch (error) {
+    if (msg) {
+      msg.textContent = candidateSaved ? 'Interface saved to candidate; virtual-router assignment failed: '+error.message : 'Save failed: '+error.message;
+      msg.style.color = candidateSaved ? 'var(--orange)' : 'var(--red)';
+    }
   }
+  ifaceSavePending = false;
+  if (saveButton && saveButton.isConnected) saveButton.disabled = false;
+  if (candidateSaved) { refreshCommitIndicator(); loadInterfacesFull(); }
+
 }
 
 async function deleteIface(name) {
