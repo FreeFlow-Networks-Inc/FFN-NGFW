@@ -25,4 +25,3 @@ failure; UI tests cover escaped rows, field preservation, disabled cloning and
 failed saves. Browser fixture review verifies the rule table and clone dialog.
 The appliance deployment reads the authenticated API and checks existing rule
 compatibility; it does not change rules, compile a policy or commit config.
-
