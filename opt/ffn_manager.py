@@ -11724,6 +11724,37 @@ def _ensure_imported_into_vsys(iface_name: str, vsys_name: str = "vsys1"):
     config_mgr.update_candidate(xp_base, members, user="system")
 
 
+from ffn_config_subinterfaces import SubinterfaceEdit as SubInterfaceEntry, SubinterfaceStore
+
+@app.get("/api/config/subinterfaces")
+async def subinterface_list(parent: str, vsys: str = "vsys1", source: str = "candidate", user: dict = Depends(get_current_user)):
+    if source not in ("candidate", "running"):
+        raise HTTPException(422, "Source must be candidate or running")
+    result = SubinterfaceStore(config_mgr, CANDIDATE_CONFIG).listing(parent, vsys, source)
+    result["can_edit"] = source == "candidate" and user.get("role") in ADMIN_ROLES
+    return result
+
+@app.post("/api/config/subinterfaces")
+@app.post("/api/interfaces/subinterface")
+async def subinterface_create(s: SubInterfaceEntry, user: dict = Depends(get_current_user)):
+    result = SubinterfaceStore(config_mgr, CANDIDATE_CONFIG).mutate(s.parent, s.unit, s.vsys, s.revision, user, s, True)
+    await _audit(user, "subinterface_create", result["name"])
+    return result
+
+@app.put("/api/config/subinterfaces")
+async def subinterface_update(s: SubInterfaceEntry, user: dict = Depends(get_current_user)):
+    result = SubinterfaceStore(config_mgr, CANDIDATE_CONFIG).mutate(s.parent, s.unit, s.vsys, s.revision, user, s)
+    await _audit(user, "subinterface_update", result["name"])
+    return result
+
+@app.delete("/api/config/subinterfaces")
+@app.delete("/api/interfaces/subinterface")
+async def subinterface_delete(parent: str, revision: str, unit: int = Query(..., ge=1, le=9999), vsys: str = "vsys1", user: dict = Depends(get_current_user)):
+    result = SubinterfaceStore(config_mgr, CANDIDATE_CONFIG).mutate(parent, unit, vsys, revision, user)
+    await _audit(user, "subinterface_delete", result["name"])
+    return result
+
+
 @app.put("/api/interfaces/{name:path}")
 async def interface_update(name: str, i: InterfaceEntry,
                            user: dict = Depends(get_current_user)):
@@ -11743,63 +11774,6 @@ async def interface_delete(name: str, user: dict = Depends(get_current_user)):
 
 
 # -- Sub-interfaces ---------------------------------------------------------
-
-
-class SubInterfaceEntry(BaseModel):
-    parent: str                       # ethernet1/1 or ae1
-    tag: int                           # VLAN tag
-    mode: str = "layer3"              # layer3 | layer2
-    ip_addresses: list = []
-    interface_management_profile: str = ""
-    mtu: Optional[int] = None
-    comment: str = ""
-
-
-@app.post("/api/interfaces/subinterface")
-async def subinterface_create(s: SubInterfaceEntry,
-                              user: dict = Depends(get_current_user)):
-    """
-    Create a sub-interface on an existing layer3 ethernet or aggregate-ethernet.
-    PAN-OS layout: .../entry[parent]/layer3/units/entry[parent.tag]/
-                   for ethernet, or .../aggregate-ethernet/entry[ae1]/layer3/units/entry[ae1.tag]/
-    """
-    _require_lock(user)
-    kind = _iface_kind(s.parent)
-    child_name = f"{s.parent}.{s.tag}"
-    unit_xp = f"{DEV}.network.interface.{kind}.entry[@name={s.parent}].layer3.units.entry[@name={child_name}]"
-    payload = {
-        "tag": s.tag,
-        "comment": s.comment,
-    }
-    # <ip><entry name=.../></ip> children are written via follow-up xpath
-    # calls after the unit entry exists.
-    if s.mtu:
-        payload["adjust-tcp-mss"] = {"enable": "no"}
-        payload["mtu"] = s.mtu
-    if s.interface_management_profile:
-        payload["interface-management-profile"] = s.interface_management_profile
-    config_mgr.update_candidate(unit_xp, payload, user["username"])
-    for addr in s.ip_addresses:
-        config_mgr.update_candidate(f"{unit_xp}.ip.entry[@name={addr}]", {}, user["username"])
-    # Default-import the sub-interface into vsys1 too
-    _ensure_imported_into_vsys(child_name, vsys_name="vsys1")
-    await _audit(user, "subinterface_create", child_name)
-    return {"status": "created", "name": child_name}
-
-
-@app.delete("/api/interfaces/subinterface")
-async def subinterface_delete(parent: str = Query(...), tag: int = Query(...),
-                              user: dict = Depends(get_current_user)):
-    """Delete a sub-interface. Parent + tag are query params because
-    PAN-OS interface names contain slashes (ethernet1/1) that path
-    converters can't cleanly disambiguate."""
-    _require_lock(user)
-    kind = _iface_kind(parent)
-    child_name = f"{parent}.{tag}"
-    xp = f"{DEV}.network.interface.{kind}.entry[@name={parent}].layer3.units.entry[@name={child_name}]"
-    r = config_mgr.delete_candidate(xp, user["username"])
-    await _audit(user, "subinterface_delete", child_name)
-    return r
 
 
 # -- Live Aggregate-Ethernet status -----------------------------------------

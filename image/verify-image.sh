@@ -237,7 +237,7 @@ done
 
 # ---- 8. FFN code ---------------------------------------------------------------
 sec "8. FFN software"
-for p in ffn_manager.py ffn_payload.py ffn_ed25519.py ffn_config_zones.py static/index.html static/console-shell.css; do
+for p in ffn_manager.py ffn_payload.py ffn_ed25519.py ffn_config_zones.py ffn_config_subinterfaces.py static/index.html static/console-shell.css; do
   [ -s "$(f opt/ffn-ngfw-v2/$p)" ] && ok "$p present" || bad "$p missing"
 done
 

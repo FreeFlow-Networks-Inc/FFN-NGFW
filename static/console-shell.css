@@ -23,6 +23,10 @@ body {font-family:Arial,Helvetica,sans-serif;font-size:12px}
 .modal:has(#zone-form) > .form-actions {display:none}
 #info-modal-body:has(#zone-form) {line-height:1.5!important}
 #zone-form .settings-toolbar {justify-content:flex-end}
+.modal:has(#subinterface-form) {width:680px}
+.modal:has(#subinterface-form) > .form-actions {display:none}
+#info-modal-body:has(#subinterface-form) {line-height:1.5!important}
+#subinterface-form .settings-toolbar {justify-content:flex-end}
 #ifm-panel-config,#ifm-panel-advanced {min-height:260px}
 .topnav {height:82px;padding:0;display:grid;grid-template-columns:auto 1fr;grid-template-rows:44px 38px;gap:0;background:#34383c;color:#fff;border:0;align-content:stretch}
 .topnav .brand {grid-row:1;grid-column:1;margin:0;padding:0 18px;font-size:17px;color:#fff;letter-spacing:.2px}

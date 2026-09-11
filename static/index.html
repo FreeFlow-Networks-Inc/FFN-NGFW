@@ -3729,6 +3729,7 @@ function renderNetworkInterfaces(c) {
       <button data-kind="sdwan"    onclick="switchIfaceKind('sdwan')">SD-WAN</button>
     </div>
 
+    <p id="iface-notice" role="status" class="mb-8"></p>
     <div id="iface-source" class="text-dim" style="font-size:11px;margin-bottom:8px"></div>
 
     <div class="card"><div class="table-wrap">
@@ -3980,7 +3981,8 @@ function _ifaceRowHTML(r, isSub) {
   const fpr = (_ifaceState.faceplate||{})[r.name];
   const locked = fpr && fpr.configurable === false;
   const actions = isSub
-    ? `<button class="btn btn-xs btn-danger" onclick="deleteSubif('${r.parent}','${r.name}')">Del</button>`
+    ? `<button class="btn btn-xs" data-parent="${_escSP(r.parent)}" data-name="${_escSP(r.name)}" onclick="openSubinterfaceModal(this.dataset.parent,this.dataset.name)">Edit</button>
+       <button class="btn btn-xs btn-danger" data-parent="${_escSP(r.parent)}" data-name="${_escSP(r.name)}" onclick="deleteSubif(this.dataset.parent,this.dataset.name)">Del</button>`
     : locked
     ? `<span class="text-dim" style="font-size:10px">not user-configurable</span>`
     : `<button class="btn btn-xs" onclick="openIfaceModal('${r.name}')">Edit</button>
@@ -4374,56 +4376,74 @@ async function saveAlias(panName) {
   }
 }
 
-/* Sub-interface modal */
-async function openSubinterfaceModal(parent) {
-  document.getElementById('info-modal-title').textContent = `Add Sub-Interface on ${parent}`;
-  document.getElementById('info-modal-body').innerHTML = `
-    <div class="form-group"><label>VLAN Tag</label><input id="sif-tag" type="number" style="width:100%" placeholder="e.g. 100"></div>
-    <div class="form-group"><label>IP Addresses (comma-separated CIDR)</label><input id="sif-ip" type="text" style="width:100%" placeholder="10.0.100.1/24"></div>
-    <div class="form-group"><label>MTU</label><input id="sif-mtu" type="number" style="width:100%" placeholder="${_ifaceState.jumbo.mtu}"></div>
-    <div class="form-group"><label>Interface Mgmt Profile</label><select id="sif-mgmt" style="width:100%"><option value="">-- none --</option></select></div>
-    <div class="form-group"><label>Comment</label><input id="sif-comment" type="text" style="width:100%"></div>
-    <div style="margin-top:12px;display:flex;gap:8px">
-      <button class="btn btn-primary btn-sm" onclick="saveSubinterface('${parent}')">Save</button>
-      <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
-      <span id="sif-msg" style="font-size:11px;align-self:center"></span>
-    </div>`;
-  try {
-    const _pr = await api('/api/network-resources/interface-mgmt-profiles');
-    const _sel = document.getElementById('sif-mgmt');
-    if (_sel && _pr && Array.isArray(_pr.entries)) {
-      for (const _e of _pr.entries) {
-        const _o=document.createElement('option'); _o.value=_e.name; _o.textContent=_e.name; _sel.appendChild(_o);
-      }
-    }
-  } catch(e){}
+/* VLAN subinterfaces are edited through the revision-checked candidate API. */
+async function openSubinterfaceModal(parent, childName = null) {
+  const box = document.getElementById('info-modal-body');
+  document.getElementById('info-modal-title').textContent = childName ? 'Edit Subinterface: '+childName : 'Add Subinterface: '+parent;
+  box.innerHTML = '<p id="sif-loading" role="status">Loading candidate interface configuration…</p>';
+  const loading = document.getElementById('sif-loading');
   document.getElementById('modal-info').classList.add('show');
+  const generation = openSubinterfaceModal.generation = (openSubinterfaceModal.generation || 0)+1;
+  try {
+    const [snapshot, systems] = await Promise.all([consoleRequest('/api/config/subinterfaces?parent='+encodeURIComponent(parent)), consoleRequest('/api/vsys')]);
+    if (generation !== openSubinterfaceModal.generation || !loading.isConnected) return;
+    const existing = childName ? snapshot.entries.find(e=>e.name===childName) : null;
+    if (childName && !existing) throw new Error('Subinterface no longer exists. Refresh the interface list.');
+    if (existing && !existing.editable) throw new Error('This imported subinterface has additional settings this editor cannot safely replace.');
+    const entry = existing || {unit:'',tag:'',ip_addresses:[],mtu:'',interface_management_profile:'',comment:''};
+    const l3 = snapshot.mode === 'layer3';
+    box.innerHTML = `<form id="subinterface-form">
+      <div class="form-row"><div class="form-group"><label for="sif-unit">Subinterface ID</label><input id="sif-unit" type="number" min="1" max="9999" required ${existing?'readonly':''} value="${_escSP(entry.unit)}"></div>
+      <div class="form-group"><label for="sif-tag">VLAN Tag</label><input id="sif-tag" type="number" min="1" max="4094" required value="${_escSP(entry.tag)}"></div></div>
+      <p class="text-dim">Parent: ${_escSP(parent)} · ${l3?'Layer 3':'Layer 2'}. The interface ID and VLAN tag can differ.</p>
+      <div class="form-group"><label for="sif-vsys">Virtual System</label><select id="sif-vsys">${systems.entries.map(v=>`<option value="${_escSP(v.name)}">${_escSP(v.name)}</option>`).join('')}</select></div>
+      <div ${l3?'':'hidden'}>
+        <div class="form-group"><label for="sif-ip">IP Addresses (comma-separated CIDR)</label><input id="sif-ip" value="${_escSP(entry.ip_addresses.join(', '))}" placeholder="192.0.2.1/24, 2001:db8::1/64"></div>
+        <div class="form-row"><div class="form-group"><label for="sif-mtu">MTU</label><input id="sif-mtu" type="number" min="576" max="9216" value="${_escSP(entry.mtu)}" placeholder="Inherit"></div>
+        <div class="form-group"><label for="sif-mgmt">Interface Management Profile</label><input id="sif-mgmt" maxlength="63" value="${_escSP(entry.interface_management_profile)}" placeholder="None"></div></div>
+      </div>
+      <div class="form-group"><label for="sif-comment">Comment</label><input id="sif-comment" maxlength="1024" value="${_escSP(entry.comment)}"></div>
+      <p class="text-dim">${_escSP(snapshot.runtime_note)}</p>
+      <div class="settings-toolbar"><span id="sif-msg" role="status"></span><button class="btn" type="button" onclick="closeModal('modal-info')">Cancel</button><button id="sif-save" class="btn btn-primary" type="submit" ${snapshot.can_edit?'':'disabled'}>Save to Candidate</button></div></form>`;
+    const row = ((_ifaceState.enriched || {}).ethernet || []).find(e=>e.name===(childName || parent));
+    const vsys = row && row.virtual_system;
+    document.getElementById('sif-vsys').value = systems.entries.some(v=>v.name===vsys) ? vsys : snapshot.vsys;
+    document.getElementById('subinterface-form').onsubmit = event => {event.preventDefault();saveSubinterface(parent,snapshot,existing);};
+    document.getElementById(existing?'sif-tag':'sif-unit').focus();
+  } catch(e) {if (generation===openSubinterfaceModal.generation && loading.isConnected) box.textContent=e.message;}
 }
-
-async function saveSubinterface(parent) {
-  const body = {
-    parent,
-    tag: parseInt(document.getElementById('sif-tag').value),
-    mode: 'layer3',
-    ip_addresses: document.getElementById('sif-ip').value.split(',').map(s=>s.trim()).filter(Boolean),
-    interface_management_profile: document.getElementById('sif-mgmt').value.trim(),
-    mtu: document.getElementById('sif-mtu').value ? parseInt(document.getElementById('sif-mtu').value) : null,
-    comment: document.getElementById('sif-comment').value,
-  };
-  if (!body.tag) { document.getElementById('sif-msg').textContent='Tag required'; document.getElementById('sif-msg').style.color='var(--red)'; return; }
-  const r = await api('/api/interfaces/subinterface', {method:'POST', body: JSON.stringify(body)});
-  if (r && r.status==='created') {
-    refreshCommitIndicator();
-    loadInterfacesFull();
-    closeModal('modal-info');
-  }
+async function saveSubinterface(parent,snapshot,existing) {
+  if (!snapshot || !snapshot.can_edit) return;
+  const button=document.getElementById('sif-save'), message=document.getElementById('sif-msg');
+  if (button.disabled) return;
+  const l3 = snapshot.mode==='layer3';
+  const body={parent,revision:snapshot.revision,unit:Number(document.getElementById('sif-unit').value),tag:Number(document.getElementById('sif-tag').value),
+    mode:snapshot.mode,vsys:document.getElementById('sif-vsys').value,
+    ip_addresses:l3?document.getElementById('sif-ip').value.split(',').map(x=>x.trim()).filter(Boolean):[],
+    mtu:l3&&document.getElementById('sif-mtu').value?Number(document.getElementById('sif-mtu').value):null,
+    interface_management_profile:l3?document.getElementById('sif-mgmt').value.trim():'',comment:document.getElementById('sif-comment').value};
+  button.disabled=true;message.textContent='Saving…';
+  try {
+    const result=await consoleRequest('/api/config/subinterfaces',{method:existing?'PUT':'POST',body:JSON.stringify(body)});
+    if (!['created','updated'].includes(result.status)) throw new Error('Candidate update was not confirmed.');
+    refreshCommitIndicator();loadInterfacesFull();
+    if(message.isConnected){message.textContent='Saved '+result.name+' to candidate. Commit required.';button.textContent='Saved';}
+  } catch(e) {if(message.isConnected){message.textContent=e.message;button.disabled=false;}}
 }
-async function deleteSubif(parent, child_name) {
-  if (!confirm(`Delete ${child_name}?`)) return;
-  const tag = child_name.split('.').pop();
-  await api(`/api/interfaces/subinterface?parent=${encodeURIComponent(parent)}&tag=${tag}`, {method:'DELETE'});
-  refreshCommitIndicator();
-  loadInterfacesFull();
+async function deleteSubif(parent,childName) {
+  const notice=document.getElementById('iface-notice');
+  try {
+    const row=((_ifaceState.enriched || {}).ethernet || []).find(e=>e.name===childName);
+    const vsys=row&&row.virtual_system || 'vsys1';
+    const snapshot=await consoleRequest('/api/config/subinterfaces?parent='+encodeURIComponent(parent)+'&vsys='+encodeURIComponent(vsys));
+    const entry=snapshot.entries.find(e=>e.name===childName);
+    if (!snapshot.can_edit || !entry) throw new Error('Subinterface cannot be deleted from this view.');
+    if (!confirm('Delete '+childName+' from candidate configuration?')) return;
+    const query=new URLSearchParams({parent,unit:entry.unit,vsys,revision:snapshot.revision});
+    await consoleRequest('/api/config/subinterfaces?'+query,{method:'DELETE'});
+    refreshCommitIndicator();loadInterfacesFull();
+    if(notice&&notice.isConnected) notice.textContent='Deleted from candidate. Commit required.';
+  } catch(e) {if(notice&&notice.isConnected) notice.textContent='Unable to delete subinterface: '+e.message;}
 }
 
 /* Aggregate Ethernet creation (shortcut → opens iface modal pre-named ae<N>) */
