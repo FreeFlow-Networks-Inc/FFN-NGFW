@@ -11067,6 +11067,10 @@ def _build_iface_payload(i: InterfaceEntry) -> dict:
     if i.mode not in MODES:
         raise HTTPException(status_code=400, detail=f"mode must be one of {sorted(MODES)}")
 
+    if i.link_speed not in ('auto','10','100','1000','2500','5000','10000','25000','40000','50000','100000','200000','400000'):
+        raise HTTPException(422, 'Unsupported link speed value')
+    if i.link_duplex not in ('auto','full','half') or i.link_state not in ('auto','up','down'):
+        raise HTTPException(422, 'Invalid link duplex or state')
     payload: dict = {"comment": i.comment}
 
     # Link settings (only on ethernet / aggregate-ethernet, not aggregate-group members)
@@ -11708,10 +11712,9 @@ async def interface_create(i: InterfaceEntry, user: dict = Depends(get_current_u
     kind = "aggregate-ethernet" if i.name.startswith("ae") and "." not in i.name else "ethernet"
     xp = f"{DEV}.network.interface.{kind}.entry[@name={i.name}]"
 
-    # Nuke the entry before writing so old mode blocks don't linger.
-    config_mgr.delete_candidate(xp, user["username"])
-
+    # Validate before removing the previous candidate entry.
     payload = _build_iface_payload(i)
+    config_mgr.delete_candidate(xp, user["username"])
     config_mgr.update_candidate(xp, payload, user["username"])
 
     # Layer3 IPs are written as <ip><entry name="1.2.3.4/24"/></ip> children

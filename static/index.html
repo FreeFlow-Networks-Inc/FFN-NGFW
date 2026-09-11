@@ -4072,7 +4072,11 @@ async function openIfaceModal(name) {
   const ethList = _ifaceState.configured.ethernet||[];
   const aeList = _ifaceState.configured['aggregate-ethernet']||[];
   const existing = [...ethList, ...aeList].find(e=>e.name===name);
-  const cap = _ifaceState.caps[name] || {supported_speeds:[], current_speed_mbps:0};
+  let cap = _ifaceState.caps[name] || {supported_speeds:[], current_speed_mbps:0};
+  if(window.ffnExtensions?.interfaceLinkCapabilities && name.startsWith('ethernet')){
+    try{cap=await window.ffnExtensions.interfaceLinkCapabilities(name)||cap;}
+    catch(e){cap={supported_speeds:[],configurable:false,source:'Hardware controller unavailable'};}
+  }
 
   const speedOptions = ['auto'];
   const seen = new Set();
@@ -4080,7 +4084,7 @@ async function openIfaceModal(name) {
     const key = `${s.speed_mbps}`;
     if (!seen.has(key)) { speedOptions.push(key); seen.add(key); }
   }
-  if (!speedOptions.length) speedOptions.push('auto', '10', '100', '1000', '10000');
+  if(existing?.link_speed && !speedOptions.includes(existing.link_speed))speedOptions.push(existing.link_speed);
 
   const speedOpts = speedOptions.map(s=>`<option value="${s}">${s==='auto'?'Auto-negotiate':s+' Mb/s'}</option>`).join('');
   const modeOpts = IFACE_MODES.map(m=>`<option value="${m.value}">${m.label}</option>`).join('');
@@ -4173,7 +4177,7 @@ async function openIfaceModal(name) {
     <div id="ifm-panel-advanced" role="tabpanel" aria-labelledby="ifm-tab-advanced" hidden>
     <div class="section">
       <div class="section-title">Physical Link Settings</div>
-      <p class="text-dim" style="font-size:10px;margin-bottom:8px">ethtool-reported capabilities: ${
+      <p class="text-dim" style="font-size:10px;margin-bottom:8px">${_escSP(cap.source||'ethtool')} capabilities: ${
         cap.supported_speeds && cap.supported_speeds.length
           ? cap.supported_speeds.map(s=>`${s.speed_mbps}Mb/s ${s.duplex}`).join(', ')
           : (cap.ethtool_available===false ? 'ethtool not installed' : 'auto-detect unavailable')
@@ -4227,6 +4231,7 @@ async function openIfaceModal(name) {
   })();
   document.getElementById('ifm-agg').value = cur.aggregate_group || '';
   document.getElementById('ifm-speed').value = cur.link_speed || 'auto';
+  document.getElementById('ifm-speed').disabled = cap.configurable===false;
   document.getElementById('ifm-duplex').value = cur.link_duplex || 'auto';
   document.getElementById('ifm-state').value = cur.link_state || 'auto';
   document.getElementById('ifm-lldp').value = cur.lldp_enabled ? 'yes' : 'no';
