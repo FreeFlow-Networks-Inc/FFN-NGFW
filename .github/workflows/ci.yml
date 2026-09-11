@@ -107,6 +107,9 @@ jobs:
       - name: selected platform WebUI isolation
         run: node tests/test_extensions_ui.cjs
 
+      - name: control-plane WebUI workflow
+        run: node tests/test_plane_ui.cjs
+
       - name: code patch lifecycle and renderer
         run: |
           python3 tests/test_patches.py
@@ -221,6 +224,16 @@ jobs:
         run: |
           python tests/test_config_objects.py
           python tests/test_extensions.py
+
+      - name: plane protocol, transport and Linux networking
+        run: |
+          python tests/test_planes.py
+          python tests/test_plane_api.py
+          python tests/test_plane_sockets.py
+          python tests/test_linux_network.py
+
+      - name: native L2 and L3 packet forwarding in disposable namespaces
+        run: sudo python3 tests/test_network_namespace.py
 
       - name: patch management API permissions
         run: python tests/test_patch_api.py

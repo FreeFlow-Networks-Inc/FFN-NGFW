@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>FFN NGFW Management Console</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="/static/plane-control.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
@@ -675,6 +676,7 @@ const TAB_MENUS = {
     {id:'dash-system',label:'System Health'},
     {id:'dash-offload',label:'Dataplane Offload',needs:'offload_complex'},
     {id:'dataplane-engines',label:'Dataplane & Engines'},
+    {id:'device-control-planes',label:'Control Planes',needs:'plane_control'},
     {id:'ha',label:'High Availability'},
     {id:'fips-cc',label:'FIPS-CC Mode'},
     {section:'Administrators'},
@@ -1326,6 +1328,7 @@ function platformApplies(feature) {
   // instance, is worth showing if EITHER host-side datapath exists.
   if (Array.isArray(feature)) return feature.some(platformApplies);
   const f = _platform && _platform.features && _platform.features[feature];
+  if (feature === 'plane_control' && !f) return false;
   if (!f) return true;
   return f.applicable !== false;
 }
@@ -1411,6 +1414,7 @@ document.getElementById('main-tabs').addEventListener('click',e=>{
    genuinely absent on some platform appear here -- a page that merely LOOKS
    different is handled inside its own renderer. */
 const PAGE_NEEDS = {
+  'device-control-planes': {label:'Control Planes',needs:'plane_control'},
   'dash-offload': {label: 'Dataplane Offload', needs: 'offload_complex'},
   'vendor-fw':    {label: 'Vendor Firmware',   needs: 'offload_complex'},
 };
@@ -1506,6 +1510,7 @@ function renderPage(pageId) {
     'sdwan-iface-profile': renderSDWANInterfaceProfile,
     // Device tab
     'setup': renderDeviceSetup,
+    'device-control-planes': renderControlPlanes,
     'ha': renderDeviceHA,
     'config-audit': renderDeviceConfigAudit,
     'fips-cc': renderDeviceFips,
@@ -3520,6 +3525,7 @@ function openPayloadUpdates() { switchSubPage('device-updates'); patchLegacyUpda
 const SETUP_FIELDS = {hostname:'Hostname', timezone:'Timezone', dns_primary:'Primary DNS',
   dns_secondary:'Secondary DNS', ntp_server:'NTP Server'};
 let setupBaseline = null;
+function renderControlPlanes(c) { return window.ffnPlanes.render(c); }
 function renderDeviceSetup(c) {
   setupBaseline = null;
   c.innerHTML = `<div class="page-header"><h2>General Settings</h2></div>
