@@ -4126,6 +4126,8 @@ async function openIfaceModal(name) {
     <div id="ifm-panel-config" role="tabpanel" aria-labelledby="ifm-tab-config">
     <div id="ifm-l3-block" class="section">
       <div class="section-title">Layer 3 Settings</div>
+      <div class="form-group"><label>IPv4 Addressing</label><select id="ifm-addressing" onchange="document.getElementById('ifm-ip').disabled=this.value==='dhcp'"><option value="static">Static</option><option value="dhcp">DHCP client</option></select></div>
+      <div class="form-group"><label>DHCP Default Route</label><select id="ifm-dhcp-route"><option value="yes">Install received default route</option><option value="no">Do not install default route</option></select></div>
       <div class="form-group"><label>IP Addresses (comma-separated CIDR)</label>
         <input id="ifm-ip" type="text" style="width:100%" placeholder="10.0.0.1/24, 2001:db8::1/64">
       </div>
@@ -4230,6 +4232,9 @@ async function openIfaceModal(name) {
     if (!_vrLoaded) _s.innerHTML = '<option value="">Unavailable — assignment will be preserved</option>';
   })();
   document.getElementById('ifm-agg').value = cur.aggregate_group || '';
+  document.getElementById('ifm-addressing').value = cur.dhcp_client ? 'dhcp' : 'static';
+  document.getElementById('ifm-ip').disabled = !!cur.dhcp_client;
+  document.getElementById('ifm-dhcp-route').value = cur.dhcp_default_route===false ? 'no' : 'yes';
   document.getElementById('ifm-speed').value = cur.link_speed || 'auto';
   document.getElementById('ifm-speed').disabled = cap.configurable===false;
   document.getElementById('ifm-duplex').value = cur.link_duplex || 'auto';
@@ -4267,6 +4272,8 @@ async function saveIface() {
     interface_management_profile: document.getElementById('ifm-mgmt').value.trim(),
     mtu: document.getElementById('ifm-mtu').value ? parseInt(document.getElementById('ifm-mtu').value) : null,
     aggregate_group: document.getElementById('ifm-agg').value.trim(),
+    dhcp_client: document.getElementById('ifm-mode').value==='layer3' && document.getElementById('ifm-addressing').value==='dhcp',
+    dhcp_default_route: document.getElementById('ifm-dhcp-route').value!=='no',
     link_speed:  document.getElementById('ifm-speed').value,
     link_duplex: document.getElementById('ifm-duplex').value,
     link_state:  document.getElementById('ifm-state').value,
@@ -4277,6 +4284,7 @@ async function saveIface() {
     bond_mode: (document.getElementById('ifm-bondmode')||{}).value || 'active-backup',
     bond_miimon_ms: parseInt((document.getElementById('ifm-bondmiimon')||{}).value || '100'),
   };
+  if(body.dhcp_client)body.ip_addresses=[];
   const msg = document.getElementById('ifm-msg');
   if (msg) { msg.textContent = 'Saving...'; msg.style.color = 'var(--orange)'; }
   const vr = document.getElementById('ifm-vr');

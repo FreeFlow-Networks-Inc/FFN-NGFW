@@ -1834,30 +1834,31 @@ class ConfigManager:
         cand_root = self._load(CANDIDATE_CONFIG)
         run_root = self._load(RUNNING_CONFIG)
         parts = self._normalize_xpath(partial_xpath, cand_root)
+        if not parts:
+            return {"status": "error", "message": "Partial commit requires a subtree path"}
 
         cand_parent, cand_node = cand_root, cand_root
         for part in parts:
-            nxt = cand_node.find(part)
+            nxt = self._find_child(cand_node, part)
             if nxt is None:
                 return {"status": "error", "message": f"Path '{partial_xpath}' not in candidate"}
             cand_parent, cand_node = cand_node, nxt
 
         run_parent, run_node = run_root, run_root
         for part in parts[:-1]:
-            nxt = run_node.find(part)
-            if nxt is None:
-                nxt = ET.SubElement(run_node, part)
+            nxt = self._find_or_create_child(run_node, part)
             run_parent, run_node = run_node, nxt
         leaf_name = parts[-1]
 
         snapshot_name = f"partial-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
         self.snapshot_save(snapshot_name, f"Partial commit of {partial_xpath} by {user}")
 
-        old = run_node.find(leaf_name)
+        old = self._find_child(run_node, leaf_name)
+        index = list(run_node).index(old) if old is not None else len(run_node)
         if old is not None:
             run_node.remove(old)
         import copy
-        run_node.append(copy.deepcopy(cand_node))
+        run_node.insert(index, copy.deepcopy(cand_node))
         self._save(run_root, RUNNING_CONFIG)
 
         ctype = commit_type or "partial"
@@ -9276,6 +9277,8 @@ async def config_commit(req: CommitRequest, user: dict = Depends(get_current_use
             partial_xpath=req.partial_xpath,
             commit_type=req.commit_type,
         )
+        if result.get("status") != "committed":
+            raise HTTPException(422, result.get("message", "Commit failed"))
         # Apply to live system.
         # Preferred path: delegate to ffn-controld, which signals ffn-configd
         # (the XML validator/applier) and waits for apply-status.json.
@@ -10653,6 +10656,8 @@ class InterfaceEntry(BaseModel):
     kind: str = "ethernet"                   # ethernet | aggregate-ethernet
     mode: str = "layer3"                     # layer3 | layer2 | virtual-wire | tap | aggregate-group | decrypt-mirror | ha
     ip_addresses: list = []                  # strings ("192.168.1.1/24") or address-object names
+    dhcp_client: bool = False
+    dhcp_default_route: bool = True
     ipv6_enabled: bool = False
     ipv6_addresses: list = []
     interface_management_profile: str = ""
@@ -11071,6 +11076,8 @@ def _build_iface_payload(i: InterfaceEntry) -> dict:
         raise HTTPException(422, 'Unsupported link speed value')
     if i.link_duplex not in ('auto','full','half') or i.link_state not in ('auto','up','down'):
         raise HTTPException(422, 'Invalid link duplex or state')
+    if i.dhcp_client and (i.mode != "layer3" or i.ip_addresses):
+        raise HTTPException(422, "DHCP requires Layer 3 with no static interface addresses")
     payload: dict = {"comment": i.comment}
 
     # Link settings (only on ethernet / aggregate-ethernet, not aggregate-group members)
@@ -11101,6 +11108,8 @@ def _build_iface_payload(i: InterfaceEntry) -> dict:
         # xpath calls (update_candidate does not represent attribute-only
         # <entry> children inline). Build the non-ip pieces here.
         l3: dict = {}
+        if i.dhcp_client:
+            l3["dhcp-client"] = {"enable": "yes", "create-default-route": "yes" if i.dhcp_default_route else "no", "default-route-metric": "10"}
         if i.ipv6_enabled:
             l3["ipv6"] = {"enabled": "yes"}
         if i.mtu:
@@ -11242,6 +11251,8 @@ async def interfaces_list(user: dict = Depends(get_current_user)):
             "ip_addresses": ips,
             "ipv6_enabled": (entry.findtext("./layer3/ipv6/enabled") or "no") == "yes",
             "mtu": entry.findtext("./layer3/mtu"),
+            "dhcp_client": entry.findtext("./layer3/dhcp-client/enable", "no") == "yes",
+            "dhcp_default_route": entry.findtext("./layer3/dhcp-client/create-default-route", "yes") == "yes",
             "link_speed": entry.findtext("link-speed", "auto"),
             "link_duplex": entry.findtext("link-duplex", "auto"),
             "link_state": entry.findtext("link-state", "auto"),

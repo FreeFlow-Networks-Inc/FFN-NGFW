@@ -18,6 +18,14 @@ class LinkSettingsTests(unittest.TestCase):
     def test_invalid_speed_does_not_delete_candidate(self):
         response=self.client.post('/api/interfaces',json={'name':'ethernet1/2','link_speed':'1000; reboot'})
         self.assertEqual(response.status_code,422);self.manager.delete_candidate.assert_not_called()
+    def test_dhcp_shape_and_static_conflict(self):
+        cls=self.ns['InterfaceEntry'];build=self.ns['_build_iface_payload']
+        payload=build(cls(name='ethernet1/2',dhcp_client=True))
+        self.assertEqual(payload['layer3']['dhcp-client'],{'enable':'yes','create-default-route':'yes','default-route-metric':'10'})
+        for change in [{'mode':'layer2'},{'ip_addresses':['192.0.2.1/24']}]:
+            response=self.client.post('/api/interfaces',json={'name':'ethernet1/2','dhcp_client':True,**change})
+            self.assertEqual(response.status_code,422)
+        self.manager.delete_candidate.assert_not_called()
     def test_fixed_and_auto_payloads(self):
         cls=self.ns['InterfaceEntry'];build=self.ns['_build_iface_payload']
         self.assertEqual(build(cls(name='ethernet1/5',link_speed='1000'))['link-speed'],'1000')
