@@ -13,6 +13,7 @@ import re
 
 from fastapi import Depends, HTTPException
 from fastapi.staticfiles import StaticFiles
+from starlette.routing import Mount
 
 
 def install(app, current_user, require_admin, record_audit, selected=None):
@@ -64,7 +65,14 @@ def install(app, current_user, require_admin, record_audit, selected=None):
             if runtime_routes is not None:
                 app.include_router(runtime_routes)
                 runtime = {'provider': ident, 'api_version': 1, 'base': '/api/system/runtime'}
-            app.mount('/static/extensions/' + ident, assets, name='extension-' + ident)
+            # Starlette uses the first matching route. The manager's earlier
+            # /static mount otherwise consumes extension URLs and returns 404.
+            asset_path = '/static/extensions/' + ident
+            position = next((i for i, route in enumerate(app.router.routes)
+                             if isinstance(route, Mount) and
+                             asset_path.startswith(route.path.rstrip('/') + '/')),
+                            len(app.router.routes))
+            app.router.routes.insert(position, Mount(asset_path, app=assets, name='extension-' + ident))
             descriptors.append({'id': ident, 'label': label,
                                 'script': '/static/extensions/' + ident + '/ui.js', 'pages': pages})
             state = 'enabled'

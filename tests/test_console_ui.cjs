@@ -18,6 +18,10 @@ const context = vm.createContext({console, window:{}, localStorage:{getItem(){re
 vm.runInContext(script,context);
 const run = code => vm.runInContext(code,context);
 (async()=>{
+  context.loadSetupInfo = () => {};
+  context.switchTab('device');
+  assert.equal(run('currentSubPage'), 'setup', 'First Device click must skip section headings');
+  assert(element('content-area').innerHTML.includes('General Settings'));
   const menus=run('TAB_MENUS');
   const ids=Object.values(menus).flat().filter(x=>x.id).map(x=>x.id);
   assert.equal(new Set(ids).size,ids.length,'Every page must have one menu owner');

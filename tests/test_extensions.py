@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from fastapi.staticfiles import StaticFiles
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'opt'))
 from ffn_extensions import install
 
@@ -47,12 +48,16 @@ class ExtensionTests(unittest.TestCase):
             (root / 'static/ui.js').write_text('// test')
             (root / 'control.py').write_text('from fastapi import APIRouter\ndef router(*args):\n    return APIRouter()\n')
             app = FastAPI()
+            (root / 'core-static').mkdir()
+            (root / 'core-static/core.js').write_text('// core')
+            app.mount('/static', StaticFiles(directory=root / 'core-static'))
             install(app, user, lambda u: None, audit, selected=temp)
             with TestClient(app) as client:
                 result = client.get('/api/system/extensions').json()
                 self.assertEqual(result['state'], 'enabled')
                 self.assertEqual(result['extensions'][0]['id'], 'fixture')
                 self.assertEqual(client.get('/static/extensions/fixture/ui.js').text, '// test')
+                self.assertEqual(client.get('/static/core.js').text, '// core')
 
     def test_missing_extension_does_not_break_core(self):
         app = FastAPI()

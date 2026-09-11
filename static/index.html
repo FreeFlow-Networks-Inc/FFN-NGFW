@@ -1206,7 +1206,7 @@ function renderUnavailable(c, label) {
 function switchTab(tab) {
   if (!TAB_MENUS[tab]) return;
   const menu = TAB_MENUS[tab];
-  const previous = menu.find(it => it.id === lastTabPages[tab] && platformApplies(it.needs));
+  const previous = menu.find(it => it.id && it.id === lastTabPages[tab] && platformApplies(it.needs));
   const first = previous || menu.find(it => it.id && platformApplies(it.needs));
   currentTab = tab;
   if (first) switchSubPage(first.id);
