@@ -358,14 +358,15 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
 <div class="modal-overlay" id="modal-rule">
   <div class="modal">
     <h3 id="rule-modal-title">Add Security Rule</h3>
+    <p class="text-dim mb-8">Saved in the policy database. Saving does not confirm dataplane application. Interface matches, IPv6 and Reset are unsupported by the fast-path compiler.</p>
     <input type="hidden" id="rule-edit-id">
     <div class="form-row">
       <div class="form-group"><label>Name</label><input type="text" id="rule-name" placeholder="Rule name"></div>
       <div class="form-group"><label>Position</label><input type="number" id="rule-position" value="0" min="0"></div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label>Source Zone</label><input type="text" id="rule-src-zone" value="any"></div>
-      <div class="form-group"><label>Dest Zone</label><input type="text" id="rule-dst-zone" value="any"></div>
+      <div class="form-group"><label>Source Interface Match</label><input type="text" id="rule-src-iface" placeholder="Any"></div>
+      <div class="form-group"><label>Destination Interface Match</label><input type="text" id="rule-dst-iface" placeholder="Any"></div>
     </div>
     <div class="form-row">
       <div class="form-group"><label>Source IP (CIDR)</label><input type="text" id="rule-src" value="0.0.0.0/0"></div>
@@ -377,13 +378,13 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
     </div>
     <div class="form-row">
       <div class="form-group"><label>Protocol</label><select id="rule-proto"><option value="any">Any</option><option value="tcp">TCP</option><option value="udp">UDP</option><option value="icmp">ICMP</option></select></div>
-      <div class="form-group"><label>Action</label><select id="rule-action"><option value="permit">Allow</option><option value="deny">Deny</option><option value="drop">Drop</option><option value="reset">Reset</option></select></div>
+      <div class="form-group"><label>Action</label><select id="rule-action"><option value="permit">Allow</option><option value="deny">Deny</option><option value="drop">Drop</option><option value="inspect">Inspect</option><option value="reset">Reset (not supported by fast path)</option></select></div>
     </div>
-    <div class="form-group"><label>Application</label><input type="text" id="rule-app" value="any"></div>
+    <div class="form-row"><div class="form-group"><label>Virtual System ID (0 = all)</label><input type="number" id="rule-vsys" min="0" max="255" value="0"></div><div class="form-group"><label><input type="checkbox" id="rule-enabled" checked> Enabled</label></div></div>
     <div class="form-group"><label>Description</label><input type="text" id="rule-desc"></div>
     <div class="form-actions">
       <button class="btn" onclick="closeModal('modal-rule')">Cancel</button>
-      <button class="btn btn-primary" onclick="saveRule()">Save</button>
+      <span id="rule-msg" role="status"></span><button id="rule-save" class="btn btn-primary" onclick="saveRule()">Save Rule</button>
     </div>
   </div>
 </div>
@@ -1029,9 +1030,10 @@ async function doCommit() {
     }
     if (data.status === 'committed') {
       const apply = data.apply_status;
-      const applied = apply && apply.overall === 'applied' && !(apply.errors || []).length && !(apply.validation_errors || []).length;
+      const skipped = apply && (apply.skipped || []).length || 0;
+      const applied = apply && apply.overall === 'applied' && !(apply.errors || []).length && !(apply.validation_errors || []).length && !skipped;
       msg.textContent = `Configuration saved (${data.type}) — snapshot: ${data.snapshot}. ` +
-        (applied ? 'Applied successfully.' : `Apply status: ${apply && apply.overall || 'not reported'}. Open Tasks for details.`);
+        (applied ? 'Applied successfully.' : `Apply status: ${apply && apply.overall || 'not reported'}${skipped ? '; '+skipped+' settings skipped' : ''}. Open Tasks for details.`);
       msg.style.color = applied ? 'var(--green)' : 'var(--orange)';
       await loadCommitDiff();
       await refreshCommitIndicator();
@@ -2830,124 +2832,97 @@ function showSessionDetail(i) {
    =========================================================================== */
 
 /* ---- Policy > Security ---- */
+let policyRows = [], policyCanEdit = false, policyLoadGeneration = 0;
+let policyEditor = null;
 function renderPolicySecurity(c) {
-  c.innerHTML = `
-    <div class="page-header"><h2>Security Policy Rules</h2>
-      <div class="actions">
-        <label style="font-size:11px;color:var(--text-dim);margin-right:10px;cursor:pointer">
-          <input type="checkbox" id="policy-show-hidden" onchange="loadPolicies()" style="vertical-align:middle">
-          Show intrazone-default (implicit)
-        </label>
-        <button class="btn btn-primary" onclick="openRuleModal()">+ Add Rule</button>
-      </div>
-    </div>
-    <div class="card"><div class="table-wrap">
-      <table id="policy-table">
-        <thead><tr><th>#</th><th>Name</th><th>Src Zone</th><th>Dst Zone</th><th>Source</th><th>Destination</th><th>Service</th><th>App</th><th>Action</th><th>Profile</th><th>Hits</th><th></th></tr></thead>
-        <tbody id="policy-table-body"></tbody>
-      </table>
-    </div></div>`;
-  loadPolicies();
-  refreshTimer = setInterval(loadPolicies,10000);
+  c.innerHTML = `<div class="page-header"><h2>Security Policy</h2></div>
+    <div class="filters-bar"><input id="policy-search" aria-label="Filter security rules" placeholder="Filter rules" oninput="renderPolicyRows()">
+    <label><input type="checkbox" id="policy-show-hidden" onchange="loadPolicies()"> Show implicit defaults</label>
+    <button class="btn" onclick="loadPolicies()">Refresh</button><button id="policy-add" class="btn btn-primary" disabled onclick="openRuleModal()">Add</button></div>
+    <p id="policy-notice" role="status" class="mb-8">Loading policy rules…</p>
+    <p class="text-dim mb-8">Rules are stored in the policy database. Storage does not confirm dataplane application. Zone and application matching are not implemented here; the fast-path compiler rejects unsupported IPv6, interface and reset conditions.</p>
+    <div class="table-wrap"><table id="policy-table"><thead><tr><th>#</th><th>Name</th><th>Enabled</th><th>Source Interface</th><th>Destination Interface</th><th>Source</th><th>Destination</th><th>Service</th><th>Vsys</th><th>Action</th><th>Hits</th><th>Compilation</th><th>Actions</th></tr></thead><tbody id="policy-table-body"></tbody></table></div>`;
+  loadPolicies();refreshTimer=setInterval(loadPolicies,10000);
 }
-
 async function loadPolicies() {
-  const showHidden = !!document.getElementById('policy-show-hidden')?.checked;
-  const data = await api('/api/policy/rules?show_hidden=' + (showHidden ? 'true' : 'false'));
-  if (!data) return;
-  const tbody = document.getElementById('policy-table-body');
-  if (!tbody) return;
-  // Render user rules and default rules together. Default rules get a
-  // shaded row (matching PAN-OS UI — yellow tint), a lock glyph on the
-  // name, and disabled Edit/Delete buttons (description-only edit is
-  // still permitted via the backend but not exposed here for brevity).
-  tbody.innerHTML = data.rules.map(r => {
-    const isDefault = !!r.is_default;
-    const isImmutable = !!r.is_immutable;
-    const actionBadge = `<span class="badge badge-${r.action}">${r.action === 'permit' ? 'Allow' : (r.action === 'deny' ? 'Deny' : r.action)}</span>`;
-    const rowStyle = isDefault ? 'style="background:rgba(255,221,128,0.10)"' : '';
-    const lock = isImmutable ? '<span title="Immutable default rule" style="color:var(--text-dim);margin-right:4px">⚙</span>' : '';
-    const srcZone = r.kind === 'intrazone-default' ? '<span class="text-dim">(intrazone)</span>'
-                   : (r.kind === 'interzone-default' ? '<span class="text-dim">any</span>' : 'any');
-    const dstZone = srcZone;
-    const name = r.name || r.description || ('Rule '+r.id);
-    const editBtn = isImmutable
-      ? `<button class="btn btn-xs" onclick='editRule(${JSON.stringify(r).replace(/'/g,"&#39;")})' title="Only description editable">Edit</button>`
-      : `<button class="btn btn-xs" onclick='editRule(${JSON.stringify(r).replace(/'/g,"&#39;")})'>Edit</button>`;
-    const delBtn = isImmutable
-      ? `<button class="btn btn-xs btn-danger" disabled title="Cannot delete immutable default rule" style="opacity:0.4;cursor:not-allowed">Del</button>`
-      : `<button class="btn btn-xs btn-danger" onclick="deleteRule(${r.id})">Del</button>`;
-    return `<tr draggable="${!isImmutable}" data-id="${r.id}" ${rowStyle}>
-      <td>${r.position}</td>
-      <td>${lock}${name}</td>
-      <td>${srcZone}</td><td>${dstZone}</td>
-      <td class="mono">${r.src_ip}</td>
-      <td class="mono">${r.dst_ip}</td>
-      <td>${r.proto}/${r.dst_port||'*'}</td>
-      <td>any</td>
-      <td>${actionBadge}</td>
-      <td>default</td>
-      <td>${fmt(r.hit_count)}</td>
-      <td>${editBtn} ${delBtn}</td>
-    </tr>`;
-  }).join('');
+  const generation=++policyLoadGeneration, body=document.getElementById('policy-table-body');
+  try {
+    const data=await consoleRequest('/api/policy/rules?show_hidden='+(document.getElementById('policy-show-hidden')?.checked?'true':'false'));
+    if(generation!==policyLoadGeneration || !body.isConnected) return;
+    if(!Array.isArray(data.rules)) throw new Error('Invalid rule inventory');
+    policyRows=data.rules;policyCanEdit=!!data.can_edit;
+    document.getElementById('policy-add').disabled=!policyCanEdit;
+    document.getElementById('policy-notice').textContent=policyRows.length+' rules · '+(policyCanEdit?'Policy database':'Read-only');
+    const report=data.compilation;
+    if(report)document.getElementById('policy-notice').textContent+=' · '+(report.valid?'Compatible with fast-path format':report.blockers.length+' rule(s) block compilation')+' · Dataplane application unconfirmed';
+    renderPolicyRows();
+  } catch(e) {
+    if(generation!==policyLoadGeneration || !body.isConnected) return;
+    policyRows=[];policyCanEdit=false;body.innerHTML='';document.getElementById('policy-add').disabled=true;
+    document.getElementById('policy-notice').textContent='Unable to load rules: '+e.message;
+  }
 }
-
-function openRuleModal() {
-  document.getElementById('rule-modal-title').textContent='Add Security Rule';
-  document.getElementById('rule-edit-id').value='';
-  document.getElementById('rule-name').value='';
-  document.getElementById('rule-position').value='0';
-  document.getElementById('rule-src-zone').value='any';
-  document.getElementById('rule-dst-zone').value='any';
-  document.getElementById('rule-src').value='0.0.0.0/0';
-  document.getElementById('rule-dst').value='0.0.0.0/0';
-  document.getElementById('rule-sport').value='0';
-  document.getElementById('rule-dport').value='0';
-  document.getElementById('rule-proto').value='any';
-  document.getElementById('rule-action').value='permit';
-  document.getElementById('rule-app').value='any';
-  document.getElementById('rule-desc').value='';
-  document.getElementById('modal-rule').classList.add('show');
-}
-
-function editRule(r) {
-  document.getElementById('rule-modal-title').textContent='Edit Rule #'+r.id;
-  document.getElementById('rule-edit-id').value=r.id;
-  document.getElementById('rule-name').value=r.description||'';
-  document.getElementById('rule-position').value=r.position||0;
-  document.getElementById('rule-src').value=r.src_ip;
-  document.getElementById('rule-dst').value=r.dst_ip;
-  document.getElementById('rule-sport').value=r.src_port;
-  document.getElementById('rule-dport').value=r.dst_port;
-  document.getElementById('rule-proto').value=r.proto;
-  document.getElementById('rule-action').value=r.action;
-  document.getElementById('rule-desc').value=r.description;
-  document.getElementById('modal-rule').classList.add('show');
-}
-
-async function saveRule() {
-  const id = document.getElementById('rule-edit-id').value;
-  const body = {
-    src_ip: document.getElementById('rule-src').value,
-    dst_ip: document.getElementById('rule-dst').value,
-    src_port: parseInt(document.getElementById('rule-sport').value),
-    dst_port: parseInt(document.getElementById('rule-dport').value),
-    proto: document.getElementById('rule-proto').value,
-    action: document.getElementById('rule-action').value,
-    description: document.getElementById('rule-desc').value||document.getElementById('rule-name').value,
-    position: parseInt(document.getElementById('rule-position').value),
+function renderPolicyRows() {
+  const body=document.getElementById('policy-table-body');if(!body)return;
+  const query=(document.getElementById('policy-search').value||'').toLowerCase();
+  body.innerHTML=policyRows.map((r,index)=>({r,index})).filter(({r})=>[r.name,r.description,r.src_ip,r.dst_ip,r.src_iface,r.dst_iface,r.action,r.proto].join(' ').toLowerCase().includes(query)).map(({r,index})=>{
+    const actions=`<button class="btn btn-xs" data-rule="${index}" data-action="edit">${policyCanEdit?'Edit':'View'}</button>`+
+      (!r.is_immutable&&policyCanEdit?` <button class="btn btn-xs" data-rule="${index}" data-action="clone">Clone</button> <button class="btn btn-xs" data-rule="${index}" data-action="delete">Delete</button>`:'');
+    return `<tr class="${r.enabled?'':'policy-disabled'}"><td>${_escSP(r.position)}</td><td>${_escSP(r.name || r.description || 'Rule '+r.id)}${r.is_immutable?' (default)':''}</td>
+      <td>${r.enabled?'Yes':'No'}</td><td>${_escSP(r.src_iface || 'Any')}</td><td>${_escSP(r.dst_iface || 'Any')}</td><td>${_escSP(r.src_ip)}</td><td>${_escSP(r.dst_ip)}</td>
+      <td>${_escSP(r.proto)} · ${_escSP(r.src_port || '*')} → ${_escSP(r.dst_port || '*')}</td><td>${_escSP(r.vsys || 'All')}</td><td>${_escSP(r.action)}</td><td>${fmt(r.hit_count || 0)}</td><td>${_escSP(r.compilation ? (r.compilation.included ? (r.compilation.compatible ? 'Compatible' : 'Blocked: '+r.compilation.issue) : 'Excluded'+(r.compilation.issue ? ': '+r.compilation.issue : '')) : 'Unknown')}</td><td>${actions}</td></tr>`;
+  }).join('') || '<tr><td colspan="13">No matching rules.</td></tr>';
+  body.onclick=event=>{
+    const button=event.target.closest('[data-rule]');if(!button)return;
+    const rule=policyRows[Number(button.dataset.rule)];if(!rule)return;
+    if(button.dataset.action==='edit')editRule(rule);
+    else if(button.dataset.action==='clone')cloneRule(rule);
+    else deleteRule(rule.id);
   };
-  if (id) await api(`/api/policy/rules/${id}`,{method:'PUT',body:JSON.stringify(body)});
-  else await api('/api/policy/rules',{method:'POST',body:JSON.stringify(body)});
-  closeModal('modal-rule');
-  loadPolicies();
 }
-
+const RULE_FIELDS={name:'name',position:'position',src_iface:'src-iface',dst_iface:'dst-iface',src_ip:'src',dst_ip:'dst',src_port:'sport',dst_port:'dport',proto:'proto',action:'action',vsys:'vsys',description:'desc'};
+function openRuleModal(){if(policyCanEdit)editRule(null);}
+function cloneRule(rule){if(policyCanEdit&&!rule.is_immutable)editRule({...rule,id:null,name:((rule.name||'rule')+'-copy').slice(0,127),position:0,enabled:0});}
+function editRule(rule) {
+  const data=rule || {name:'',position:0,src_iface:'',dst_iface:'',src_ip:'0.0.0.0/0',dst_ip:'0.0.0.0/0',src_port:0,dst_port:0,proto:'any',action:'permit',vsys:0,description:'',enabled:1};
+  policyEditor={...data};
+  document.getElementById('rule-modal-title').textContent=data.id?'Security Rule: '+(data.name||data.id):'Add Security Rule';
+  document.getElementById('rule-edit-id').value=data.id||'';
+  for(const [key,id] of Object.entries(RULE_FIELDS)) {
+    const element=document.getElementById('rule-'+id);
+    if((key==='proto'||key==='action') && !Array.from(element.options||[]).some(o=>o.value===String(data[key]))) {
+      const option=document.createElement('option');option.value=data[key];option.textContent=data[key];element.appendChild(option);
+    }
+    element.value=data[key]??'';
+    element.disabled=!policyCanEdit || !!data.is_immutable && key!=='description';
+  }
+  document.getElementById('rule-enabled').checked=!!data.enabled;
+  document.getElementById('rule-enabled').disabled=!policyCanEdit || !!data.is_immutable;
+  document.getElementById('rule-save').disabled=!policyCanEdit;
+  document.getElementById('rule-msg').textContent=data.is_immutable?'Default rule: only the description can be changed.':(!data.enabled?'Disabled rule. Enable explicitly when ready.':'');
+  document.getElementById('modal-rule').classList.add('show');
+}
+async function saveRule() {
+  if(!policyCanEdit || !policyEditor)return;
+  const button=document.getElementById('rule-save'),message=document.getElementById('rule-msg');
+  if(button.disabled)return;
+  const editor=policyEditor, payload={};
+  for(const [key,id] of Object.entries(RULE_FIELDS)) payload[key]=document.getElementById('rule-'+id).value;
+  for(const key of ['position','src_port','dst_port','vsys'])payload[key]=Number(payload[key]);
+  for(const key of ['src_iface','dst_iface'])payload[key]=payload[key].trim()||null;
+  payload.enabled=document.getElementById('rule-enabled').checked;
+  button.disabled=true;message.textContent='Saving rule…';
+  try {
+    const result=await consoleRequest('/api/policy/rules'+(editor.id?'/'+editor.id:''),{method:editor.id?'PUT':'POST',body:JSON.stringify(payload)});
+    if(!['created','updated'].includes(result.status))throw new Error('Rule save was not confirmed.');
+    if(policyEditor===editor){message.textContent='Saved to policy database. Dataplane application is not confirmed.';}
+    await loadPolicies();
+  } catch(e){if(policyEditor===editor){message.textContent=e.message;button.disabled=false;}}
+}
 async function deleteRule(id) {
-  if (!confirm('Delete rule #'+id+'?')) return;
-  await api(`/api/policy/rules/${id}`,{method:'DELETE'});
-  loadPolicies();
+  if(!policyCanEdit || !confirm('Delete rule #'+id+' from the policy database?'))return;
+  try{await consoleRequest('/api/policy/rules/'+id,{method:'DELETE'});await loadPolicies();}
+  catch(e){document.getElementById('policy-notice').textContent='Unable to delete rule: '+e.message;}
 }
 
 /* ---- Policy > NAT ---- */
@@ -3728,6 +3703,7 @@ function renderNetworkInterfaces(c) {
       <button data-kind="sdwan"    onclick="switchIfaceKind('sdwan')">SD-WAN</button>
     </div>
 
+    <p id="iface-notice" role="status" class="mb-8"></p>
     <div id="iface-source" class="text-dim" style="font-size:11px;margin-bottom:8px"></div>
 
     <div class="card"><div class="table-wrap">
@@ -3979,7 +3955,8 @@ function _ifaceRowHTML(r, isSub) {
   const fpr = (_ifaceState.faceplate||{})[r.name];
   const locked = fpr && fpr.configurable === false;
   const actions = isSub
-    ? `<button class="btn btn-xs btn-danger" onclick="deleteSubif('${r.parent}','${r.name}')">Del</button>`
+    ? `<button class="btn btn-xs" data-parent="${_escSP(r.parent)}" data-name="${_escSP(r.name)}" onclick="openSubinterfaceModal(this.dataset.parent,this.dataset.name)">Edit</button>
+       <button class="btn btn-xs btn-danger" data-parent="${_escSP(r.parent)}" data-name="${_escSP(r.name)}" onclick="deleteSubif(this.dataset.parent,this.dataset.name)">Del</button>`
     : locked
     ? `<span class="text-dim" style="font-size:10px">not user-configurable</span>`
     : `<button class="btn btn-xs" onclick="openIfaceModal('${r.name}')">Edit</button>
@@ -4373,56 +4350,74 @@ async function saveAlias(panName) {
   }
 }
 
-/* Sub-interface modal */
-async function openSubinterfaceModal(parent) {
-  document.getElementById('info-modal-title').textContent = `Add Sub-Interface on ${parent}`;
-  document.getElementById('info-modal-body').innerHTML = `
-    <div class="form-group"><label>VLAN Tag</label><input id="sif-tag" type="number" style="width:100%" placeholder="e.g. 100"></div>
-    <div class="form-group"><label>IP Addresses (comma-separated CIDR)</label><input id="sif-ip" type="text" style="width:100%" placeholder="10.0.100.1/24"></div>
-    <div class="form-group"><label>MTU</label><input id="sif-mtu" type="number" style="width:100%" placeholder="${_ifaceState.jumbo.mtu}"></div>
-    <div class="form-group"><label>Interface Mgmt Profile</label><select id="sif-mgmt" style="width:100%"><option value="">-- none --</option></select></div>
-    <div class="form-group"><label>Comment</label><input id="sif-comment" type="text" style="width:100%"></div>
-    <div style="margin-top:12px;display:flex;gap:8px">
-      <button class="btn btn-primary btn-sm" onclick="saveSubinterface('${parent}')">Save</button>
-      <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
-      <span id="sif-msg" style="font-size:11px;align-self:center"></span>
-    </div>`;
-  try {
-    const _pr = await api('/api/network-resources/interface-mgmt-profiles');
-    const _sel = document.getElementById('sif-mgmt');
-    if (_sel && _pr && Array.isArray(_pr.entries)) {
-      for (const _e of _pr.entries) {
-        const _o=document.createElement('option'); _o.value=_e.name; _o.textContent=_e.name; _sel.appendChild(_o);
-      }
-    }
-  } catch(e){}
+/* VLAN subinterfaces are edited through the revision-checked candidate API. */
+async function openSubinterfaceModal(parent, childName = null) {
+  const box = document.getElementById('info-modal-body');
+  document.getElementById('info-modal-title').textContent = childName ? 'Edit Subinterface: '+childName : 'Add Subinterface: '+parent;
+  box.innerHTML = '<p id="sif-loading" role="status">Loading candidate interface configuration…</p>';
+  const loading = document.getElementById('sif-loading');
   document.getElementById('modal-info').classList.add('show');
+  const generation = openSubinterfaceModal.generation = (openSubinterfaceModal.generation || 0)+1;
+  try {
+    const [snapshot, systems] = await Promise.all([consoleRequest('/api/config/subinterfaces?parent='+encodeURIComponent(parent)), consoleRequest('/api/vsys')]);
+    if (generation !== openSubinterfaceModal.generation || !loading.isConnected) return;
+    const existing = childName ? snapshot.entries.find(e=>e.name===childName) : null;
+    if (childName && !existing) throw new Error('Subinterface no longer exists. Refresh the interface list.');
+    if (existing && !existing.editable) throw new Error('This imported subinterface has additional settings this editor cannot safely replace.');
+    const entry = existing || {unit:'',tag:'',ip_addresses:[],mtu:'',interface_management_profile:'',comment:''};
+    const l3 = snapshot.mode === 'layer3';
+    box.innerHTML = `<form id="subinterface-form">
+      <div class="form-row"><div class="form-group"><label for="sif-unit">Subinterface ID</label><input id="sif-unit" type="number" min="1" max="9999" required ${existing?'readonly':''} value="${_escSP(entry.unit)}"></div>
+      <div class="form-group"><label for="sif-tag">VLAN Tag</label><input id="sif-tag" type="number" min="1" max="4094" required value="${_escSP(entry.tag)}"></div></div>
+      <p class="text-dim">Parent: ${_escSP(parent)} · ${l3?'Layer 3':'Layer 2'}. The interface ID and VLAN tag can differ.</p>
+      <div class="form-group"><label for="sif-vsys">Virtual System</label><select id="sif-vsys">${systems.entries.map(v=>`<option value="${_escSP(v.name)}">${_escSP(v.name)}</option>`).join('')}</select></div>
+      <div ${l3?'':'hidden'}>
+        <div class="form-group"><label for="sif-ip">IP Addresses (comma-separated CIDR)</label><input id="sif-ip" value="${_escSP(entry.ip_addresses.join(', '))}" placeholder="192.0.2.1/24, 2001:db8::1/64"></div>
+        <div class="form-row"><div class="form-group"><label for="sif-mtu">MTU</label><input id="sif-mtu" type="number" min="576" max="9216" value="${_escSP(entry.mtu)}" placeholder="Inherit"></div>
+        <div class="form-group"><label for="sif-mgmt">Interface Management Profile</label><input id="sif-mgmt" maxlength="63" value="${_escSP(entry.interface_management_profile)}" placeholder="None"></div></div>
+      </div>
+      <div class="form-group"><label for="sif-comment">Comment</label><input id="sif-comment" maxlength="1024" value="${_escSP(entry.comment)}"></div>
+      <p class="text-dim">${_escSP(snapshot.runtime_note)}</p>
+      <div class="settings-toolbar"><span id="sif-msg" role="status"></span><button class="btn" type="button" onclick="closeModal('modal-info')">Cancel</button><button id="sif-save" class="btn btn-primary" type="submit" ${snapshot.can_edit?'':'disabled'}>Save to Candidate</button></div></form>`;
+    const row = ((_ifaceState.enriched || {}).ethernet || []).find(e=>e.name===(childName || parent));
+    const vsys = row && row.virtual_system;
+    document.getElementById('sif-vsys').value = systems.entries.some(v=>v.name===vsys) ? vsys : snapshot.vsys;
+    document.getElementById('subinterface-form').onsubmit = event => {event.preventDefault();saveSubinterface(parent,snapshot,existing);};
+    document.getElementById(existing?'sif-tag':'sif-unit').focus();
+  } catch(e) {if (generation===openSubinterfaceModal.generation && loading.isConnected) box.textContent=e.message;}
 }
-
-async function saveSubinterface(parent) {
-  const body = {
-    parent,
-    tag: parseInt(document.getElementById('sif-tag').value),
-    mode: 'layer3',
-    ip_addresses: document.getElementById('sif-ip').value.split(',').map(s=>s.trim()).filter(Boolean),
-    interface_management_profile: document.getElementById('sif-mgmt').value.trim(),
-    mtu: document.getElementById('sif-mtu').value ? parseInt(document.getElementById('sif-mtu').value) : null,
-    comment: document.getElementById('sif-comment').value,
-  };
-  if (!body.tag) { document.getElementById('sif-msg').textContent='Tag required'; document.getElementById('sif-msg').style.color='var(--red)'; return; }
-  const r = await api('/api/interfaces/subinterface', {method:'POST', body: JSON.stringify(body)});
-  if (r && r.status==='created') {
-    refreshCommitIndicator();
-    loadInterfacesFull();
-    closeModal('modal-info');
-  }
+async function saveSubinterface(parent,snapshot,existing) {
+  if (!snapshot || !snapshot.can_edit) return;
+  const button=document.getElementById('sif-save'), message=document.getElementById('sif-msg');
+  if (button.disabled) return;
+  const l3 = snapshot.mode==='layer3';
+  const body={parent,revision:snapshot.revision,unit:Number(document.getElementById('sif-unit').value),tag:Number(document.getElementById('sif-tag').value),
+    mode:snapshot.mode,vsys:document.getElementById('sif-vsys').value,
+    ip_addresses:l3?document.getElementById('sif-ip').value.split(',').map(x=>x.trim()).filter(Boolean):[],
+    mtu:l3&&document.getElementById('sif-mtu').value?Number(document.getElementById('sif-mtu').value):null,
+    interface_management_profile:l3?document.getElementById('sif-mgmt').value.trim():'',comment:document.getElementById('sif-comment').value};
+  button.disabled=true;message.textContent='Saving…';
+  try {
+    const result=await consoleRequest('/api/config/subinterfaces',{method:existing?'PUT':'POST',body:JSON.stringify(body)});
+    if (!['created','updated'].includes(result.status)) throw new Error('Candidate update was not confirmed.');
+    refreshCommitIndicator();loadInterfacesFull();
+    if(message.isConnected){message.textContent='Saved '+result.name+' to candidate. Commit required.';button.textContent='Saved';}
+  } catch(e) {if(message.isConnected){message.textContent=e.message;button.disabled=false;}}
 }
-async function deleteSubif(parent, child_name) {
-  if (!confirm(`Delete ${child_name}?`)) return;
-  const tag = child_name.split('.').pop();
-  await api(`/api/interfaces/subinterface?parent=${encodeURIComponent(parent)}&tag=${tag}`, {method:'DELETE'});
-  refreshCommitIndicator();
-  loadInterfacesFull();
+async function deleteSubif(parent,childName) {
+  const notice=document.getElementById('iface-notice');
+  try {
+    const row=((_ifaceState.enriched || {}).ethernet || []).find(e=>e.name===childName);
+    const vsys=row&&row.virtual_system || 'vsys1';
+    const snapshot=await consoleRequest('/api/config/subinterfaces?parent='+encodeURIComponent(parent)+'&vsys='+encodeURIComponent(vsys));
+    const entry=snapshot.entries.find(e=>e.name===childName);
+    if (!snapshot.can_edit || !entry) throw new Error('Subinterface cannot be deleted from this view.');
+    if (!confirm('Delete '+childName+' from candidate configuration?')) return;
+    const query=new URLSearchParams({parent,unit:entry.unit,vsys,revision:snapshot.revision});
+    await consoleRequest('/api/config/subinterfaces?'+query,{method:'DELETE'});
+    refreshCommitIndicator();loadInterfacesFull();
+    if(notice&&notice.isConnected) notice.textContent='Deleted from candidate. Commit required.';
+  } catch(e) {if(notice&&notice.isConnected) notice.textContent='Unable to delete subinterface: '+e.message;}
 }
 
 /* Aggregate Ethernet creation (shortcut → opens iface modal pre-named ae<N>) */
@@ -4479,154 +4474,103 @@ const ZONE_TYPES = [
   {value:'external',     label:'External'},
 ];
 
-let _zonesVsys = 'vsys1';
-
+let _zonesVsys = 'vsys1', zoneSnapshot = null, zoneRequestId = 0;
 function renderNetworkZones(c) {
-  c.innerHTML = `
-    <div class="page-header"><h2>Security Zones</h2>
-      <div class="actions">
-        <select id="zones-vsys-select" onchange="loadZones()" style="margin-right:8px"></select>
-        <button class="btn btn-primary btn-sm" onclick="openZoneModal()">+ Add Zone</button>
-      </div>
-    </div>
-    <p class="text-dim" style="font-size:11px;margin-bottom:10px">
-      Zones scope security policy. Each zone belongs to a vsys and has a type matching
-      the interfaces attached to it. Assigning an interface to a zone writes
-      <code>vsys/entry[@name=X]/zone/entry[@name=Y]/network/&lt;type&gt;/member</code>.
-    </p>
-    <div class="card"><div class="table-wrap">
-      <table>
-        <thead><tr>
-          <th>Zone</th><th>Type</th><th>Interfaces</th><th>User-ID</th>
-          <th>Protection Profile</th><th>Log Setting</th><th>Comment</th><th></th>
-        </tr></thead>
-        <tbody id="zones-tbody"></tbody>
-      </table>
-    </div></div>`;
-  loadZonesVsysList().then(loadZones);
+  zoneSnapshot = null;
+  c.innerHTML = `<div class="page-header"><h2>Zones</h2></div>
+    <div class="filters-bar"><label>Virtual System <select id="zones-vsys-select" onchange="loadZones()"></select></label>
+      <label>Configuration <select id="zones-source" onchange="loadZones()"><option value="candidate">Candidate</option><option value="running">Running</option></select></label>
+      <button class="btn" onclick="loadZones()">Refresh</button><button id="zones-add" class="btn btn-primary" disabled onclick="openZoneModal()">Add</button></div>
+    <p id="zones-notice" role="status" class="mb-8">Loading virtual systems…</p>
+    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Interfaces</th><th>User-ID</th><th>Protection Profile</th><th>Log Setting</th><th>Comment</th><th>Actions</th></tr></thead><tbody id="zones-tbody"></tbody></table></div>`;
+  loadZonesVsysList();
 }
-
 async function loadZonesVsysList() {
-  const d = await api('/api/vsys');
-  const sel = document.getElementById('zones-vsys-select');
-  if (!sel) return;
-  const entries = (d && d.entries) || [{name:'vsys1'}];
-  sel.innerHTML = entries.map(v=>`<option value="${_escSP(v.name)}" ${v.name===_zonesVsys?'selected':''}>${_escSP(v.name)} (${_escSP(v.display_name||v.name)})</option>`).join('');
+  const select = document.getElementById('zones-vsys-select');
+  try {
+    const data = await consoleRequest('/api/vsys');
+    if (!select.isConnected) return;
+    if (!Array.isArray(data.entries) || !data.entries.length) throw new Error('No virtual systems are configured.');
+    select.innerHTML = data.entries.map(v=>`<option value="${_escSP(v.name)}">${_escSP(v.display_name || v.name)}</option>`).join('');
+    if (data.entries.some(v=>v.name===_zonesVsys)) select.value = _zonesVsys;
+    await loadZones();
+  } catch(e) { if(select.isConnected) document.getElementById('zones-notice').textContent = e.message; }
 }
-
 async function loadZones() {
-  const sel = document.getElementById('zones-vsys-select');
-  _zonesVsys = sel ? sel.value : 'vsys1';
-  const d = await api(`/api/vsys/${encodeURIComponent(_zonesVsys)}/zones`);
-  const tbody = document.getElementById('zones-tbody');
-  if (!tbody) return;
-  const entries = (d && d.entries) || [];
-  if (!entries.length) {
-    tbody.innerHTML = `<tr><td colspan="8" class="text-dim">No zones in ${_escSP(_zonesVsys)}. Click <strong>+ Add Zone</strong> to create one.</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = entries.map((z,i)=>`<tr>
-    <td><strong>${_escSP(z.name)}</strong></td>
-    <td><span class="badge" style="background:#1a4f9e;color:#fff">${_escSP(z.zone_type)}</span></td>
-    <td class="mono" style="font-size:10px">${_escSP((z.interfaces||[]).join(', ')||'--')}</td>
-    <td>${z.enable_user_identification?'<span class="badge badge-up">on</span>':'<span class="text-dim">off</span>'}</td>
-    <td>${_escSP(z.zone_protection_profile||'--')}</td>
-    <td>${_escSP(z.log_setting||'--')}</td>
-    <td class="text-dim" style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${_escSP(z.comment||'')}</td>
-    <td>
-      <button class="btn btn-xs" data-zone="${i}" data-action="edit">Edit</button>
-      <button class="btn btn-xs btn-danger" data-zone="${i}" data-action="delete">Del</button>
-    </td>
-  </tr>`).join('');
-  tbody.onclick = event => {
-    const button = event.target.closest('[data-zone]'); if (!button) return;
-    const zone = entries[Number(button.dataset.zone)]; if (!zone) return;
-    if (button.dataset.action === 'edit') editZone(zone);
-    else if (button.dataset.action === 'delete') deleteZone(zone.name);
-  };
+  const id = ++zoneRequestId, notice = document.getElementById('zones-notice'), body = document.getElementById('zones-tbody');
+  const vsys = document.getElementById('zones-vsys-select').value;
+  if (!vsys) return;
+  _zonesVsys = vsys; zoneSnapshot = null;
+  document.getElementById('zones-add').disabled = true;
+  notice.textContent = 'Loading zones…'; body.innerHTML = '';
+  try {
+    const source = document.getElementById('zones-source').value;
+    const result = await consoleRequest(`/api/vsys/${encodeURIComponent(vsys)}/zones?source=${source}`);
+    if (id !== zoneRequestId || !body.isConnected) return;
+    zoneSnapshot = result;
+    document.getElementById('zones-add').disabled = !result.can_edit;
+    notice.textContent = (source==='running'?'Running configuration is read-only. ':'Candidate changes require Commit. ') + result.enforcement;
+    body.innerHTML = result.entries.map((z,i)=>`<tr><td>${_escSP(z.name)}</td><td>${_escSP(z.zone_type)}</td>
+      <td>${_escSP(z.interfaces.join(', ') || '—')}</td><td>${z.enable_user_identification?'Enabled':'Disabled'}</td>
+      <td>${_escSP(z.zone_protection_profile || '—')}</td><td>${_escSP(z.log_setting || '—')}</td><td>${_escSP(z.comment)}</td>
+      <td><button class="btn btn-xs" data-zone="${i}" data-action="edit" ${result.can_edit&&z.editable?'':'disabled'}>Edit</button>
+      <button class="btn btn-xs" data-zone="${i}" data-action="delete" ${result.can_edit?'':'disabled'}>Delete</button></td></tr>`).join('') || '<tr><td colspan="8">No zones in this virtual system.</td></tr>';
+    body.onclick = event => {
+      const button = event.target.closest('[data-zone]');
+      if (!button || button.disabled || result !== zoneSnapshot) return;
+      const zone = result.entries[Number(button.dataset.zone)];
+      if (button.dataset.action === 'edit') openZoneModal(zone); else deleteZone(zone.name);
+    };
+  } catch(e) { if(id===zoneRequestId && body.isConnected) notice.textContent = 'Unable to load zones: '+e.message; }
 }
-
 function openZoneModal(existing) {
-  const modeOpts = ZONE_TYPES.map(t=>`<option value="${t.value}">${t.label}</option>`).join('');
-  // Build available interface list
-  const allIfs = [
-    ...(_ifaceState.configured.ethernet||[]).map(e=>e.name),
-    ...(_ifaceState.configured['aggregate-ethernet']||[]).map(e=>e.name),
-  ];
-  for (const eth of _ifaceState.configured.ethernet||[]) {
-    (eth.sub_interfaces||[]).forEach(s=>allIfs.push(s));
-  }
-  const ifsOpts = allIfs.map(n=>`<option value="${n}">${n}</option>`).join('');
-
-  document.getElementById('info-modal-title').textContent = (existing?'Edit':'Create')+' Zone';
-  document.getElementById('info-modal-body').innerHTML = `
-    <div class="form-group"><label>Name</label><input id="zm-name" type="text" style="width:100%" ${existing?'readonly':''}></div>
-    <div class="form-group"><label>Type</label><select id="zm-type" style="width:100%">${modeOpts}</select></div>
-    <div class="form-group"><label>Interfaces (hold Ctrl to multi-select)</label>
-      <select id="zm-ifs" multiple size="6" style="width:100%">${ifsOpts}</select>
-    </div>
-    <div class="form-row">
-      <div class="form-group"><label>Enable User-ID</label><select id="zm-userid" style="width:100%"><option value="no">No</option><option value="yes">Yes</option></select></div>
-      <div class="form-group"><label>Protection Profile</label><input id="zm-prot" type="text" style="width:100%" placeholder="e.g. strict"></div>
-      <div class="form-group"><label>Log Setting</label><input id="zm-log" type="text" style="width:100%"></div>
-    </div>
-    <div class="form-group"><label>Comment</label><input id="zm-comment" type="text" style="width:100%" placeholder="Describe this zone's purpose"></div>
-    <div style="margin-top:12px;display:flex;gap:8px">
-      <button class="btn btn-primary btn-sm" onclick="saveZone(${existing?`'${existing.name}'`:'null'})">Save to Candidate</button>
-      <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
-      <span id="zm-msg" style="font-size:11px;align-self:center"></span>
-    </div>`;
-
-  if (existing) {
-    document.getElementById('zm-name').value = existing.name;
-    document.getElementById('zm-type').value = existing.zone_type || 'layer3';
-    const sel = document.getElementById('zm-ifs');
-    for (const opt of sel.options) {
-      opt.selected = (existing.interfaces||[]).includes(opt.value);
-    }
-    document.getElementById('zm-userid').value = existing.enable_user_identification ? 'yes':'no';
-    document.getElementById('zm-prot').value = existing.zone_protection_profile || '';
-    document.getElementById('zm-log').value = existing.log_setting || '';
-    document.getElementById('zm-comment').value = existing.comment || '';
-  }
+  const snapshot = zoneSnapshot;
+  if (!snapshot || !snapshot.can_edit) return;
+  const zone = existing || {name:'',zone_type:'layer3',interfaces:[],comment:''};
+  const choices = [...snapshot.interface_choices];
+  for (const name of zone.interfaces) if (!choices.some(c=>c.name===name)) choices.push({name,mode:'unresolved',zone:zone.name});
+  document.getElementById('info-modal-title').textContent = existing?'Edit Zone: '+zone.name:'New Zone';
+  document.getElementById('info-modal-body').innerHTML = `<form id="zone-form">
+    <div class="form-group"><label for="zm-name">Name</label><input id="zm-name" required maxlength="63" pattern="[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}" ${existing?'readonly':''} value="${_escSP(zone.name)}"></div>
+    <div class="form-group"><label for="zm-type">Type</label><select id="zm-type">${ZONE_TYPES.map(t=>`<option value="${t.value}" ${zone.zone_type===t.value?'selected':''}>${t.label}</option>`).join('')}</select></div>
+    <div class="form-group"><label for="zm-ifs">Interfaces</label><select id="zm-ifs" multiple size="6">${choices.map(c=>`<option value="${_escSP(c.name)}" ${zone.interfaces.includes(c.name)?'selected':''} ${c.zone&&c.zone!==zone.name?'disabled':''}>${_escSP(c.name)} · ${_escSP(c.mode)}${c.zone?' · '+_escSP(c.zone):''}</option>`).join('')}</select>
+    <p class="text-dim">Select interfaces matching the zone type. Interfaces assigned to another zone cannot be selected. Unresolved existing members are retained.</p></div>
+    <div class="form-row"><div class="form-group"><label for="zm-userid">User Identification</label><select id="zm-userid"><option value="no">Disabled</option><option value="yes" ${zone.enable_user_identification?'selected':''}>Enabled</option></select></div>
+    <div class="form-group"><label for="zm-prot">Protection Profile</label><input id="zm-prot" maxlength="63" value="${_escSP(zone.zone_protection_profile || '')}"></div>
+    <div class="form-group"><label for="zm-log">Log Setting</label><input id="zm-log" maxlength="63" value="${_escSP(zone.log_setting || '')}"></div></div>
+    <div class="form-group"><label for="zm-comment">Comment</label><input id="zm-comment" maxlength="1024" value="${_escSP(zone.comment)}"></div>
+    <p class="text-dim">${_escSP(snapshot.enforcement)}</p>
+    <div class="settings-toolbar"><span id="zm-msg" role="status"></span><button class="btn" type="button" onclick="closeModal('modal-info')">Cancel</button><button id="zm-save" class="btn btn-primary" type="submit">Save to Candidate</button></div></form>`;
+  document.getElementById('zone-form').onsubmit = event => {event.preventDefault();saveZone(existing&&existing.name,snapshot);};
   document.getElementById('modal-info').classList.add('show');
+  document.getElementById('zm-name').focus();
 }
-
-function editZone(z) { openZoneModal(z); }
-
-async function saveZone(existingName) {
-  const selIfs = Array.from(document.getElementById('zm-ifs').selectedOptions).map(o=>o.value);
-  const body = {
-    name: document.getElementById('zm-name').value.trim(),
-    zone_type: document.getElementById('zm-type').value,
-    interfaces: selIfs,
-    enable_user_identification: document.getElementById('zm-userid').value === 'yes',
-    zone_protection_profile: document.getElementById('zm-prot').value.trim(),
-    log_setting: document.getElementById('zm-log').value.trim(),
-    comment: document.getElementById('zm-comment').value,
-  };
-  if (!body.name) { document.getElementById('zm-msg').textContent='Name required'; document.getElementById('zm-msg').style.color='var(--red)'; return; }
-  let r;
-  if (existingName) {
-    r = await api(`/api/vsys/${encodeURIComponent(_zonesVsys)}/zones/${encodeURIComponent(existingName)}`, {method:'PUT', body: JSON.stringify(body)});
-  } else {
-    r = await api(`/api/vsys/${encodeURIComponent(_zonesVsys)}/zones`, {method:'POST', body: JSON.stringify(body)});
-  }
-  if (r && (r.status==='created' || r.status==='updated')) {
+async function saveZone(existingName, snapshot) {
+  if (!snapshot || !snapshot.can_edit) return;
+  const message = document.getElementById('zm-msg'), button = document.getElementById('zm-save');
+  if (button.disabled) return;
+  const payload = {revision:snapshot.revision,name:document.getElementById('zm-name').value.trim(),zone_type:document.getElementById('zm-type').value,
+    interfaces:Array.from(document.getElementById('zm-ifs').selectedOptions).map(o=>o.value),
+    enable_user_identification:document.getElementById('zm-userid').value==='yes',zone_protection_profile:document.getElementById('zm-prot').value.trim(),
+    log_setting:document.getElementById('zm-log').value.trim(),comment:document.getElementById('zm-comment').value};
+  button.disabled = true; message.textContent = 'Saving…';
+  try {
+    const path = `/api/vsys/${encodeURIComponent(snapshot.vsys)}/zones`+(existingName?'/'+encodeURIComponent(existingName):'');
+    const result = await consoleRequest(path,{method:existingName?'PUT':'POST',body:JSON.stringify(payload)});
+    if (!['created','updated'].includes(result.status)) throw new Error('Candidate update was not confirmed.');
     refreshCommitIndicator();
-    loadZones();
-    closeModal('modal-info');
-  } else {
-    document.getElementById('zm-msg').textContent = (r&&r.detail)||'Save failed';
-    document.getElementById('zm-msg').style.color = 'var(--red)';
-  }
+    if (message.isConnected) {message.textContent='Saved to candidate. Commit required.';button.textContent='Saved';}
+    if(zoneSnapshot===snapshot) await loadZones();
+  } catch(e) {if(message.isConnected){message.textContent=e.message;button.disabled=false;}}
 }
-
 async function deleteZone(name) {
-  if (!confirm(`Delete zone ${name} from ${_zonesVsys}?`)) return;
-  await api(`/api/vsys/${encodeURIComponent(_zonesVsys)}/zones/${encodeURIComponent(name)}`, {method:'DELETE'});
-  refreshCommitIndicator();
-  loadZones();
+  const snapshot = zoneSnapshot;
+  if (!snapshot || !snapshot.can_edit || !confirm('Delete zone '+name+' from candidate configuration?')) return;
+  const notice = document.getElementById('zones-notice');
+  try {
+    await consoleRequest(`/api/vsys/${encodeURIComponent(snapshot.vsys)}/zones/${encodeURIComponent(name)}?revision=${encodeURIComponent(snapshot.revision)}`,{method:'DELETE'});
+    refreshCommitIndicator(); if(zoneSnapshot===snapshot) await loadZones();
+  } catch(e) {if(notice.isConnected) notice.textContent='Unable to delete zone: '+e.message;}
 }
 
 /* ---- Network > VLANs ---- */

@@ -272,7 +272,11 @@ class LoginRequest(BaseModel):
     password: str
 
 
+from ffn_policy_validation import validate_policy_rule, policy_compilation_report
+
+
 class PolicyRule(BaseModel):
+    enabled: Optional[bool] = None
     name: Optional[str] = None
     src_ip: str = "0.0.0.0/0"
     dst_ip: str = "0.0.0.0/0"
@@ -5486,8 +5490,11 @@ async def policy_list(show_hidden: bool = False, show_defaults: bool = True, use
         )
         rows = [dict(r) for r in await cursor.fetchall()]
 
+        report = policy_compilation_report(rows)
+        compatibility = {entry["id"]: entry for entry in report["rules"]}
         out = []
         for r in rows:
+            r["compilation"] = compatibility[r["id"]]
             kind = r.get("kind", "user")
             if not show_defaults and kind != "user":
                 continue
@@ -5497,11 +5504,13 @@ async def policy_list(show_hidden: bool = False, show_defaults: bool = True, use
             r["is_default"] = kind != "user"
             r["is_immutable"] = bool(r.get("immutable", 0))
             out.append(r)
-        return {"rules": out}
+        return {"rules": out, "can_edit": user.get("role") in ADMIN_ROLES, "storage": "policy-database", "compilation": report}
 
 
 @app.post("/api/policy/rules")
 async def policy_add(rule: PolicyRule, user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    validate_policy_rule(rule.dict())
     # Don't let users create rules with reserved implicit-default names.
     if rule.name and rule.name.lower() in IMMUTABLE_RULE_NAMES:
         raise HTTPException(status_code=400,
@@ -5517,12 +5526,12 @@ async def policy_add(rule: PolicyRule, user: dict = Depends(get_current_user)):
         cursor = await db.execute(
             "INSERT INTO policy_rules "
             "(position, name, src_ip, dst_ip, src_iface, dst_iface, "
-            " src_port, dst_port, proto, action, vsys, description, kind) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'user')",
+            " src_port, dst_port, proto, action, vsys, description, enabled, kind) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'user')",
             (rule.position, rule.name, rule.src_ip, rule.dst_ip,
              rule.src_iface, rule.dst_iface,
              rule.src_port, rule.dst_port,
-             rule.proto, rule.action, _check_vsys(rule.vsys), rule.description),
+             rule.proto, rule.action, _check_vsys(rule.vsys), rule.description, int(rule.enabled if rule.enabled is not None else True)),
         )
         await audit(db, user["username"], "add_rule", f"id={cursor.lastrowid}")
         return {"id": cursor.lastrowid, "status": "created"}
@@ -5615,10 +5624,14 @@ async def _compile_policy_bin(path: str = None) -> dict:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT id, position, name, src_ip, dst_ip, src_port, dst_port, "
-            "       proto, action, vsys FROM policy_rules "
+            "       proto, action, vsys, src_iface, dst_iface FROM policy_rules "
             " WHERE enabled=1 AND COALESCE(hidden,0)=0 "
             " ORDER BY position, id")
-        for r in await cur.fetchall():
+        selected = [dict(r) for r in await cur.fetchall()]
+        report = policy_compilation_report([{**r, "enabled": True} for r in selected])
+        if not report["valid"]:
+            raise HTTPException(422, {"message": "Policy is not compatible with the fast-path format", "blockers": report["blockers"]})
+        for r in selected:
             src, srcm = _cidr_to_pair(r["src_ip"])
             dst, dstm = _cidr_to_pair(r["dst_ip"])
             sp = int(r["src_port"] or 0)
@@ -5632,7 +5645,7 @@ async def _compile_policy_bin(path: str = None) -> dict:
                 "sport_lo": sp or 0, "sport_hi": sp or 0xFFFF,
                 "dport_lo": dp_ or 0, "dport_hi": dp_ or 0xFFFF,
                 "proto": _proto_to_num(r["proto"]),
-                "vsys": int(r["vsys"] or 0) & 0xFF,
+                "vsys": int(r["vsys"] or 0),
                 # The dataplane's decision codes from ffn_dp_oct.h:
                 # FP_FORWARD_W 0, FP_INSPECT_W 1, FP_DROP_W 3. Inline for the
                 # same reason as the protocol table above.
@@ -5644,7 +5657,7 @@ async def _compile_policy_bin(path: str = None) -> dict:
                 # forwarding, and the dataplane routes when a rule does not name
                 # one. DP_EGRESS_NONE.
                 "egress_port": 0xFFFF,
-                "rule_id": int(r["id"]) & 0xFFFF,
+                "rule_id": int(r["id"]),
             })
 
     c = fpc.FastPathCompiler()
@@ -5665,8 +5678,11 @@ async def _compile_policy_bin(path: str = None) -> dict:
 @app.post("/api/policy/compile")
 async def policy_compile(user: dict = Depends(get_current_user)):
     """Build policy.bin from the live rulebase. Also run at commit."""
+    _require_admin(user)
     try:
         return await _compile_policy_bin()
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500,
                             detail="policy compile failed: %s" % _public_error(exc))
@@ -5675,6 +5691,7 @@ async def policy_compile(user: dict = Depends(get_current_user)):
 @app.put("/api/policy/rules/{rule_id}")
 async def policy_update(rule_id: int, rule: PolicyRule,
                         user: dict = Depends(get_current_user)):
+    _require_admin(user)
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
@@ -5698,16 +5715,17 @@ async def policy_update(rule_id: int, rule: PolicyRule,
             return {"status": "updated", "immutable": True,
                     "message": "Immutable default rule — only description updated"}
 
+        validate_policy_rule(rule.dict())
         await db.execute(
             "UPDATE policy_rules SET name=?, src_ip=?, dst_ip=?, "
             "  src_iface=?, dst_iface=?, src_port=?, dst_port=?, "
-            "  proto=?, action=?, vsys=?, description=?, position=?, "
+            "  proto=?, action=?, vsys=?, description=?, position=?, enabled=COALESCE(?, enabled), "
             "  updated_at=datetime('now') WHERE id=?",
             (rule.name, rule.src_ip, rule.dst_ip,
              rule.src_iface, rule.dst_iface,
              rule.src_port, rule.dst_port,
              rule.proto, rule.action, _check_vsys(rule.vsys),
-             rule.description, rule.position, rule_id),
+             rule.description, rule.position, int(rule.enabled) if rule.enabled is not None else None, rule_id),
         )
         await audit(db, user["username"], "update_rule", f"id={rule_id}")
         return {"status": "updated"}
@@ -5715,6 +5733,7 @@ async def policy_update(rule_id: int, rule: PolicyRule,
 
 @app.delete("/api/policy/rules/{rule_id}")
 async def policy_delete(rule_id: int, user: dict = Depends(get_current_user)):
+    _require_admin(user)
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
@@ -10595,88 +10614,33 @@ async def vsys_delete(name: str, user: dict = Depends(get_current_user)):
 # --------------------------------------------------------------------------
 
 
-class ZoneEntry(BaseModel):
-    name: str
-    zone_type: str = "layer3"      # layer3 | layer2 | virtual-wire | tap | tunnel | external
-    interfaces: list = []          # interface names (members)
-    enable_user_identification: bool = False
-    zone_protection_profile: str = ""
-    log_setting: str = ""
-    comment: str = ""
-
-
-ZONE_TYPES = {"layer3", "layer2", "virtual-wire", "tap", "tunnel", "external"}
-
+from ffn_config_zones import ZoneEdit as ZoneEntry, ZoneStore, ZONE_TYPES
 
 @app.get("/api/vsys/{vsys}/zones")
-async def zone_list(vsys: str, user: dict = Depends(get_current_user)):
-    node = config_mgr.get_xpath(f"{DEV}.vsys.entry[@name={vsys}].zone", source="candidate")
-    entries = []
-    if node is not None:
-        for e in node.findall("entry"):
-            # Identify zone type by which <network> sub-tag is present
-            net = e.find("network") or ET.Element("_")
-            zt = next((c.tag for c in net if c.tag in ZONE_TYPES), "layer3")
-            ifs = [m.text for m in net.findall(f"./{zt}/member") if m.text]
-            entries.append({
-                "name": e.get("name"),
-                "zone_type": zt,
-                "interfaces": ifs,
-                "enable_user_identification": e.findtext("enable-user-identification", "no") == "yes",
-                "zone_protection_profile": e.findtext("./network/zone-protection-profile", ""),
-                "log_setting": e.findtext("./network/log-setting", ""),
-                "comment": e.findtext("comment", ""),
-            })
-    return {"vsys": vsys, "entries": entries}
-
+async def zone_list(vsys: str, source: str = "candidate", user: dict = Depends(get_current_user)):
+    if source not in ("candidate", "running"):
+        raise HTTPException(422, "Source must be candidate or running")
+    result = ZoneStore(config_mgr, CANDIDATE_CONFIG).listing(vsys, source)
+    result["can_edit"] = source == "candidate" and user.get("role") in ADMIN_ROLES
+    return result
 
 @app.post("/api/vsys/{vsys}/zones")
 async def zone_create(vsys: str, z: ZoneEntry, user: dict = Depends(get_current_user)):
-    _require_lock(user)
-    if z.zone_type not in ZONE_TYPES:
-        raise HTTPException(status_code=400, detail=f"zone_type must be one of {sorted(ZONE_TYPES)}")
-    xp = f"{DEV}.vsys.entry[@name={vsys}].zone.entry[@name={z.name}]"
-    payload = {
-        "network": {
-            z.zone_type: z.interfaces or None,
-        },
-        "enable-user-identification": "yes" if z.enable_user_identification else "no",
-        "comment": z.comment,
-    }
-    if z.zone_protection_profile:
-        payload["network"]["zone-protection-profile"] = z.zone_protection_profile
-    if z.log_setting:
-        payload["network"]["log-setting"] = z.log_setting
-    config_mgr.update_candidate(xp, payload, user["username"])
+    result = ZoneStore(config_mgr, CANDIDATE_CONFIG).mutate(vsys, z.name, z.revision, user, z, True)
     await _audit(user, "zone_create", f"{vsys}/{z.name}")
-    return {"status": "created", "vsys": vsys, "zone": z.name, "type": z.zone_type}
-
+    return result
 
 @app.put("/api/vsys/{vsys}/zones/{name}")
-async def zone_update(vsys: str, name: str, z: ZoneEntry,
-                      user: dict = Depends(get_current_user)):
-    _require_lock(user)
-    xp = f"{DEV}.vsys.entry[@name={vsys}].zone.entry[@name={name}]"
-    # Full replace — simpler + matches PAN-OS semantics
-    payload = {
-        "network": {z.zone_type: z.interfaces or None},
-        "enable-user-identification": "yes" if z.enable_user_identification else "no",
-        "comment": z.comment,
-    }
-    if z.zone_protection_profile:
-        payload["network"]["zone-protection-profile"] = z.zone_protection_profile
-    config_mgr.update_candidate(xp, payload, user["username"])
+async def zone_update(vsys: str, name: str, z: ZoneEntry, user: dict = Depends(get_current_user)):
+    result = ZoneStore(config_mgr, CANDIDATE_CONFIG).mutate(vsys, name, z.revision, user, z)
     await _audit(user, "zone_update", f"{vsys}/{name}")
-    return {"status": "updated"}
-
+    return result
 
 @app.delete("/api/vsys/{vsys}/zones/{name}")
-async def zone_delete(vsys: str, name: str, user: dict = Depends(get_current_user)):
-    _require_lock(user)
-    r = config_mgr.delete_candidate(
-        f"{DEV}.vsys.entry[@name={vsys}].zone.entry[@name={name}]", user["username"])
+async def zone_delete(vsys: str, name: str, revision: str, user: dict = Depends(get_current_user)):
+    result = ZoneStore(config_mgr, CANDIDATE_CONFIG).mutate(vsys, name, revision, user)
     await _audit(user, "zone_delete", f"{vsys}/{name}")
-    return r
+    return result
 
 
 # --------------------------------------------------------------------------
@@ -11779,6 +11743,37 @@ def _ensure_imported_into_vsys(iface_name: str, vsys_name: str = "vsys1"):
     config_mgr.update_candidate(xp_base, members, user="system")
 
 
+from ffn_config_subinterfaces import SubinterfaceEdit as SubInterfaceEntry, SubinterfaceStore
+
+@app.get("/api/config/subinterfaces")
+async def subinterface_list(parent: str, vsys: str = "vsys1", source: str = "candidate", user: dict = Depends(get_current_user)):
+    if source not in ("candidate", "running"):
+        raise HTTPException(422, "Source must be candidate or running")
+    result = SubinterfaceStore(config_mgr, CANDIDATE_CONFIG).listing(parent, vsys, source)
+    result["can_edit"] = source == "candidate" and user.get("role") in ADMIN_ROLES
+    return result
+
+@app.post("/api/config/subinterfaces")
+@app.post("/api/interfaces/subinterface")
+async def subinterface_create(s: SubInterfaceEntry, user: dict = Depends(get_current_user)):
+    result = SubinterfaceStore(config_mgr, CANDIDATE_CONFIG).mutate(s.parent, s.unit, s.vsys, s.revision, user, s, True)
+    await _audit(user, "subinterface_create", result["name"])
+    return result
+
+@app.put("/api/config/subinterfaces")
+async def subinterface_update(s: SubInterfaceEntry, user: dict = Depends(get_current_user)):
+    result = SubinterfaceStore(config_mgr, CANDIDATE_CONFIG).mutate(s.parent, s.unit, s.vsys, s.revision, user, s)
+    await _audit(user, "subinterface_update", result["name"])
+    return result
+
+@app.delete("/api/config/subinterfaces")
+@app.delete("/api/interfaces/subinterface")
+async def subinterface_delete(parent: str, revision: str, unit: int = Query(..., ge=1, le=9999), vsys: str = "vsys1", user: dict = Depends(get_current_user)):
+    result = SubinterfaceStore(config_mgr, CANDIDATE_CONFIG).mutate(parent, unit, vsys, revision, user)
+    await _audit(user, "subinterface_delete", result["name"])
+    return result
+
+
 @app.put("/api/interfaces/{name:path}")
 async def interface_update(name: str, i: InterfaceEntry,
                            user: dict = Depends(get_current_user)):
@@ -11798,63 +11793,6 @@ async def interface_delete(name: str, user: dict = Depends(get_current_user)):
 
 
 # -- Sub-interfaces ---------------------------------------------------------
-
-
-class SubInterfaceEntry(BaseModel):
-    parent: str                       # ethernet1/1 or ae1
-    tag: int                           # VLAN tag
-    mode: str = "layer3"              # layer3 | layer2
-    ip_addresses: list = []
-    interface_management_profile: str = ""
-    mtu: Optional[int] = None
-    comment: str = ""
-
-
-@app.post("/api/interfaces/subinterface")
-async def subinterface_create(s: SubInterfaceEntry,
-                              user: dict = Depends(get_current_user)):
-    """
-    Create a sub-interface on an existing layer3 ethernet or aggregate-ethernet.
-    PAN-OS layout: .../entry[parent]/layer3/units/entry[parent.tag]/
-                   for ethernet, or .../aggregate-ethernet/entry[ae1]/layer3/units/entry[ae1.tag]/
-    """
-    _require_lock(user)
-    kind = _iface_kind(s.parent)
-    child_name = f"{s.parent}.{s.tag}"
-    unit_xp = f"{DEV}.network.interface.{kind}.entry[@name={s.parent}].layer3.units.entry[@name={child_name}]"
-    payload = {
-        "tag": s.tag,
-        "comment": s.comment,
-    }
-    # <ip><entry name=.../></ip> children are written via follow-up xpath
-    # calls after the unit entry exists.
-    if s.mtu:
-        payload["adjust-tcp-mss"] = {"enable": "no"}
-        payload["mtu"] = s.mtu
-    if s.interface_management_profile:
-        payload["interface-management-profile"] = s.interface_management_profile
-    config_mgr.update_candidate(unit_xp, payload, user["username"])
-    for addr in s.ip_addresses:
-        config_mgr.update_candidate(f"{unit_xp}.ip.entry[@name={addr}]", {}, user["username"])
-    # Default-import the sub-interface into vsys1 too
-    _ensure_imported_into_vsys(child_name, vsys_name="vsys1")
-    await _audit(user, "subinterface_create", child_name)
-    return {"status": "created", "name": child_name}
-
-
-@app.delete("/api/interfaces/subinterface")
-async def subinterface_delete(parent: str = Query(...), tag: int = Query(...),
-                              user: dict = Depends(get_current_user)):
-    """Delete a sub-interface. Parent + tag are query params because
-    PAN-OS interface names contain slashes (ethernet1/1) that path
-    converters can't cleanly disambiguate."""
-    _require_lock(user)
-    kind = _iface_kind(parent)
-    child_name = f"{parent}.{tag}"
-    xp = f"{DEV}.network.interface.{kind}.entry[@name={parent}].layer3.units.entry[@name={child_name}]"
-    r = config_mgr.delete_candidate(xp, user["username"])
-    await _audit(user, "subinterface_delete", child_name)
-    return r
 
 
 # -- Live Aggregate-Ethernet status -----------------------------------------
