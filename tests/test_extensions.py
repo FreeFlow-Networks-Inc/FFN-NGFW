@@ -61,6 +61,36 @@ class ExtensionTests(unittest.TestCase):
         with TestClient(app) as client:
             self.assertEqual(client.get('/api/system/extensions').json()['state'], 'unavailable')
 
+    def test_selected_runtime_and_declared_pages(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pages = [{'id':'ports', 'label':'Hardware ports', 'tab':'network'}]
+            manifest = {'id':'fixture','label':'Fixture','api_version':1,
+                        'runtime_api_version':1,'pages':pages}
+            (root/'extension.json').write_text(json.dumps(manifest))
+            (root/'static').mkdir()
+            (root/'control.py').write_text(
+                'from fastapi import APIRouter, Depends\n'
+                'def router(*args): return APIRouter()\n'
+                'def runtime_router(current, *args):\n'
+                '    api = APIRouter(prefix="/api/system/runtime")\n'
+                '    @api.get("/status")\n'
+                '    async def status(user=Depends(current)): return {"provider":"fixture"}\n'
+                '    return api\n')
+            app = FastAPI()
+            install(app, user, lambda u: None, audit, selected=temp)
+            with TestClient(app) as client:
+                self.assertEqual(client.get('/api/system/runtime/status').json()['provider'],'fixture')
+                self.assertEqual(client.get('/api/system/runtime-provider').json()['runtime']['provider'],'fixture')
+                self.assertEqual(client.get('/api/system/extensions').json()['extensions'][0]['pages'],pages)
+            manifest['pages'][0]['tab']='invalid'
+            (root/'extension.json').write_text(json.dumps(manifest))
+            app=FastAPI()
+            with self.assertLogs('ffn_extensions',level='ERROR'):
+                install(app,user,lambda u: None,audit,selected=temp)
+            with TestClient(app) as client:
+                self.assertEqual(client.get('/api/system/runtime/status').status_code,503)
+
 
 if __name__ == '__main__':
     unittest.main()

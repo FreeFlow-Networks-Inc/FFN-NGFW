@@ -19,6 +19,37 @@ It must not perform discovery or hardware writes at import time. Extensions
 are trusted administrator-installed code running with the manager's privileges.
 The HTTP API cannot install, select or supply a filesystem path for an extension.
 
+### Module-declared WebUI pages and runtime API
+
+The core remains vendor independent. A build may include several platform
+submodules; only the locally selected, compatible extension is imported. Installing
+a submodule does not authorize it to probe hardware or add UI features.
+
+An optional `pages` array declares up to 32 `{id, label, tab}` entries. Supported
+tabs are `dashboard`, `monitor`, `acc`, `policy`, `objects`, `network`, and `device`.
+The module registers each renderer using
+`window.ffnExtensions.registerPage(moduleId, pageId, render)`. The core supplies
+the declared label and tab, namespaces page IDs and rejects duplicate or
+undeclared registrations. Modules without page declarations retain the original
+single-page registration API. Availability failures belong inside the selected
+module's page; an installed controller is not evidence of operational hardware.
+
+Modules declaring `runtime_api_version: 1` also export
+`runtime_router(current_user, require_admin, record_audit)`, returning an
+authenticated APIRouter with prefix `/api/system/runtime`. That module owns the
+resource vocabulary, validation, controller execution, and observed capabilities.
+The common contract is `GET /status`, returning `provider`, `resources`,
+`capabilities`, and `can_write`; resource writes remain explicitly defined by the
+provider. There is no implicit fallback to host commands when a provider fails.
+`GET /api/system/runtime-provider` reports the selected binding. Without a
+compatible selected provider, runtime status returns 503. No probes run during
+registration. Runtime selection changes require manager restart and browser reload.
+
+Install the updated core before an extension using these hooks. The PA-5200
+module uses them for its OCTEON Device page and MP-to-CP/DP controllers. Inspection
+writes report `active` only after observing the matching live DP revision;
+`pending`, `failed`, `superseded`, and `unknown` do not imply enforcement.
+
 The core serves authenticated `GET /api/system/extensions`, returning disabled,
 enabled, or unavailable. Failure to load an explicitly selected extension is
 logged and leaves the core available. Selected static assets are public like

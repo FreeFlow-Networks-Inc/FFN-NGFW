@@ -12306,6 +12306,9 @@ _install_extensions(app, get_current_user, _require_admin, _extension_audit)
 from ffn_patch_api import install as _install_patch_api
 _install_patch_api(app, get_current_user, _require_admin, _extension_audit, _update_server_url)
 
+from ffn_config_objects import install as _install_object_api
+_install_object_api(app, get_current_user, _require_admin, _extension_audit, config_mgr, CANDIDATE_CONFIG)
+
 
 if __name__ == "__main__":
     # Concurrency model: one uvicorn worker with asyncio event loop.

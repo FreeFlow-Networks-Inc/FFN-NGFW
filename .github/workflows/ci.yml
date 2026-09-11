@@ -104,6 +104,9 @@ jobs:
       - name: console initialization and workflows
         run: node tests/test_console_ui.cjs
 
+      - name: selected platform WebUI isolation
+        run: node tests/test_extensions_ui.cjs
+
       - name: code patch lifecycle and renderer
         run: |
           python3 tests/test_patches.py
@@ -213,6 +216,11 @@ jobs:
 
       - name: console settings and snapshot workflows
         run: python tests/test_console_api.py
+
+      - name: candidate objects and selected runtime providers
+        run: |
+          python tests/test_config_objects.py
+          python tests/test_extensions.py
 
       - name: patch management API permissions
         run: python tests/test_patch_api.py
