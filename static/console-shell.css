@@ -1,0 +1,98 @@
+/* PAN-OS 12.1-oriented console shell. FFN identity and capability gates remain. */
+:root {
+  color-scheme: light;
+  --bg:#f3f3f3;--surface:#fff;--card:#fff;--card-hover:#eaf3f9;
+  --border:#c6c9cc;--accent:#176da0;--accent-dim:#105379;
+  --green:#287b35;--red:#bf302b;--orange:#946000;--yellow:#896100;
+  --text:#292d30;--text-dim:#535b61;--text-muted:#687178;
+  --radius:2px;--sidebar-w:218px;--topnav-h:82px;--footer-h:28px;
+}
+body {font-family:Arial,Helvetica,sans-serif;font-size:12px}
+.topnav {height:82px;padding:0;display:grid;grid-template-columns:auto 1fr;grid-template-rows:44px 38px;gap:0;background:#34383c;color:#fff;border:0;align-content:stretch}
+.topnav .brand {grid-row:1;grid-column:1;margin:0;padding:0 18px;font-size:17px;color:#fff;letter-spacing:.2px}
+.topnav .brand svg {width:26px;height:26px}
+.topnav .user-area {grid-row:1;grid-column:2;margin:0;justify-content:flex-end;padding:0 14px;color:#eee;gap:12px;min-width:0}
+.topnav .user-area .btn {background:transparent;color:#fff;border-color:#71777c;border-radius:2px;font-size:11px}
+.topnav .user-area .btn-primary {background:#176da0;border-color:#6db0d5}
+.topnav .main-tabs {grid-column:1/-1;grid-row:2;order:0;display:flex;overflow-x:auto;background:#e6e7e8;border-bottom:1px solid #b1b6ba;padding-left:10px}
+.topnav .main-tabs button {height:38px;padding:0 25px;color:#333;font-size:12px;font-weight:normal;text-transform:none;letter-spacing:0;border:0;border-right:1px solid #c8cbcd;border-radius:0;flex-shrink:0}
+.topnav .main-tabs button:hover {background:#d5e6f1;color:#1d4e6b}
+.topnav .main-tabs button.active {color:#fff;background:#257aab;border-bottom:0}
+.commit-indicator {border-radius:2px;color:#fff!important;background:#8a5900!important}
+.sidebar {top:82px;bottom:var(--footer-h);padding:0;background:#f2f2f2;border-right:1px solid #afb6bb}
+.nav-search {padding:8px;background:#e7e8e9;border-bottom:1px solid var(--border)}
+.nav-search input {border-radius:2px;padding:5px 7px;font-size:12px;background:#fff;height:26px}
+#sidebar .sb-item {font:12px Arial,Helvetica,sans-serif;line-height:18px;padding:5px 12px 5px 24px;border-bottom:1px solid transparent;color:#30373b}
+#sidebar .sb-item:hover {background:#e0eaf0}
+#sidebar .sb-item.active {background:#d5e8f5;color:#164f74;border-top:1px solid #b5d2e5;border-bottom:1px solid #b5d2e5;padding-top:4px}
+.sidebar .sb-section {margin:0;padding:7px 9px;color:#343c42;font-size:12px;font-weight:bold;text-transform:none;letter-spacing:0;background:#e8eaeb;border-bottom:1px solid #d2d6d9}
+.nav-group .sb-item {padding-left:28px!important}
+.app-body {padding-top:82px;padding-bottom:var(--footer-h)}
+.content {padding:10px 12px;max-width:none;background:#fff;min-height:calc(100vh - 110px)}
+.page-header {min-height:33px;gap:8px;margin:-10px -12px 12px;padding:7px 12px;background:#f0f1f2;border-bottom:1px solid var(--border)}
+.page-header h2 {font-size:14px;font-weight:bold}
+.page-header .actions {gap:5px}
+.grid {gap:10px}
+.card {padding:12px;border-radius:2px;box-shadow:none}
+.card:hover {border-color:var(--border)}
+.card h3 {margin:-12px -12px 10px;padding:8px 10px;border-bottom:1px solid var(--border);background:linear-gradient(#f7f7f7,#e9ebed);color:#343c42;text-transform:none;letter-spacing:0;font-size:12px}
+.card .big-num {font-size:24px;font-weight:normal}
+.section-title {color:#303a42;font-size:12px}
+.btn {border-radius:2px;padding:4px 10px;background:linear-gradient(#fff,#e6e8ea);font-size:12px;min-height:25px;box-shadow:none}
+.btn:hover {background:#dcebf5;border-color:#7b9db4}
+.btn-primary {background:#257aab;border-color:#17658f;color:#fff}
+.btn-primary:hover {background:#17658f}
+.btn-danger {background:#b52d29;border-color:#a12724;color:#fff}
+.btn:disabled {opacity:.5;cursor:not-allowed}
+.btn-xs,.btn-sm {padding:2px 7px;min-height:23px;font-size:11px}
+.table-wrap {border:1px solid var(--border)}
+table {font-size:12px}
+thead th {padding:7px 9px;background:linear-gradient(#f8f8f8,#e4e7e9);color:#333;text-transform:none;letter-spacing:0;font-size:11px;border:1px solid #c6c9cc;font-weight:bold}
+tbody td {padding:5px 9px;border-bottom:1px solid #e0e3e5;border-right:1px solid #e4e6e8;line-height:19px}
+tbody tr:nth-child(even) {background:#f5f6f7}
+tbody tr:hover {background:#e6f1f9}
+.filters-bar {gap:6px;padding:6px;background:#f0f2f3;border:1px solid var(--border);margin-bottom:8px}
+.filters-bar input,.filters-bar select,.workflow-actions input,.workflow-actions select {background:#fff;border-radius:2px;padding:4px 7px}
+.badge {border-radius:2px;font-size:10px;font-weight:normal;text-transform:none}
+.badge-permit,.badge-allow,.badge-up,.badge-benign {background:#e1efe3;color:#276631}
+.badge-deny,.badge-drop,.badge-block,.badge-down,.badge-error,.badge-high,.badge-critical,.badge-malicious {background:#f7e3e2;color:#a42722}
+.badge-warning,.badge-medium,.badge-log,.badge-reset,.badge-suspicious {background:#fff0d2;color:#795000}
+.badge-info,.badge-low {background:#e0edf7;color:#185f8a}
+.setup-tabs {gap:2px;margin-bottom:12px;padding:0 4px;background:#f0f1f2}
+.setup-tabs button {padding:7px 13px;color:#3f494f;font-size:12px;border:1px solid transparent;border-bottom:0;margin-bottom:-1px}
+.setup-tabs button.active {background:#fff;color:#176da0;border:1px solid var(--border);border-bottom:1px solid #fff}
+.modal-overlay {background:rgba(30,38,45,.32)}
+.modal {border-radius:3px;border:1px solid #7e8a92;background:#fff;padding:15px;box-shadow:0 6px 26px #0004}
+.modal h3 {margin:-15px -15px 14px;padding:10px 14px;background:#e9ecef;border-bottom:1px solid #b5bdc3;font-size:13px;color:#303a40}
+.form-group label {text-transform:none;letter-spacing:0;font-size:12px;font-weight:normal;color:#303a40}
+.form-group input,.form-group select,.form-group textarea {background:#fff;border-radius:2px;padding:5px 7px;font-size:12px}
+.form-actions {margin:15px -15px -15px;padding:10px 15px;border-top:1px solid var(--border);background:#f1f2f3}
+.log-stream {background:#fff;color:#303a40}
+.log-entry {border-bottom-color:#e4e7e9}
+.console-footer {position:fixed;bottom:0;left:0;right:0;height:var(--footer-h);display:flex;align-items:center;gap:12px;padding:0 12px;background:#e7e9eb;border-top:1px solid #b4bbc0;color:#48545c;z-index:100;font-size:11px}
+.console-footer .footer-location {flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.console-footer button {background:none;border:0;border-left:1px solid #bcc3c7;padding:0 12px;color:#175d86;font-size:11px;height:22px}
+.task-dialog {width:920px}
+.task-dialog .table-wrap {max-height:48vh;overflow:auto}
+.task-dialog td {white-space:normal;overflow-wrap:anywhere}
+.console-details {margin-top:10px;border:1px solid var(--border)}
+.console-details > summary {padding:8px;background:#edf0f2;color:#35444e;cursor:pointer}
+.console-details > .card {border:0;margin:0}
+.login-screen {background:#edf0f2}
+.login-box {border-radius:3px;box-shadow:0 8px 25px #0002;border-top:4px solid #257aab}
+@media(max-width:850px) {
+  .topnav .main-tabs button {padding:0 16px}
+  .topnav .brand {font-size:14px;padding:0 10px}
+  .topnav .user-area {gap:5px;padding:0 8px}
+  .topnav .user-area .btn {padding:3px 5px}
+  .topnav #lock-status-label,.topnav .status-dot {display:none}
+  :root {--sidebar-w:180px}
+}
+@media(max-width:580px) {
+  :root {--sidebar-w:140px}
+  .topnav .brand svg,.topnav #commit-indicator {display:none!important}
+  .topnav .main-tabs button {padding:0 12px}
+  .content {padding:10px 8px}
+  .page-header {margin-left:-8px;margin-right:-8px}
+  .console-footer {gap:4px;padding:0 6px}
+}

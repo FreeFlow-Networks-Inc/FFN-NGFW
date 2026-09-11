@@ -257,6 +257,7 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
   .workflow-actions input {width:100%}
 }
 </style>
+<link rel="stylesheet" href="/static/console-shell.css">
 </head>
 <body>
 
@@ -298,9 +299,9 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
   </div>
   <div class="main-tabs" id="main-tabs">
     <button class="active" data-tab="dashboard">Dashboard</button>
-    <button data-tab="monitor">Monitor</button>
     <button data-tab="acc">ACC</button>
-    <button data-tab="policy">Policy</button>
+    <button data-tab="monitor">Monitor</button>
+    <button data-tab="policy">Policies</button>
     <button data-tab="objects">Objects</button>
     <button data-tab="network">Network</button>
     <button data-tab="device">Device</button>
@@ -311,9 +312,6 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
     <button id="commit-btn" class="btn btn-sm" onclick="openCommitModal()" title="Open commit dialog">
       <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--text-muted);margin-right:4px" id="commit-dot"></span>
       Commit
-    </button>
-    <button id="history-btn" class="btn btn-sm" onclick="openHistoryModal()" title="Commit history / rollback" style="font-size:10px">
-      History <span id="history-latest-badge" class="badge" style="margin-left:4px;display:none"></span>
     </button>
     <button id="lock-btn" class="btn btn-sm btn-xs" onclick="openLockInfo()" style="font-size:10px">
       <span id="lock-icon">🔓</span> <span id="lock-status-label">Unlocked</span>
@@ -333,7 +331,24 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
 <div class="content" id="content-area"></div>
 
 </div><!-- .app-body -->
+<footer class="console-footer">
+  <span class="footer-location" id="footer-location">Dashboard</span>
+  <span>FFN NGFW</span>
+  <button id="history-btn" onclick="openHistoryModal()" title="Configuration versions and rollback">Config History <span id="history-latest-badge" class="badge" style="display:none"></span></button>
+  <button id="tasks-btn" onclick="openTasksModal()" title="Configuration apply results">Tasks</button>
+</footer>
 </div><!-- #app -->
+
+<div class="modal-overlay" id="modal-tasks" role="dialog" aria-modal="true" aria-labelledby="tasks-title">
+  <div class="modal task-dialog">
+    <h3 id="tasks-title">Task Manager</h3>
+    <div class="filters-bar"><strong>Latest configuration apply</strong><button id="tasks-refresh" class="btn btn-sm" onclick="loadTasks()">Refresh</button></div>
+    <p id="tasks-summary" role="status" class="mb-8"></p>
+    <div class="table-wrap"><table><thead><tr><th>Result</th><th>Configuration path</th><th>Details</th></tr></thead><tbody id="tasks-body"></tbody></table></div>
+    <p class="text-dim mt-8">Results reported by configd. Saving a configuration version does not confirm that every setting was applied.</p>
+    <div class="form-actions"><button class="btn" onclick="closeTasksModal()">Close</button></div>
+  </div>
+</div>
 
 <!-- ============================================================ -->
 <!-- MODALS                                                        -->
@@ -842,6 +857,42 @@ function doLogout() {
    =========================================================================== */
 let commitPollTimer = null;
 
+let taskLoadGeneration = 0;
+async function openTasksModal() {
+  document.getElementById('modal-tasks').classList.add('show');
+  const refresh = document.getElementById('tasks-refresh');
+  if (refresh) refresh.focus();
+  await loadTasks();
+}
+function closeTasksModal() {
+  ++taskLoadGeneration;
+  closeModal('modal-tasks');
+  document.getElementById('tasks-btn').focus();
+}
+async function loadTasks() {
+  const generation = ++taskLoadGeneration;
+  const summary = document.getElementById('tasks-summary');
+  const body = document.getElementById('tasks-body');
+  summary.textContent = 'Loading configuration apply status…';
+  body.innerHTML = '';
+  try {
+    const status = await consoleRequest('/api/config/apply-status');
+    if (generation !== taskLoadGeneration) return;
+    summary.textContent = [status.overall || 'Unknown', status.started_at && 'Started: '+status.started_at,
+      status.finished_at && 'Finished: '+status.finished_at, status.message, status.error].filter(Boolean).join(' · ');
+    const groups = [['errors','Failed'],['validation_errors','Validation failed'],['skipped','Skipped'],['applied','Applied']];
+    const rows = groups.flatMap(([key,label]) => (Array.isArray(status[key]) ? status[key] : []).map(item => {
+      const data = typeof item === 'object' && item !== null ? item : {message:String(item)};
+      return `<tr><td>${_escSP(label)}</td><td>${_escSP(data.xpath || data.path || '—')}</td><td>${_escSP(data.message || data.error || data.reason || JSON.stringify(data))}</td></tr>`;
+    }));
+    body.innerHTML = rows.join('') || '<tr><td colspan="3">No per-setting results reported.</td></tr>';
+  } catch (error) {
+    if (generation !== taskLoadGeneration) return;
+    summary.textContent = 'Unable to read apply status: '+error.message;
+    body.innerHTML = '<tr><td colspan="3">Apply state is unknown. Refresh to retry.</td></tr>';
+  }
+}
+
 async function refreshCommitIndicator() {
   const [diff, lock] = await Promise.all([
     api('/api/config/diff'),
@@ -978,11 +1029,14 @@ async function doCommit() {
       return;
     }
     if (data.status === 'committed') {
-      msg.textContent = `✓ Committed (${data.type}) — snapshot: ${data.snapshot}`;
-      msg.style.color = 'var(--green)';
+      const apply = data.apply_status;
+      const applied = apply && apply.overall === 'applied' && !(apply.errors || []).length && !(apply.validation_errors || []).length;
+      msg.textContent = `Configuration saved (${data.type}) — snapshot: ${data.snapshot}. ` +
+        (applied ? 'Applied successfully.' : `Apply status: ${apply && apply.overall || 'not reported'}. Open Tasks for details.`);
+      msg.style.color = applied ? 'var(--green)' : 'var(--orange)';
       await loadCommitDiff();
       await refreshCommitIndicator();
-      setTimeout(()=>closeModal('modal-commit'), 1500);
+      if (applied) setTimeout(()=>closeModal('modal-commit'), 1500);
     } else if (data.status === 'no-changes') {
       msg.textContent = 'No changes to commit';
       msg.style.color = 'var(--text-dim)';
@@ -1401,6 +1455,10 @@ function switchSubPage(pageId) {
   for (const chart of Object.values(charts)) if (chart && chart.destroy) chart.destroy();
   charts = {}; _dashChartInitialized = false;
   currentSubPage = pageId;
+  const location = document.getElementById('footer-location');
+  const tabLabels = {dashboard:'Dashboard',acc:'ACC',monitor:'Monitor',policy:'Policies',objects:'Objects',network:'Network',device:'Device'};
+  const destination = (TAB_MENUS[currentTab] || []).find(item => item.id === pageId);
+  if (location) location.textContent = `${tabLabels[currentTab] || currentTab} › ${destination ? destination.label : pageId}`;
   lastTabPages[currentTab] = pageId;
   document.querySelectorAll('#main-tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab===currentTab));
   renderSidebar(TAB_MENUS[currentTab] || []);
@@ -3625,8 +3683,6 @@ function renderNetworkInterfaces(c) {
       </div>
     </div>
 
-    <div id="iface-detected" class="card"><div class="text-dim">Detecting ports and interfaces&hellip;</div></div>
-    <div class="section-title">Interface configuration</div>
     <div class="setup-tabs" id="iface-kind-tabs">
       <button data-kind="ethernet" class="active" onclick="switchIfaceKind('ethernet')">Ethernet</button>
       <button data-kind="vlan"     onclick="switchIfaceKind('vlan')">VLAN</button>
@@ -3660,7 +3716,10 @@ function renderNetworkInterfaces(c) {
       </table>
     </div></div>
 
-    <div class="section"><div class="section-title">Aggregate Ethernet Kernel State</div>
+    <details class="console-details"><summary>Detected hardware and port inventory</summary>
+      <div id="iface-detected" class="card"><div class="text-dim">Detecting ports and interfaces&hellip;</div></div>
+    </details>
+    <details class="console-details"><summary>Aggregate Ethernet Kernel State</summary>
       <div class="card"><div class="table-wrap">
         <table>
           <thead><tr>
@@ -3671,7 +3730,7 @@ function renderNetworkInterfaces(c) {
           <tbody id="iface-ae-body"></tbody>
         </table>
       </div></div>
-    </div>`;
+    </details>`;
 
   loadInterfacesFull();
   refreshTimer = setInterval(loadInterfacesFull, 10000);

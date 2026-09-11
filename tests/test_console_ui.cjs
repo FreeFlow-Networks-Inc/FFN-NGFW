@@ -88,5 +88,24 @@ const run = code => vm.runInContext(code,context);
   const before=element('port-cards').innerHTML;
   complete({ports:[]});await pending;
   assert.equal(element('port-cards').innerHTML,before,'Late refresh must not update a detached page');
+  context.fetch=async()=>({ok:true,status:200,json:async()=>({overall:'partial-failure',
+    applied:[{xpath:'ethernet1/5',message:'Disabled'}],errors:[{xpath:'<img src=x>',message:'LACP unsupported'}]})});
+  await context.loadTasks();
+  assert.match(element('tasks-summary').textContent,/partial-failure/);
+  assert.match(element('tasks-body').innerHTML,/LACP unsupported/);
+  assert.match(element('tasks-body').innerHTML,/Disabled/);
+  assert(!element('tasks-body').innerHTML.includes('<img'));
+  context.fetch=async()=>({ok:false,status:503,json:async()=>({detail:'configd unavailable'})});
+  await context.loadTasks();
+  assert.match(element('tasks-summary').textContent,/configd unavailable/);
+  assert.match(element('tasks-body').innerHTML,/unknown/);
+  assert(!element('tasks-body').innerHTML.includes('Disabled'),'Failed refresh clears stale successes');
+  context.loadCommitDiff=async()=>{};
+  for (const overall of ['partial-failure','applied']) {
+    context.fetch=async()=>({ok:true,status:200,json:async()=>({status:'committed',type:'full',snapshot:'v8',apply_status:{overall}})});
+    await context.doCommit();
+    assert.equal(element('commit-msg').style.color,overall==='applied'?'var(--green)':'var(--orange)');
+    assert.equal(element('commit-msg').textContent.includes('Applied successfully'),overall==='applied');
+  }
   console.log('Complete UI initialization, unique navigation, role/error handling, escaping and partial settings saves passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});
