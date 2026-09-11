@@ -74,6 +74,12 @@ class PlaneTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.dp.dispatch(req))['state'],'applied')
         self.assertEqual(self.backend.applies,1)
 
+    async def test_concurrent_identical_requests_execute_once(self):
+        req=request()
+        results=await asyncio.gather(*(self.dp.dispatch(req) for _ in range(12)))
+        self.assertTrue(all(result['state']=='applied' for result in results))
+        self.assertEqual(self.backend.applies,1)
+
     async def test_unknown_blocks_writes_until_explicit_reconciliation(self):
         self.backend.fail=True;req=request()
         self.assertEqual((await self.dp.dispatch(req))['state'],'unknown')
