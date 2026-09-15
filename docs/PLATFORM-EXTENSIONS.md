@@ -120,6 +120,18 @@ semantics and no fallback to the legacy hardware command paths.
 
 ## Checks
 
+The shared `opt/ffn_linux_network.py` engine also provides two optional adapter
+hooks: `routing_interfaces(cfg)` supplies the validated interface settings used
+by route/rule validation; `attached_interfaces(attachment)` supplies names
+available for new route/rule installation. Defaults use only `cfg['ports']`
+and the existing physical backend. Neither hook discovers or imports a platform.
+A selected adapter may add independently owned interfaces, but must validate
+their saved configuration and verify live attachment. It must not add those
+interfaces to `cfg['ports']`, transfer lifecycle ownership, or call a service
+that waits for the network lock while that lock is held. Route persistence and
+rollback remain in the shared engine; device and boot ordering remain the
+adapter's responsibility.
+
 `python -m unittest discover -s tests -p test_extensions.py` verifies disabled
 zero-import behavior, authentication, selected assets and missing-package recovery.
 Platform API and UI tests live with their implementation in the platform repo.
