@@ -8,6 +8,13 @@ import ffn_linux_network as net
 
 
 class ConfigTests(unittest.TestCase):
+    def test_generic_platform_does_not_discover_external_interfaces(self):
+        cfg=copy.deepcopy(self.cfg)
+        cfg['routes']=[{'dst':'0.0.0.0/0','dev':'fv1','via':'198.18.1.2'}]
+        with self.assertRaisesRegex(ValueError,'configured l3'):
+            net.validate(cfg)
+        self.assertEqual(net.attached_interfaces({'ports':[3]}),{'p3'})
+
     def test_native_runtime_cannot_adopt_unprovisioned_interfaces(self):
         with patch.object(net,'PORT_BACKEND','native'), patch.object(net,'run') as run:
             with self.assertRaisesRegex(ValueError,'provisioned'):
