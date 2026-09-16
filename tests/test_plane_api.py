@@ -26,6 +26,15 @@ class APITests(unittest.TestCase):
         with patch.object(ffn_plane_api,'rpc',new_callable=AsyncMock) as rpc:
             self.assertEqual(self.client.post('/api/system/planes',json=request()).status_code,403)
             rpc.assert_not_called()
+        with patch.object(ffn_plane_api,'control_rpc',new_callable=AsyncMock) as rpc:
+            self.assertEqual(self.client.get('/api/system/control').status_code,403)
+            self.assertEqual(self.client.get('/api/system/control/events').status_code,403)
+            rpc.assert_not_called()
+
+    def test_control_status_is_read_from_controld(self):
+        with patch.object(ffn_plane_api,'control_rpc',new_callable=AsyncMock,return_value={'owner':'ffn-controld'}) as rpc:
+            self.assertEqual(self.client.get('/api/system/control').json(),{'owner':'ffn-controld'})
+            rpc.assert_awaited_once_with('state/control',timeout=5)
     def test_invalid_and_oversized_messages_rejected(self):
         with patch.object(ffn_plane_api,'rpc',new_callable=AsyncMock) as rpc:
             self.assertEqual(self.client.post('/api/system/planes',json={}).status_code,422)

@@ -5,25 +5,26 @@ import os
 import uuid
 from fastapi import Depends, HTTPException, Request
 from ffn_planed import LIMIT, check, decode, encode
-
-
-async def rpc(path, request):
-    check(request)
-    reader, writer = await asyncio.open_unix_connection(path, limit=LIMIT+1)
-    try:
-        writer.write(encode(request))
-        await writer.drain()
-        raw = await asyncio.wait_for(reader.readline(), 125)
-        result = decode(raw)
-        if not isinstance(result, dict) or result.get('id') != request['id'] or result.get('v') != 1:
-            raise ValueError('invalid daemon response')
-        return result
-    finally:
-        writer.close()
-        await writer.wait_closed()
+from ffn_control_plane import plane_rpc as rpc, control_rpc
 
 
 def install(app, current_user, require_admin, audit):
+    @app.get('/api/system/control')
+    async def control(user=Depends(current_user)):
+        require_admin(user)
+        try:
+            return await control_rpc('state/control', timeout=5)
+        except (OSError, asyncio.TimeoutError, ValueError, ConnectionError):
+            raise HTTPException(503, 'Control observations unavailable')
+
+    @app.get('/api/system/control/events')
+    async def events(user=Depends(current_user)):
+        require_admin(user)
+        try:
+            return await control_rpc('state/control-events', timeout=5)
+        except (OSError, asyncio.TimeoutError, ValueError, ConnectionError):
+            raise HTTPException(503, 'Control events unavailable')
+
     @app.post('/api/system/planes')
     async def command(request: Request, user=Depends(current_user)):
         # All operations require admin: results may contain saved configuration.

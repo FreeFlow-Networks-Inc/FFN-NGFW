@@ -153,6 +153,11 @@ cp "$HERE/config.sh" "$HERE/provision.sh" "$HERE/ffn-firstboot.sh" "$HERE/ffn-hw
    "$HERE/ffn-selftest.sh" "$HERE/ffn-firstboot.service" "$HERE/ffn-selftest.service" \
    "$HERE/ffn-fips-selftest.service" "$HERE/ffn-recovery-menu.sh" "$HERE/ffn-recovery-menu.service" \
    "$HERE/requirements-v1.frozen" "$HERE/requirements-v2.frozen" "$PAYLOAD/"
+mkdir -p "$PAYLOAD/control-code"
+cp "$HERE/install-control-api.py" "$PAYLOAD/control-code/"
+for name in ffn_controld.py ffn_controld_client.py ffn_control_plane.py ffn_agent_protocol.py ffn_planed.py ffn_plane_api.py; do
+  cp "$HERE/../opt/$name" "$PAYLOAD/control-code/$name"
+done
 # pinned external sources — slow; skip on resume
 if [ "$FFN_RESUME" = 1 ] && [ -f "$PAYLOAD/dpdk-src.tar.xz" ] && [ -f "$PAYLOAD/flatcc-src.tar.gz" ]; then
   echo "RESUME: reusing DPDK + flatcc sources"
