@@ -9271,6 +9271,12 @@ async def config_commit(req: CommitRequest, user: dict = Depends(get_current_use
                 req.description, d["total_changes"])
 
     try:
+        from ffn_policy_barrier import before_commit as _before_policy_commit
+        try:
+            policy_barrier = await _before_policy_commit(app, CANDIDATE_CONFIG)
+        except Exception as exc:
+            logger.error('Selected platform policy barrier failed: %s', exc)
+            raise HTTPException(409, 'Hardware session invalidation failed; configuration was not committed')
         result = config_mgr.commit(
             user=user["username"],
             description=req.description,
@@ -9279,6 +9285,8 @@ async def config_commit(req: CommitRequest, user: dict = Depends(get_current_use
         )
         if result.get("status") != "committed":
             raise HTTPException(422, result.get("message", "Commit failed"))
+        if policy_barrier is not None:
+            result['policy_barrier'] = policy_barrier
         # Apply to live system.
         # Preferred path: delegate to ffn-controld, which signals ffn-configd
         # (the XML validator/applier) and waits for apply-status.json.

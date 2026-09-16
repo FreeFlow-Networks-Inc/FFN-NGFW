@@ -22,6 +22,22 @@ async def audit(*args):
 
 
 class ExtensionTests(unittest.TestCase):
+    def test_declared_policy_barrier_cannot_silently_disappear(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            (root/'extension.json').write_text(json.dumps({'id':'fixture','label':'Fixture',
+                'api_version':1,'policy_barrier_version':1}))
+            (root/'static').mkdir()
+            (root/'control.py').write_text('from fastapi import APIRouter\ndef router(*a): return APIRouter()\n')
+            app=FastAPI()
+            with self.assertLogs('ffn_extensions',level='ERROR'):
+                install(app,user,lambda u:None,audit,selected=temp)
+            with self.assertRaises(RuntimeError):app.state.platform_policy_guard(b'<config/>')
+            with (root/'control.py').open('a') as f:
+                f.write('\ndef before_policy_commit(data): return {"drained": data == b"<config/>"}\n')
+            app=FastAPI();install(app,user,lambda u:None,audit,selected=temp)
+            self.assertEqual(app.state.platform_policy_guard(b'<config/>'),{'drained':True})
+
     def test_disabled_never_imports_or_probes(self):
         app = FastAPI()
         with patch('ffn_extensions.importlib.util.spec_from_file_location') as imp:

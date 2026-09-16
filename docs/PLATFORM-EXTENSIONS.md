@@ -45,6 +45,28 @@ provider. There is no implicit fallback to host commands when a provider fails.
 compatible selected provider, runtime status returns 503. No probes run during
 registration. Runtime selection changes require manager restart and browser reload.
 
+### Optional pre-commit session barrier
+
+An extension declaring integer `policy_barrier_version: 1` must export the
+synchronous callback `before_policy_commit(candidate_bytes)`. The core runs it
+in a worker thread before `config_mgr.commit` writes running configuration.
+The provider must bound its own IO and drain or invalidate its owned hardware
+sessions before returning. Exceptions produce HTTP 409 and the commit handler
+releases its configuration lock. A JSON-serializable return value is included
+as `policy_barrier` in the commit response.
+
+The core knows no device commands or hardware types. Without a selected guard,
+it does not read the candidate for this hook or probe hardware. A manifest that
+declares a barrier but fails to load leaves a rejecting callback installed.
+This callback does not acknowledge successful software policy application or
+reactivate offload; those are separate provider responsibilities. Partial
+commits supply the candidate bytes as well, so a provider must not mistake their
+hash for the final applied running configuration.
+
+This hook covers the configuration-commit API. Providers must also invalidate
+sessions for their immediate controller changes and other configuration writers
+before enabling production hardware admission.
+
 Install the updated core before an extension using these hooks. The PA-5200
 module uses them for its OCTEON Device page and MP-to-CP/DP controllers. Inspection
 writes report `active` only after observing the matching live DP revision;
@@ -97,6 +119,18 @@ this change does not convert or remove them. The new controls have explicit opt-
 semantics and no fallback to the legacy hardware command paths.
 
 ## Checks
+
+The shared `opt/ffn_linux_network.py` engine also provides two optional adapter
+hooks: `routing_interfaces(cfg)` supplies the validated interface settings used
+by route/rule validation; `attached_interfaces(attachment)` supplies names
+available for new route/rule installation. Defaults use only `cfg['ports']`
+and the existing physical backend. Neither hook discovers or imports a platform.
+A selected adapter may add independently owned interfaces, but must validate
+their saved configuration and verify live attachment. It must not add those
+interfaces to `cfg['ports']`, transfer lifecycle ownership, or call a service
+that waits for the network lock while that lock is held. Route persistence and
+rollback remain in the shared engine; device and boot ordering remain the
+adapter's responsibility.
 
 `python -m unittest discover -s tests -p test_extensions.py` verifies disabled
 zero-import behavior, authentication, selected assets and missing-package recovery.

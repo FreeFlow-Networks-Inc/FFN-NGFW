@@ -67,6 +67,20 @@ def validate_port(name, settings):
                 raise ValueError('invalid routed address')
     return settings
 
+def routing_interfaces(cfg):
+    """Routing view; selected adapters may add separately owned interfaces.
+
+    These entries are never added to cfg['ports'] or reconfigured by this
+    controller. An adapter must validate their saved settings before returning.
+    """
+    return cfg['ports']
+
+
+def attached_interfaces(attachment):
+    """Interfaces available to new routes and ingress policy rules."""
+    return {'p%d' % number for number in attachment['ports']}
+
+
 def validate(cfg):
     if not {'revision', 'ports'} <= set(cfg) or set(cfg)-{'revision', 'ports', 'routes', 'vrfs', 'rules'} or type(cfg['revision']) is not int or cfg['revision'] < 0:
         raise ValueError('configuration requires revision and ports')
@@ -81,9 +95,11 @@ def validate(cfg):
             raise ValueError('VRF names must be vrf-NAME (15 chars max), tables 1000..65535')
     if len(set(vrfs.values())) != len(vrfs):
         raise ValueError('VRF table IDs must be unique')
-    addresses = set()
     for name, settings in cfg['ports'].items():
         validate_port(name, settings)
+    interfaces = routing_interfaces(cfg)
+    addresses = set()
+    for name, settings in interfaces.items():
         if 'vrf' in settings and settings['vrf'] not in vrfs:
             raise ValueError('port references an undefined VRF')
         for address in settings.get('addresses', []):
@@ -137,7 +153,7 @@ def validate(cfg):
             continue
         if kind != 'unicast':
             raise ValueError('route type must be unicast or blackhole')
-        port = cfg['ports'].get(route.get('dev'), {})
+        port = interfaces.get(route.get('dev'), {})
         if port.get('mode') != 'l3':
             raise ValueError('route dev must be a configured l3 port')
         if vrfs.get(port.get('vrf'), 254) != table:
@@ -171,7 +187,7 @@ def validate(cfg):
             target = ipaddress.ip_network(rule['to'], strict=True)
             if target.version != source.version or str(target) != rule['to']:
                 raise ValueError('policy destination must be canonical and match source family')
-        if cfg['ports'].get(rule['iif'], {}).get('mode') != 'l3':
+        if interfaces.get(rule['iif'], {}).get('mode') != 'l3':
             raise ValueError('policy ingress must be a configured l3 port')
         if type(rule['table']) is not int or rule['table'] not in vrfs.values():
             raise ValueError('policy table must select a configured virtual router')
@@ -385,10 +401,11 @@ def prepare(cfg, request):
         raise ValueError('remove a virtual router before changing its table ID')
     attachment = backend()
     if REQUIRE_ATTACHMENT:
-        attached = {'p%d' % number for number in attachment['ports']}
+        attached = attached_interfaces(attachment)
         needed = {name for name, settings in request.get('ports', {}).items() if settings['mode'] != 'disabled'}
         for route in request.get('routes', []):
             needed.update(port for port in route_ports(route) if port)
+        needed.update(rule['iif'] for rule in request.get('rules', []))
         if needed - attached:
             raise ValueError('requested ports are not attached to the commissioned physical backend')
     for number in attachment['ports']:

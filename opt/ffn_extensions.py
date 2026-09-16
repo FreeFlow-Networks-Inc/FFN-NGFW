@@ -28,6 +28,12 @@ def install(app, current_user, require_admin, record_audit, selected=None):
                 raise ValueError('extension directory must be absolute')
             root = root.resolve(strict=True)
             manifest = json.loads((root / 'extension.json').read_text())
+            if manifest.get('policy_barrier_version') is not None:
+                def unavailable_guard(candidate):
+                    raise RuntimeError('Selected platform policy barrier unavailable')
+                app.state.platform_policy_guard = unavailable_guard
+                if type(manifest['policy_barrier_version']) is not int or manifest['policy_barrier_version'] != 1:
+                    raise ValueError('unsupported policy barrier version')
             ident = manifest['id']
             if not re.fullmatch(r'[a-z][a-z0-9-]{0,31}', ident):
                 raise ValueError('invalid extension ID')
@@ -55,6 +61,9 @@ def install(app, current_user, require_admin, record_audit, selected=None):
             spec = importlib.util.spec_from_file_location('ffn_extension_' + ident, root / 'control.py')
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
+            if manifest.get('policy_barrier_version') == 1:
+                if not callable(getattr(mod,'before_policy_commit',None)):
+                    raise ValueError('selected platform lacks its policy barrier')
             routes = mod.router(current_user, require_admin, record_audit)
             legacy_routes = (mod.legacy_router(current_user, require_admin, record_audit)
                              if hasattr(mod, 'legacy_router') else None)
@@ -91,6 +100,8 @@ def install(app, current_user, require_admin, record_audit, selected=None):
             descriptors.append({'id': ident, 'label': label,
                                 'script': '/static/extensions/' + ident + '/ui.js', 'pages': pages})
             state = 'enabled'
+            if manifest.get('policy_barrier_version') == 1:
+                app.state.platform_policy_guard = mod.before_policy_commit
         except Exception:
             logging.getLogger(__name__).exception('Selected platform extension could not be loaded')
             state = 'unavailable'
