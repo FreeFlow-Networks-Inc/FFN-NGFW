@@ -9,9 +9,11 @@ from defusedxml import ElementTree as SafeET
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
 from typing import Literal
+from ffn_object_schema import (SCHEMAS, LABELS, GROUPS, describe_extra,
+                               validate_extra, write_extra, expression_tags)
 
-KINDS = ('address', 'address-group', 'service', 'service-group')
-NAME = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}\Z')
+KINDS = tuple(LABELS)
+NAME = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_ .-]{0,62}\Z')
 
 
 class ObjectEdit(BaseModel):
@@ -22,6 +24,8 @@ class ObjectEdit(BaseModel):
     source_port: str = Field(default='', max_length=4096)
     members: list[str] = Field(default_factory=list, max_length=1024)
     description: str = Field(default='', max_length=1024)
+    settings: dict[str, str | list[str]] = Field(default_factory=dict, max_length=16)
+    tags: list[str] | None = Field(default=None, max_length=64)
 
     class Config:
         extra = 'forbid'
@@ -32,7 +36,7 @@ def reject(message, status=422):
 
 
 def valid_name(name):
-    return bool(NAME.fullmatch(name)) and name not in ('any', 'application-default')
+    return bool(NAME.fullmatch(name)) and name == name.strip() and name not in ('any', 'application-default')
 
 
 def revision(xml):
@@ -83,8 +87,12 @@ def group_members(entry, kind):
 
 
 def describe(entry, kind):
+    if kind in SCHEMAS:
+        result = describe_extra(entry, kind)
+        result['editable'] &= valid_name(result['name'])
+        return result
     value, source_port, members, typ = '', '', [], ''
-    supported = valid_name(entry.get('name', ''))
+    supported = valid_name(entry.get('name', '')) and set(entry.attrib) == {'name'}
     if kind == 'address':
         options = [tag for tag in ('ip-netmask', 'ip-range', 'fqdn') if entry.find(tag) is not None]
         typ = options[0] if len(options) == 1 else 'unsupported'
@@ -102,11 +110,17 @@ def describe(entry, kind):
         typ = 'static' if entry.find('dynamic') is None else 'dynamic'
         members = group_members(entry, kind)
         supported &= typ == 'static' and all(n.tag in ('description', 'tag', 'static' if kind == 'address-group' else 'members') for n in entry)
+        if kind == 'address-group' and typ == 'dynamic':
+            value = entry.findtext('dynamic/filter', '')
+            supported = valid_name(entry.get('name', '')) and set(entry.attrib) == {'name'} and all(n.tag in ('description','tag','dynamic') for n in entry)
+            dynamic = entry.find('dynamic')
+            supported &= len(dynamic) == 1 and dynamic[0].tag == 'filter' and len(dynamic[0]) == 0
     # Never flatten imported nested settings or duplicate scalar fields.
     supported &= len({n.tag for n in entry}) == len(entry)
     for child in entry:
         if child.tag == 'tag':
-            continue  # Retained verbatim by the editor.
+            supported &= not child.attrib and all(n.tag == 'member' and not n.attrib and not len(n) for n in child)
+            continue
         for node in child.iter():
             supported &= not node.attrib
             if node.tag in ('description', 'ip-netmask', 'ip-range', 'fqdn', 'port', 'source-port', 'member'):
@@ -117,6 +131,7 @@ def describe(entry, kind):
             supported &= all(len({n.tag for n in proto}) == len(proto) for proto in child)
     return {'name': entry.get('name', ''), 'kind': kind, 'type': typ, 'value': value,
             'source_port': source_port, 'members': members,
+            'settings': {}, 'tags': [n.text or '' for n in entry.findall('tag/member')],
             'description': entry.findtext('description', ''), 'editable': bool(supported)}
 
 
@@ -140,12 +155,24 @@ def ports(value, optional=False):
 
 def validate_spec(spec, kind):
     if not valid_name(spec.name):
-        reject('Use 1–63 letters, numbers, dots, underscores or hyphens; begin with a letter, number or underscore. Reserved names are not allowed')
-    for text in [spec.name, spec.description, spec.value, spec.source_port, *spec.members]:
+        reject('Use 1–63 letters, numbers, spaces, dots, underscores or hyphens; begin with a letter, number or underscore and omit trailing spaces. Reserved names are not allowed')
+    values = [x for value in spec.settings.values() for x in (value if isinstance(value,list) else [value])]
+    for text in [spec.name, spec.description, spec.value, spec.source_port, *spec.members, *(spec.tags or []), *values]:
         if any(not (c in '\n\t\r' or 0x20 <= ord(c) <= 0xD7FF or
                     0xE000 <= ord(c) <= 0xFFFD or 0x10000 <= ord(c) <= 0x10FFFF) for c in text):
             reject('Control characters are not allowed')
-    if kind.endswith('-group'):
+    if spec.tags is not None and (any(not valid_name(t) for t in spec.tags) or len(set(spec.tags))!=len(spec.tags)):
+        reject('Tags must be unique valid object names')
+    if kind in SCHEMAS:
+        validate_extra(spec, kind, ports)
+        return
+    if spec.settings:
+        reject('This object does not accept additional settings')
+    if kind == 'address-group' and spec.type == 'dynamic':
+        if spec.members or spec.source_port: reject('Dynamic groups use match criteria, not static members')
+        expression_tags(spec.value)
+        return
+    if kind in GROUPS:
         if spec.type != 'static' or spec.value or spec.source_port:
             reject('Static groups accept members and a description only')
         if not spec.members or any(not valid_name(m) for m in spec.members):
@@ -193,7 +220,7 @@ def validate_group(root, key):
             reject('Group nesting exceeds 64 levels')
         if current in active:
             reject('Group membership would create a cycle')
-        if current in visited or not current[1].endswith('-group'):
+        if current in visited or current[1] not in GROUPS:
             return
         if index[current].find('dynamic') is not None:
             reject('Dynamic groups cannot be nested through this editor')
@@ -211,7 +238,7 @@ def validate_group(root, key):
 def references(root, target):
     """Conservative XML member references, with local/shared name resolution."""
     index = entries(root)
-    family = target[1].split('-')[0]
+    family = target[1].removesuffix('-group')
     result = []
     for scope, node in scopes(root).items():
         if resolve(index, scope, target[2], family) != target:
@@ -221,11 +248,16 @@ def references(root, target):
                 suffix = child.tag + ('[' + child.get('name') + ']' if child.get('name') else '')
                 child_path = path + '/' + suffix
                 # Ignore tags, descriptions and members belonging to the other family.
-                if child.tag in ('description', 'tag', 'service' if family == 'address' else 'address',
-                                 'service-group' if family == 'address' else 'address-group'):
+                if child.tag == 'description' or (child.tag == 'tag' and family != 'tag'):
+                    continue
+                if family != 'tag' and child.tag in KINDS and child.tag.removesuffix('-group') != family and child.tag not in ('tag','dynamic-user-group','address-group'):
                     continue
                 if child.tag == 'member' and child.text == target[2]:
                     result.append({'scope': scope, 'path': child_path})
+                if family == 'tag' and child.tag == 'filter' and child.text:
+                    # Conservative token extraction also protects imported expressions.
+                    if target[2] in re.findall(r"'([^']+)'", child.text):
+                        result.append({'scope': scope, 'path': child_path})
                 walk(child, child_path)
         walk(node, scope)
     return result
@@ -248,13 +280,15 @@ class ObjectStore:
             reject('Virtual system not found', 404)
         index = entries(root)
         rows = [describe(entry, key[1]) for key, entry in index.items() if key[:2] == (scope, kind)]
-        family = kind.split('-')[0]
+        family = kind.removesuffix('-group')
         choices = {}
         for owner in ['shared', scope]:
             for key in index:
-                if key[0] == owner and key[1].split('-')[0] == family:
+                if key[0] == owner and key[1].removesuffix('-group') == family:
                     choices[key[2]] = {'name': key[2], 'scope': owner, 'kind': key[1]}
         return {'source': source, 'scope': scope, 'kind': kind, 'revision': rev,
+                'label': LABELS[kind], 'schema': SCHEMAS.get(kind),
+                'tag_choices': sorted({key[2] for key in index if key[0] in ('shared',scope) and key[1]=='tag'}),
                 'scopes': ['shared'] + sorted(k for k in owners if k != 'shared'),
                 'entries': sorted(rows, key=lambda r: r['name']),
                 'member_choices': sorted(choices.values(), key=lambda r: r['name'])}
@@ -277,7 +311,8 @@ class ObjectStore:
         key = (scope, kind, name)
         entry = index.get(key)
         if create:
-            if any((scope, k, name) in index for k in (kind.split('-')[0], kind.split('-')[0] + '-group')):
+            family = kind.removesuffix('-group')
+            if any((scope, k, name) in index for k in (family, family + '-group')):
                 reject('An object or group with this name already exists in this scope', 409)
         elif entry is None:
             reject('Object not found', 404)
@@ -292,6 +327,14 @@ class ObjectStore:
             if spec.name != name:
                 reject('Renaming is not supported; create a new object and update references')
             validate_spec(spec, kind)
+            retained_tags = {n.text for n in entry.findall('tag/member')} if entry is not None else set()
+            for tag in spec.tags or []:
+                if tag not in retained_tags and resolve(index, scope, tag, 'tag') is None:
+                    reject('Tag does not exist in this scope: '+tag)
+            match = spec.value if kind == 'address-group' and spec.type == 'dynamic' else spec.settings.get('filter') if kind == 'dynamic-user-group' else None
+            for tag in expression_tags(match) if match is not None else []:
+                if resolve(index, scope, tag, 'tag') is None:
+                    reject('Match tag does not exist in this scope: '+tag)
             container = owners[scope].find(kind)
             if container is None:
                 container = ET.SubElement(owners[scope], kind)
@@ -299,9 +342,16 @@ class ObjectStore:
                 entry = ET.SubElement(container, 'entry', name=name)
             # Preserve tags; unknown fields are rejected above rather than discarded.
             for child in list(entry):
-                if child.tag != 'tag':
+                if child.tag != 'tag' or spec.tags is not None:
                     entry.remove(child)
-            if kind.endswith('-group'):
+            if spec.tags:
+                tags = ET.SubElement(entry, 'tag')
+                for tag in spec.tags: ET.SubElement(tags, 'member').text = tag
+            if kind in SCHEMAS:
+                write_extra(entry, kind, spec)
+            elif kind == 'address-group' and spec.type == 'dynamic':
+                ET.SubElement(ET.SubElement(entry, 'dynamic'), 'filter').text = spec.value
+            elif kind in GROUPS:
                 members = ET.SubElement(entry, 'static' if kind == 'address-group' else 'members')
                 for member in spec.members:
                     ET.SubElement(members, 'member').text = member
@@ -317,7 +367,8 @@ class ObjectStore:
                 ET.SubElement(entry, 'description').text = spec.description
         # A newly shadowed name can change other groups' resolution too.
         for group_key, group in entries(root).items():
-            if group_key[1].endswith('-group') and group.find('dynamic') is None:
+            if (group_key[1] in GROUPS and group.find('dynamic') is None
+                    and group_key[1].removesuffix('-group') == kind.removesuffix('-group')):
                 validate_group(root, group_key)
         if not lock['locked'] and not self.manager.acquire_lock(user, 'editing objects'):
             reject('Configuration lock could not be acquired', 423)

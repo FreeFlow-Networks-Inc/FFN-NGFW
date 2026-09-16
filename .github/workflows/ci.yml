@@ -228,6 +228,12 @@ jobs:
           python tests/test_config_objects.py
           python tests/test_extensions.py
 
+      - name: Objects browser workflows against disposable candidate configuration
+        run: |
+          npm install --prefix "$RUNNER_TEMP/objects-browser" --no-save --package-lock=false playwright@1.62.1
+          "$RUNNER_TEMP/objects-browser/node_modules/.bin/playwright" install --with-deps chromium
+          NODE_PATH="$RUNNER_TEMP/objects-browser/node_modules" TEST_PYTHON=python node tests/test_objects_browser.cjs
+
       - name: plane protocol, transport and Linux networking
         run: |
           python tests/test_planes.py
