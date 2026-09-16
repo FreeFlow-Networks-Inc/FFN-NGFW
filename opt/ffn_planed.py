@@ -110,6 +110,7 @@ class Plane:
         self.db.execute('CREATE INDEX IF NOT EXISTS pending_resource ON requests(resource, state)')
         self.db.commit()
         self.lock = asyncio.Lock()
+        self.resource_locks = {}
 
     def response(self, request, state, result=None, error=None):
         return {'v':1, 'id':request.get('id'), 'ok':error is None, 'state':state,
@@ -159,8 +160,16 @@ class Plane:
                 return result
             except Exception:
                 return self.response(request, 'unknown', error='Downstream outcome unknown; query request ID before retrying')
+        # Keep status available during changes to other resources. Serialize
+        # it with its own controller: some backends take exclusive file locks
+        # even for reads. Writes retain the global transaction lock.
+        resource_lock = self.resource_locks.setdefault(request['resource'], asyncio.Lock())
+        if request['action'] == 'status':
+            async with resource_lock:
+                return await self.local(request)
         async with self.lock:
-            return await self.local(request)
+            async with resource_lock:
+                return await self.local(request)
 
     async def local(self, request):
         resource, action, payload = (request[k] for k in ('resource', 'action', 'payload'))
