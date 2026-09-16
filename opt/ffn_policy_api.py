@@ -31,6 +31,17 @@ def install(app,current_user,require_admin,audit,manager,client=None):
     async def policy_status(source:Literal['candidate','running']='candidate',user=Depends(current_user)):
         return await call(dict(action='report',source=source))
 
+    @app.get('/api/config/nat/preview')
+    async def nat_preview(source:Literal['candidate','running']='candidate',user=Depends(current_user)):
+        try:return await asyncio.to_thread(client.query,'nat/preview',source=source)
+        except Exception as error:raise HTTPException(503,'NAT compiler or dataplane status unavailable') from error
+
+    @app.get('/api/system/dataplane-tools')
+    async def dataplane_tools(user=Depends(current_user)):
+        require_admin(user)
+        try:return await asyncio.to_thread(client.query,'nat/tools')
+        except Exception as error:raise HTTPException(503,'Dataplane tool audit unavailable') from error
+
     @app.get('/api/config/policies/{kind}')
     async def policy_list(kind:str,scope:str='vsys1',source:Literal['candidate','running']='candidate',user=Depends(current_user)):
         result=await call(dict(action='list',kind=kind,scope=scope,source=source))

@@ -19,6 +19,12 @@ async function main(){
       sdwan:{'Path Quality Profile':'quality','Traffic Distribution Profile':'distribution'}
     };
     for(const kind of ['security','nat','qos','pbf','decryption','tunnel-inspect','application-override','authentication','dos','sdwan']){
+      if(kind==='nat'){
+        await open(kind);await page.locator('#pw-nat-preview').click();
+        await page.waitForFunction(()=>document.getElementById('nat-preview')?.textContent.includes('Compilation passed'));
+        assert.match(await page.locator('#nat-preview').innerText(),/NAT activation is not commissioned/);
+        await page.locator('#object-close').click();
+      }
       await open(kind);await page.locator('#pw-add').click();await page.locator('[name=rule-name]').fill(kind+' rule');
       // Tab changes must retain match values and edit controls.
       for(const [label,value] of Object.entries(fields[kind]||{})){
@@ -27,13 +33,14 @@ async function main(){
         const control=el.locator('input,select').first();if(await control.evaluate(e=>e.tagName)==='SELECT')await control.selectOption(value);else await control.fill(value);
       }
       await page.locator('#pw-form [type=submit]').click();await page.locator('#pw-editor').waitFor({state:'hidden'});
+      await page.locator('#pw-list [data-rule-edit]').first().waitFor();
       assert.match(await page.locator('#pw-list').innerText(),new RegExp(kind+' rule'));
       await page.locator('[data-rule-edit]').click();assert.equal(await page.locator('[name=rule-name]').inputValue(),kind+' rule');
       await page.locator('[name=rule-description]').fill('edited');await page.locator('#pw-form [type=submit]').click();await page.locator('#pw-editor').waitFor({state:'hidden'});
       await page.locator('[data-rule-clone]').click();assert.equal(await page.locator('[name=rule-enabled]').inputValue(),'false');await page.locator('[name=rule-name]').fill(kind+' clone');await page.locator('#pw-form [type=submit]').click();await page.locator('#pw-editor').waitFor({state:'hidden'});
       await page.locator('[data-rule-op=up][data-index="1"]').click();await page.waitForFunction(k=>document.querySelector('#pw-list tbody tr')?.textContent.includes(k+' clone'),kind);
       await page.locator('[data-rule-op=toggle][data-index="0"]').click();await page.waitForFunction(()=>document.getElementById('pw-status').textContent.includes('block activation'));
-      await page.locator('#pw-validate').click();await page.waitForFunction(()=>document.getElementById('pw-validation').textContent.includes('No commissioned runtime provider'));await page.locator('#object-close').click();
+      await page.locator('#pw-validate').click();await page.waitForFunction(k=>document.getElementById('pw-validation').textContent.includes(k==='nat'?'Layer 3':'No commissioned runtime provider'),kind);await page.locator('#object-close').click();
       await page.locator('[data-rule-op=toggle][data-index="0"]').click();await page.waitForFunction(()=>document.getElementById('pw-status').textContent.includes('No enabled XML'));
       await page.locator('#pw-search').fill('not found');assert.equal(await page.locator('#pw-list tbody tr').count(),0);
       await page.locator('#pw-source').selectOption('running');await page.waitForFunction(()=>document.getElementById('pw-count').textContent==='0 of 0 rules');assert(await page.locator('#pw-add').isDisabled());

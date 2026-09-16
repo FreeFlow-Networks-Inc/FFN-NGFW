@@ -51,6 +51,7 @@ SCHEMAS={
      field('profile-group','Security Profile Group','Actions',mode='text',ref='profile-group',path='profile-setting/group')]),
  'nat':dict(label='NAT',fields=MATCH+[SERVICE,
      select('nat-type','NAT Type',['ipv4'],tab='General'),
+     field('to-interface','Destination Interface','Original Packet','text','any',ref='interface'),
      field('source-type','Source Translation','Translated Packet','branch','none',
            ['none','static-ip','dynamic-ip','dynamic-ip-and-port'],path='source-translation'),
      field('translated-source','Translated Source Addresses','Translated Packet',default=[],ref='address',path='source-translation/{source-type}/translated-address'),
@@ -88,6 +89,7 @@ SCHEMAS={
      field('traffic-distribution-profile','Traffic Distribution Profile','Path Selection','text',ref='profiles/sdwan-traffic-distribution',path='action/traffic-distribution/traffic-distribution-profile')]),
 }
 for schema in SCHEMAS.values(): schema['fields']=[TAGS]+schema['fields']
+SCHEMAS['nat']['fields']=[dict(f,tab='Original Packet') if f['key'] in ('from','to','source','destination','service') else f for f in SCHEMAS['nat']['fields']]
 
 
 def parse(xml):
@@ -203,6 +205,7 @@ def validate(kind,spec,root,scope):
             choices=inventory(root,scope,f['ref'])
             for v in values:
                 if not v:continue
+                if kind=='nat' and key=='to-interface' and v=='any':continue
                 if v=='any' and f['default']==['any']:continue
                 if v=='application-default' and kind=='security' and key=='service':continue
                 if f['ref']=='address':
@@ -238,24 +241,35 @@ def validate(kind,spec,root,scope):
     if kind=='sdwan' and not all(s[k] for k in ('path-quality-profile','traffic-distribution-profile')):raise PolicyError('Select path quality and traffic distribution profiles')
 
 
-def runtime_report(xml):
+def runtime_report(xml,check_runtime=False):
     """Fail closed until each policy compiler and acknowledged apply are connected."""
-    root=parse(xml);blockers=[];disabled=0
+    root=parse(xml);blockers=[];disabled=0;nat_enabled=[]
     for scope,node in owners(root).items():
         for kind in SCHEMAS:
             for rule in node.findall('rulebase/'+kind+'/rules/entry'):
                 if rule.findtext('disabled')=='yes':disabled+=1
+                elif kind=='nat':nat_enabled.append(dict(scope=scope,kind=kind,name=rule.get('name','')))
                 else:blockers.append(dict(scope=scope,kind=kind,name=rule.get('name',''),reason='No commissioned runtime provider for this XML rulebase'))
+    if nat_enabled:
+        from ffn_nat_policy import compile_policy
+        compiled=compile_policy(xml)
+        if compiled['blockers']:blockers.extend(compiled['blockers'])
+        else:
+            try:
+                from ffn_nat_control import preflight,commissioned
+                if check_runtime:preflight(xml)
+                elif not commissioned():raise ValueError('NAT runtime provider is not commissioned for Commit')
+            except Exception as error:blockers.extend(dict(r,reason=str(error)) for r in nat_enabled)
     return dict(valid=not blockers,blockers=blockers,disabled_rules=disabled,
                 revision=revision(xml),applied=False,owner='ffn-controld',
-                runtime_state='blocked' if blockers else 'no-enabled-rules')
+                runtime_state='blocked' if blockers else 'validated' if nat_enabled and check_runtime else 'requires-dataplane-validation' if nat_enabled else 'no-enabled-rules')
 
 
 def require_supported(xml):
-    report=runtime_report(xml)
+    report=runtime_report(xml,check_runtime=True)
     if report['blockers']:
         rows=report['blockers']
-        raise PolicyError('Policy activation blocked: '+', '.join(x['scope']+'/'+x['kind']+'/'+x['name'] for x in rows[:8])+'. No commissioned runtime provider; running configuration was not applied.',409)
+        raise PolicyError('Policy activation blocked: '+'; '.join(x['scope']+'/'+x['kind']+'/'+x['name']+': '+x['reason'] for x in rows[:8])+'. Running configuration was not applied.',409)
     return report
 
 

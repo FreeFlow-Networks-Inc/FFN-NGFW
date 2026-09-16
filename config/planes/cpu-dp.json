@@ -30,6 +30,30 @@
         "--backend",
         "native"
       ]
+    },
+    "nat": {
+      "status": [
+        "/usr/bin/python3",
+        "/usr/local/lib/ffn/ffn_nat_runtime.py",
+        "status"
+      ],
+      "validate": [
+        "/usr/bin/python3",
+        "/usr/local/lib/ffn/ffn_nat_runtime.py",
+        "validate"
+      ],
+      "apply": [
+        "/usr/bin/python3",
+        "/usr/local/lib/ffn/ffn_nat_runtime.py",
+        "apply"
+      ]
+    },
+    "dataplane-tools": {
+      "status": [
+        "/usr/bin/python3",
+        "/usr/local/lib/ffn/ffn_dp_tools.py",
+        "status"
+      ]
     }
   }
 }

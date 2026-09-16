@@ -5,6 +5,8 @@ from urllib.parse import urlencode
 
 
 HELP='''show policies <kind> [vsys] [candidate|running]
+show policies nat-preview [candidate|running]
+show policies nat-tools
 show policies status [candidate|running]
 request policies <kind> <create|update|delete|move|toggle> <JSON> [vsys]
 Use the displayed revision in mutations. Create/update use a rule object with
@@ -17,6 +19,11 @@ def handle(tokens,api,token):
     if len(tokens)<2 or tokens[0] not in ('show','request') or tokens[1]!='policies':return False
     if len(tokens)<3:print(HELP);return True
     kind=tokens[2]
+    if tokens[0]=='show' and kind=='nat-tools':
+        print(json.dumps(api('/api/system/dataplane-tools',token=token),indent=2));return True
+    if tokens[0]=='show' and kind=='nat-preview':
+        source='running' if 'running' in tokens[3:] else 'candidate'
+        print(json.dumps(api('/api/config/nat/preview?'+urlencode(dict(source=source)),token=token),indent=2));return True
     if tokens[0]=='show':
         source=next((x for x in tokens[3:] if x in ('candidate','running')),'candidate')
         scope=next((x for x in tokens[3:] if x not in ('candidate','running')),'vsys1')

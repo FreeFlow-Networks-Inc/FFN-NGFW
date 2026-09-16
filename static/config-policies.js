@@ -47,6 +47,7 @@ function renderPolicyWorkspace(c,kind){
     <p id="pw-status" role="status">Loading rulebase from control daemon…</p><div id="pw-list" class="card"></div>
     <div class="workflow-actions"><button class="btn btn-primary" id="pw-add" disabled>Add</button>
     <button class="btn" id="pw-validate">Validate activation</button>
+    ${kind==='nat'?'<button class="btn" id="pw-nat-preview">NAT translation preview</button>':''}
     ${kind==='dos'?'<button class="btn" id="pw-dos">DoS engine controls</button>':''}
     <span class="text-dim">Candidate changes require Commit. New rules start disabled.</span></div>
     <div class="modal-overlay" id="pw-editor" role="dialog" aria-modal="true" aria-labelledby="object-title"></div>`;
@@ -55,6 +56,7 @@ function renderPolicyWorkspace(c,kind){
     ++policyWorkspaceGeneration;renderer(c);const button=document.createElement('button');button.className='btn';button.textContent='Back to '+policyKinds[kind];button.onclick=()=>renderPolicyWorkspace(c,kind);c.prepend(button);
   };
   if(kind==='dos')document.getElementById('pw-dos').onclick=()=>legacy(renderPolicyDDoS);
+  if(kind==='nat')document.getElementById('pw-nat-preview').onclick=()=>previewNatWorkspace();
   loadPolicyWorkspace(c,kind);
 }
 async function loadPolicyWorkspace(c,kind){
@@ -75,7 +77,7 @@ async function loadPolicyWorkspace(c,kind){
     if(!table.isConnected||generation!==policyWorkspaceGeneration)return;
     const select=document.getElementById('pw-scope');select.innerHTML=data.scopes.map(s=>`<option>${_escSP(s)}</option>`).join('');select.value=scope;
     status.textContent=(xmlError?'Candidate/running rules unavailable: '+xmlError:
-      'Control owner: '+data.runtime.owner+' · '+(data.runtime.valid?'No enabled XML policies to apply.':data.runtime.blockers.length+' enabled rule(s) block activation.'))+
+      'Control owner: '+data.runtime.owner+' · '+(data.runtime.valid?(data.runtime.runtime_state==='requires-dataplane-validation'?'Commit will validate the NAT dataplane before activation.':'No enabled XML policies to apply.'):data.runtime.blockers.length+' enabled rule(s) block activation.'))+
       (kind==='security'?(fastError?' · Fast-path and implicit rules unavailable: '+fastError:' · Implicit rules are always shown and read only. Fast-path rows show stored policy in both views.'):'')+
       ' Dataplane application is not confirmed.';
     add.disabled=!data.can_edit;add.onclick=()=>editPolicyWorkspace(data,url,null,()=>loadPolicyWorkspace(c,kind));
@@ -83,7 +85,7 @@ async function loadPolicyWorkspace(c,kind){
     document.getElementById('pw-validate').onclick=async()=>{
       objectDialog(editor,'Policy Activation Validation','<pre id="pw-validation">Checking control daemon…</pre>');const target=document.getElementById('pw-validation');
       try{const report=await consoleRequest('/api/config/policies/status?source='+source);
-        if(target.isConnected)target.textContent=report.blockers.length?report.blockers.map(b=>b.scope+' / '+policyKinds[b.kind]+' / '+b.name+': '+b.reason).join('\n'):'No enabled XML policies. Disabled definitions can be committed; no runtime enforcement is claimed.';
+        if(target.isConnected)target.textContent=report.blockers.length?report.blockers.map(b=>b.scope+' / '+policyKinds[b.kind]+' / '+b.name+': '+b.reason).join('\n'):report.runtime_state==='requires-dataplane-validation'?'NAT compilation passed. Commit still requires dataplane validation and an apply acknowledgment.':'No enabled XML policies. Disabled definitions can be committed; no runtime enforcement is claimed.';
       }catch(e){if(target.isConnected)target.textContent=e.message;}
     };
     const inventory=kind==='security'?securityInventory(data,fast,scope):data.entries.map((r,i)=>({r,i}));
@@ -143,6 +145,22 @@ function policyFieldHTML(f,value,choices){
   }
   if(options.length)return `<label>${text(f.label)}<select name="${id}">${options.map(v=>`<option value="${text(v)}" ${v===value?'selected':''}>${text(v)}</option>`).join('')}</select></label>`;
   return `<label>${text(f.label)}<input name="${id}" value="${text(value)}" maxlength="1024" ${choices?.length?`list="${id}-choices"`:''}>${choices?.length?`<datalist id="${id}-choices">${choices.map(v=>`<option value="${text(v)}">`).join('')}</datalist>`:''}</label>`;
+}
+async function previewNatWorkspace(){
+  const editor=document.getElementById('pw-editor'),source=document.getElementById('pw-source').value;
+  objectDialog(editor,'NAT translation preview','<div id="nat-preview" role="status">Reading NAT compilation and dataplane status…</div>');
+  const target=document.getElementById('nat-preview'),text=v=>_escSP(v??'');
+  try{
+    const report=await consoleRequest('/api/config/nat/preview?source='+source);
+    if(!target.isConnected)return;
+    const state=report.runtime,active=state.applied&&state.digest===report.digest;
+    target.innerHTML=`<p><strong>${active?'This rule plan is applied':report.valid?'Compilation passed':'Compilation blocked'}</strong> · ${text(source)} configuration</p>
+      <p>${state.available?'Dataplane: '+text(state.provider)+' · '+text(state.machine)+' · '+text(state.byteorder)+' endian':text(state.error||'Dataplane unavailable')}</p>
+      <p>${report.commissioned?'Commit validates and applies this plan through the MP control daemon.':'NAT activation is not commissioned. Rules can be staged; enabled rules cannot be committed yet.'}</p>
+      ${report.blockers.length?'<ul>'+report.blockers.map(b=>'<li>'+text(b.scope+' / '+b.name+': '+b.reason)+'</li>').join('')+'</ul>':''}
+      <div class="table-wrap"><table><thead><tr><th>Rule</th><th>Original packet</th><th>Source translation</th><th>Destination translation</th></tr></thead><tbody>${report.plan.rules.map(r=>`<tr><td>${text(r.scope+' / '+r.name)}</td><td>${text(r.source.join(', '))} → ${text(r.destination.join(', '))}<br>${text(r.ingress.join(', '))} → ${text(r.egress.join(', '))}</td><td>${text(r.snat.type==='none'?'None':r.snat.interface?'Interface '+r.snat.interface:r.snat.type+' '+r.snat.address)}</td><td>${text(r.dnat?r.dnat.address+(r.dnat.port?':'+r.dnat.port:''):'None')}</td></tr>`).join('')}</tbody></table></div>
+      <p class="text-dim">${report.disabled_rules} disabled rule(s) excluded. First matching NAT rule wins. NAT does not permit traffic through Security policy. Existing sessions retain their translations.</p>`;
+  }catch(e){if(target.isConnected)target.textContent=e.message;}
 }
 function editPolicyWorkspace(snapshot,url,existing,reload,clone=false){
   const box=document.getElementById('pw-editor'),generation=policyWorkspaceGeneration;

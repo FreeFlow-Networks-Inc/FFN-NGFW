@@ -42,6 +42,9 @@ class PolicyTests(unittest.TestCase):
         self.controller=PolicyController(self.directory);self.manager=Manager(self.directory)
         class Client:
             def query(client,command,**payload):
+                if command=='nat/preview':
+                    from ffn_nat_policy import compile_policy
+                    return dict(compile_policy(self.manager.get_candidate() if payload.get('source')!='running' else self.manager.get_running()),commissioned=False,runtime={'available':False,'applied':False,'error':'No fixture dataplane'})
                 assert command=='policy/request'
                 return self.controller.request(payload)
         self.gateway=Client();app=FastAPI();self.audit=AsyncMock()
