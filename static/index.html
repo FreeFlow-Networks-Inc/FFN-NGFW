@@ -258,6 +258,7 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
 }
 </style>
 <link rel="stylesheet" href="/static/console-shell.css">
+<link rel="stylesheet" href="/static/modal-layers.css">
 <script src="/static/config-objects.js"></script>
 <link rel="stylesheet" href="/static/config-objects.css">
 <script src="/static/config-policies.js"></script>
@@ -404,7 +405,7 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
     <div id="route-msg" style="font-size:11px;min-height:14px"></div>
     <div class="form-actions">
       <button class="btn" onclick="closeModal('modal-route')">Cancel</button>
-      <button class="btn btn-primary" onclick="saveVRoute()">Save</button>
+      <button class="btn btn-primary" onclick="saveVRoute()">OK</button>
     </div>
   </div>
 </div>
@@ -429,7 +430,7 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
     <div id="vr-msg" style="font-size:11px;min-height:14px"></div>
     <div class="form-actions">
       <button class="btn" onclick="closeModal('modal-vr')">Cancel</button>
-      <button class="btn btn-primary" onclick="saveVR()">Save</button>
+      <button class="btn btn-primary" onclick="saveVR()">OK</button>
     </div>
   </div>
 </div>
@@ -444,7 +445,7 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
     <div class="form-group"><label>MTU</label><input type="number" id="iface-mtu" value="9000"></div>
     <div class="form-actions">
       <button class="btn" onclick="closeModal('modal-iface')">Cancel</button>
-      <button class="btn btn-primary" onclick="saveIface()">Save</button>
+      <button class="btn btn-primary" onclick="saveIface()">OK</button>
     </div>
   </div>
 </div>
@@ -4177,7 +4178,7 @@ async function openIfaceModal(name) {
 
     </div>
     <div class="settings-toolbar">
-      <button class="btn btn-primary btn-sm" id="ifm-save" onclick="saveIface()">Save to Candidate</button>
+      <button class="btn btn-primary btn-sm" id="ifm-save" onclick="saveIface()">OK</button>
       <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
       <span id="ifm-msg" style="font-size:11px;align-self:center"></span>
     </div>`;
@@ -4317,7 +4318,7 @@ function openAliasModal(panName) {
     <div class="form-group"><label>PAN-OS name</label><input type="text" value="${panName}" readonly style="width:100%"></div>
     <div class="form-group"><label>Map to Linux NIC</label><select id="alias-linux" style="width:100%">${opts}</select></div>
     <div style="margin-top:12px;display:flex;gap:8px">
-      <button class="btn btn-primary btn-sm" onclick="saveAlias('${panName}')">Save</button>
+      <button class="btn btn-primary btn-sm" onclick="saveAlias('${panName}')">OK</button>
       <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
       <span id="alias-msg" style="font-size:11px;align-self:center"></span>
     </div>`;
@@ -4368,7 +4369,7 @@ async function openSubinterfaceModal(parent, childName = null) {
       </div>
       <div class="form-group"><label for="sif-comment">Comment</label><input id="sif-comment" maxlength="1024" value="${_escSP(entry.comment)}"></div>
       <p class="text-dim">${_escSP(snapshot.runtime_note)}</p>
-      <div class="settings-toolbar"><span id="sif-msg" role="status"></span><button class="btn" type="button" onclick="closeModal('modal-info')">Cancel</button><button id="sif-save" class="btn btn-primary" type="submit" ${snapshot.can_edit?'':'disabled'}>Save to Candidate</button></div></form>`;
+      <div class="settings-toolbar"><span id="sif-msg" role="status"></span><button class="btn" type="button" onclick="closeModal('modal-info')">Cancel</button><button id="sif-save" class="btn btn-primary" type="submit" ${snapshot.can_edit?'':'disabled'}>OK</button></div></form>`;
     const row = ((_ifaceState.enriched || {}).ethernet || []).find(e=>e.name===(childName || parent));
     const vsys = row && row.virtual_system;
     document.getElementById('sif-vsys').value = systems.entries.some(v=>v.name===vsys) ? vsys : snapshot.vsys;
@@ -4432,7 +4433,7 @@ function openJumboModal() {
     <div class="form-group"><label>MTU (bytes)</label><input id="jumbo-mtu" type="number" value="${_ifaceState.jumbo.mtu}" min="576" max="16000" style="width:100%"></div>
     <div class="form-group"><label>Comment</label><input id="jumbo-comment" type="text" value="${_ifaceState.jumbo.comment||''}" style="width:100%"></div>
     <div style="margin-top:12px;display:flex;gap:8px">
-      <button class="btn btn-primary btn-sm" onclick="saveJumbo()">Save</button>
+      <button class="btn btn-primary btn-sm" onclick="saveJumbo()">OK</button>
       <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
       <span id="jumbo-msg" style="font-size:11px;align-self:center"></span>
     </div>`;
@@ -4530,7 +4531,7 @@ function openZoneModal(existing) {
     <div class="form-group"><label for="zm-log">Log Setting</label><input id="zm-log" maxlength="63" value="${_escSP(zone.log_setting || '')}"></div></div>
     <div class="form-group"><label for="zm-comment">Comment</label><input id="zm-comment" maxlength="1024" value="${_escSP(zone.comment)}"></div>
     <p class="text-dim">${_escSP(snapshot.enforcement)}</p>
-    <div class="settings-toolbar"><span id="zm-msg" role="status"></span><button class="btn" type="button" onclick="closeModal('modal-info')">Cancel</button><button id="zm-save" class="btn btn-primary" type="submit">Save to Candidate</button></div></form>`;
+    <div class="settings-toolbar"><span id="zm-msg" role="status"></span><button class="btn" type="button" onclick="closeModal('modal-info')">Cancel</button><button id="zm-save" class="btn btn-primary" type="submit">OK</button></div></form>`;
   document.getElementById('zone-form').onsubmit = event => {event.preventDefault();saveZone(existing&&existing.name,snapshot);};
   document.getElementById('modal-info').classList.add('show');
   document.getElementById('zm-name').focus();
@@ -4785,7 +4786,7 @@ function openVrRouting(name) {
       </div>
     </div>
     <div style="display:flex;gap:8px;margin-top:12px;border-top:1px solid var(--border,#333);padding-top:10px">
-      <button class="btn btn-primary btn-sm" onclick="saveVrRouting()">Save &amp; Apply</button>
+      <button class="btn btn-primary btn-sm" id="vrr-save" disabled onclick="saveVrRouting()">OK</button>
       <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
       <span id="vrr-msg" style="font-size:11px;align-self:center"></span></div>`;
   document.getElementById('modal-info').classList.add('show');
@@ -4793,7 +4794,10 @@ function openVrRouting(name) {
 }
 
 async function loadVrRouting(name) {
-  const r = await api('/api/network/virtual-routers/' + encodeURIComponent(name) + '/routing');
+  const marker=document.getElementById('vrr-name');
+  try {
+  const r = await consoleRequest('/api/network/virtual-routers/' + encodeURIComponent(name) + '/routing');
+  if (!marker.isConnected) return;
   const c = (r && r.config) || {};
   const set = function(id, v){ var e=document.getElementById(id); if(e && v!=null) e.value=v; };
   const chk = function(id, v){ var e=document.getElementById(id); if(e) e.checked=!!v; };
@@ -4813,9 +4817,15 @@ async function loadVrRouting(name) {
   _vrrSetRedist('ospf',ospf.redistribute);
   const o6=c.ospfv3||{}; chk('vrr-ospfv3-en',o6.enable); set('vrr-ospfv3-rid',o6.router_id); _vrrSetRedist('ospfv3',o6.redistribute);
   const rip=c.rip||{}; chk('vrr-rip-en',rip.enable); set('vrr-rip-nets',(rip.networks||[]).join('\n')); _vrrSetRedist('rip',rip.redistribute);
+  document.getElementById('vrr-save').disabled=false;
+  } catch(e) {if(marker.isConnected)document.getElementById('vrr-msg').textContent=e.message;}
+
 }
 
 async function saveVrRouting() {
+  const button=document.getElementById('vrr-save');
+  if(button.disabled)return;
+  button.disabled=true;
   const name = document.getElementById('vrr-name').value;
   const num = function(id){ var e=document.getElementById(id); var v=e&&e.value!==''?Number(e.value):null; return v; };
   const val = function(id){ var e=document.getElementById(id); return e?e.value.trim():''; };
@@ -4835,16 +4845,14 @@ async function saveVrRouting() {
     redist_profiles: val('vrr-redist').split('\n').map(function(l){return l.trim();}).filter(Boolean).map(function(l){var p=l.split(/\s+/);return {name:p[0], priority:Number(p[1])||0};}),
     rip: {enable: chk('vrr-rip-en'), networks: val('vrr-rip-nets').split(/[\s,]+/).filter(Boolean), redistribute: _vrrGetRedist('rip',['connected','static','ospf','bgp'])},
   };
-  const msg=document.getElementById('vrr-msg'); msg.textContent='Applying to FRR...'; msg.style.color='var(--orange)';
-  const r = await api('/api/network/virtual-routers/'+encodeURIComponent(name)+'/routing', {method:'PUT', body: JSON.stringify(cfg)});
-  if (r && r.status==='applied') {
-    msg.textContent = 'Applied (FRR rc '+r.vtysh_rc+')' + (r.vtysh_rc===0?'':' — '+(r.vtysh_output||'').slice(-120));
-    msg.style.color = r.vtysh_rc===0 ? 'var(--green)' : 'var(--red)';
-    refreshCommitIndicator();
-    if (r.vtysh_rc===0) setTimeout(function(){closeModal('modal-info');}, 900);
-  } else {
-    msg.textContent = (r&&r.detail) || 'Failed'; msg.style.color='var(--red)';
-  }
+  const msg=document.getElementById('vrr-msg'); msg.textContent='Staging candidate changes...';
+  try {
+    const r = await consoleRequest('/api/network/virtual-routers/'+encodeURIComponent(name)+'/routing', {method:'PUT', body:JSON.stringify(cfg)});
+    if (r.status !== 'candidate-updated') throw new Error('Candidate save was not confirmed');
+    await refreshCommitIndicator();
+    closeModal('modal-info');
+  } catch(e) { msg.textContent=e.message; msg.style.color='var(--red)';button.disabled=false; }
+
 }
 
 function vrCardHtml(vr) {
@@ -5016,18 +5024,15 @@ async function saveVR() {
   };
   const msg = document.getElementById('vr-msg');
   if (!body.name) { msg.textContent = 'Name required'; msg.style.color = 'var(--red)'; return; }
-  let r;
-  if (orig) {
-    r = await api(`/api/network/virtual-routers/${encodeURIComponent(orig)}`, {method:'PUT', body: JSON.stringify(body)});
-  } else {
-    r = await api('/api/network/virtual-routers', {method:'POST', body: JSON.stringify(body)});
-  }
-  if (r && r.detail && !(r.status === 'created' || r.status === 'updated' || r.name || r.ok)) {
-    msg.textContent = r.detail; msg.style.color = 'var(--red)'; return;
-  }
-  closeModal('modal-vr');
-  if (typeof refreshCommitIndicator === 'function') refreshCommitIndicator();
-  loadVirtualRouters();
+  try {
+    const r = await consoleRequest('/api/network/virtual-routers'+(orig?'/'+encodeURIComponent(orig):''),
+      {method:orig?'PUT':'POST',body:JSON.stringify(body)});
+    if(r.status!=='candidate-updated')throw new Error('Candidate save was not confirmed');
+    closeModal('modal-vr');
+    await refreshCommitIndicator();
+    loadVirtualRouters();
+  } catch(e) {msg.textContent=e.message;msg.style.color='var(--red)';}
+
 }
 
 async function deleteVR(name) {
@@ -5050,7 +5055,7 @@ async function openVRouteModal(vrName, route = null) {
   document.getElementById('modal-route').classList.add('show');
   try {
     await vrLoadInterfaceChoices('route-iface',vrName,route?.dev ? [route.dev] : []);
-    document.getElementById('route-msg').textContent='Configuration is saved separately from dataplane activation.';
+    document.getElementById('route-msg').textContent='OK stages this route in candidate configuration. Commit is required to activate changes.';
   } catch(e) { document.getElementById('route-msg').textContent=e.message; }
 }
 
@@ -7830,7 +7835,7 @@ function openVsysModal(existing) {
     </div>
     <div class="form-group"><label>Comment</label><input id="vm-comment" type="text" style="width:100%"></div>
     <div style="margin-top:12px;display:flex;gap:8px">
-      <button class="btn btn-primary btn-sm" onclick="saveVsys(${existing?`'${existing.name}'`:'null'})">Save to Candidate</button>
+      <button class="btn btn-primary btn-sm" onclick="saveVsys(${existing?`'${existing.name}'`:'null'})">OK</button>
       <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
       <span id="vm-msg" style="font-size:11px;align-self:center"></span>
     </div>`;
@@ -8317,12 +8322,7 @@ async function loadIoTDevices() {
 
 function closeModal(id) { document.getElementById(id).classList.remove('show'); }
 
-document.addEventListener('click',e=>{
-  if (e.target.classList.contains('modal-overlay')) e.target.classList.remove('show');
-});
-document.addEventListener('keydown',e=>{
-  if (e.key==='Escape') document.querySelectorAll('.modal-overlay.show').forEach(m=>m.classList.remove('show'));
-});
+// modal-layers.js owns backdrop/Escape handling for the topmost dialog.
 
 /* ===========================================================================
    AUTO-LOGIN & INIT
@@ -8339,5 +8339,6 @@ document.getElementById('login-pass').addEventListener('keydown',e=>{if(e.key===
 document.getElementById('login-user').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
 </script>
 <script src="/static/vr-interfaces.js"></script>
+<script src="/static/modal-layers.js"></script>
 </body>
 </html>
