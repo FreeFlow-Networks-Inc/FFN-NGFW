@@ -11,6 +11,12 @@ show policies status [candidate|running]
 request policies <kind> <create|update|delete|move|toggle> <JSON> [vsys]
 Use the displayed revision in mutations. Create/update use a rule object with
 name, description, enabled and settings. Rules save to candidate; use commit.
+Security settings include source-device, destination-device, source-user,
+rule-type, action, icmp-unreachable, profile-mode (none|group|profiles),
+profile-group, antivirus, vulnerability, anti-spyware, url-filtering,
+file-blocking, data-filtering, crucible-analysis, log-start, log-end and
+log-setting. Use the returned schema and choices for exact keys and references.
+Rule usage is read only; unavailable statistics are not zero hits.
 Kinds: security nat qos pbf decryption tunnel-inspect application-override
 authentication dos sdwan. The same runtime blockers apply in CLI and WebUI.'''
 

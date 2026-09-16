@@ -3,6 +3,33 @@ const policyKinds={security:'Security',nat:'NAT',qos:'QoS',pbf:'Policy Based For
   'tunnel-inspect':'Tunnel Inspection','application-override':'Application Override',authentication:'Authentication',dos:'DoS Protection',sdwan:'SD-WAN'};
 let policyWorkspaceGeneration=0;
 function policySpec(row){return {name:row.name,description:row.description||'',enabled:row.enabled,settings:structuredClone(row.settings)};}
+const policyOptionLabels={'universal':'Universal','intrazone':'Intrazone','interzone':'Interzone',
+  allow:'Allow',deny:'Deny',drop:'Drop','reset-client':'Reset Client','reset-server':'Reset Server',
+  'reset-both':'Reset Both Client and Server',none:'None',group:'Group',profiles:'Profiles',yes:'Yes',no:'No'};
+const securityProfileKeys=['antivirus','vulnerability','anti-spyware','url-filtering','file-blocking','data-filtering','crucible-analysis'];
+function policyUsage(r,fast=false){
+  // Stored SQL counters have no agent identity, configuration generation or
+  // observation time. Never present them as measured dataplane usage.
+  if(fast||!r.usage?.available)return {count:'Unavailable',first:'Unavailable',last:'Unavailable',reason:r.usage?.reason||'No verified per-rule dataplane statistics'};
+  const u=r.usage,date=v=>v?new Date(v).toLocaleString():(u.hit_count===0?'Never':'Unavailable');
+  return {count:u.hit_count??'Unavailable',first:date(u.first_hit),last:date(u.last_hit),reason:u.source||'Dataplane'};
+}
+function securityCells(r,fast,source){
+  const s=r.settings||{},text=v=>_escSP(Array.isArray(v)?v.join(', '):v??''),cell=v=>'<td>'+text(v)+'</td>';
+  const u=policyUsage(r,fast),profiles=s['profile-mode']==='group'?'Group: '+s['profile-group']:
+    securityProfileKeys.filter(k=>s[k]).map(k=>k+': '+s[k]).join('; ')||'None';
+  const values=fast?[
+    r.kind==='intrazone-default'?'Intrazone':r.kind==='interzone-default'?'Interzone':'—', '—',
+    r.src_iface?'Interface: '+r.src_iface:'Any interface',r.src_ip,'—','—',
+    r.dst_iface?'Interface: '+r.dst_iface:'Any interface',r.dst_ip,'—','—',
+    (r.proto||'any')+' · '+(r.src_port||'*')+' → '+(r.dst_port||'*'),r.action,'—','—',
+    'Fast path · stored / '+(r.vsys?'vsys'+r.vsys:'All virtual systems')
+  ]:[policyOptionLabels[s['rule-type']]||s['rule-type']||'Universal',s.tag,s.from,s.source,s['source-user'],s['source-device'],
+    s.to,s.destination,s['destination-device'],s.application,s.service,
+    (policyOptionLabels[s.action]||s.action)+(s['icmp-unreachable']==='yes'?' + ICMP Unreachable':''),profiles,
+    ['Start: '+(s['log-start']||'no'),'End: '+(s['log-end']||'yes'),'Forward: '+(s['log-setting']||'None')].join('; '),source+' · XML'];
+  return values.map(cell).join('')+`<td title="${text(u.reason)}">${text(u.count)}</td><td>${text(u.last)}</td><td>${text(u.first)}</td>`;
+}
 function policyActionText(kind,s){
   if(kind==='nat')return 'Source: '+(s['source-type']||'none')+' '+(s['translated-source']||[]).join(', ')+' '+(s['source-interface']||'')+'; Destination: '+(s['translated-destination']||'unchanged')+(s['translated-port']?':'+s['translated-port']:'');
   if(kind==='qos')return 'Class '+(s.class||'');
@@ -30,10 +57,7 @@ function fastPathRow(row, index, editable) {
   return `<tr data-fast-row="${text(r.id)}" class="${r.enabled?'':'policy-disabled'}"><td>${text(r.position)}</td>
     <td><button class="btn btn-sm" data-fast-view="${index}">${text(r.name || 'Rule '+r.id)}</button></td>
     <td>${text(state)}<br><span class="text-dim">${text(issue)}</span></td>
-    <td>${text(r.src_iface?'Interface: '+r.src_iface:'Any interface')}<br>${text(r.src_ip)}</td>
-    <td>${text(r.dst_iface?'Interface: '+r.dst_iface:'Any interface')}<br>${text(r.dst_ip)}</td>
-    <td>${text(r.proto || 'any')} · ${text(r.src_port || '*')} → ${text(r.dst_port || '*')}</td>
-    <td>${text(r.action)}</td><td>—</td><td>Fast path · stored<br>${text(r.vsys?'vsys'+r.vsys:'All virtual systems')}</td><td>${text(r.hit_count??'—')}</td>
+    ${securityCells(r,true,'')}
     <td>${locked?'Read only':`<button class="btn btn-sm" data-fast-view="${index}">${editable?'Edit':'View'}</button>`+
       (editable?` <button class="btn btn-sm" data-fast-clone="${index}">Clone</button> <button class="btn btn-sm" data-fast-delete="${index}">Delete</button>`:'')}</td></tr>`;
 }
@@ -95,13 +119,13 @@ async function loadPolicyWorkspace(c,kind){
       const rows=inventory.filter(row=>row.implicit || row.r.is_immutable || JSON.stringify(row.r).toLowerCase().includes(q));
       document.getElementById('pw-count').textContent=rows.length+' of '+inventory.length+' rules';
       const text=v=>_escSP(Array.isArray(v)?v.join(', '):v||'');
-      table.innerHTML='<div class="table-wrap"><table><thead><tr><th>#</th><th>Name</th><th>State</th><th>Source Zone / Address</th><th>Destination Zone / Address</th><th>Application / Service</th><th>Action</th><th>Tags</th>'+ (kind==='security'?'<th>Policy Source</th><th>Hits</th>':'') +'<th>Actions</th></tr></thead><tbody>'+rows.map((row,index)=>{
+      const columns=kind==='security'?['Type','Tags','Source Zone','Source Address','Source User','Source Device','Destination Zone','Destination Address','Destination Device','Application','Service','Action','Profiles','Logging','Policy Source','Hit Count','Last Hit','First Hit']:['Source Zone / Address','Destination Zone / Address','Application / Service','Action','Tags'];
+      table.innerHTML='<div class="table-wrap"><table><thead><tr><th>#</th><th>Name</th><th>State</th>'+columns.map(t=>'<th>'+t+'</th>').join('')+'<th>Actions</th></tr></thead><tbody>'+rows.map((row,index)=>{
         if(row.fast)return fastPathRow(row,index,source==='candidate'&&fast.can_edit);
         const {r,i}=row;
         const s=r.settings,locked=!data.can_edit||!r.editable||row.implicit;
         return `<tr class="${r.enabled?'':'policy-disabled'}"><td>${r.position}</td><td><button class="btn btn-sm" data-rule-edit="${i}">${text(r.name)}</button></td><td>${row.implicit?'Implicit / read only':r.editable?text(r.state):'Imported / read only'}</td>
-          <td>${text(s.from)}<br>${text(s.source)}</td><td>${text(s.to)}<br>${text(s.destination)}</td><td>${text(s.application)}<br>${text(s.service)}</td>
-          <td>${text(policyActionText(kind,s))}</td><td>${text(s.tag)}</td>${kind==='security'?`<td>${text(source)} · XML</td><td>—</td>`:''}<td>
+          ${kind==='security'?securityCells(r,false,source):`<td>${text(s.from)}<br>${text(s.source)}</td><td>${text(s.to)}<br>${text(s.destination)}</td><td>${text(s.application)}<br>${text(s.service)}</td><td>${text(policyActionText(kind,s))}</td><td>${text(s.tag)}</td>`}<td>
           <button class="btn btn-sm" data-rule-clone="${i}" ${locked?'disabled':''}>Clone</button>
           <button class="btn btn-sm" data-rule-op="toggle" data-index="${i}" ${locked?'disabled':''}>${r.enabled?'Disable':'Enable'}</button>
           <button class="btn btn-sm" data-rule-op="up" data-index="${i}" aria-label="Move rule up" ${locked||i===0?'disabled':''}>↑</button>
@@ -144,7 +168,8 @@ function policyFieldHTML(f,value,choices){
     const refs=[...new Set([...(choices||[]),...options])];
     return `<label>${text(f.label)}<textarea name="${id}" placeholder="One value per line">${text((value||[]).join('\n'))}</textarea>${refs.length?`<select data-add-to="${id}" aria-label="Add ${text(f.label)}"><option value="">Add configured value…</option>${refs.map(v=>`<option>${text(v)}</option>`).join('')}</select>`:''}</label>`;
   }
-  if(options.length)return `<label>${text(f.label)}<select name="${id}">${options.map(v=>`<option value="${text(v)}" ${v===value?'selected':''}>${text(v)}</option>`).join('')}</select></label>`;
+  if(options.length)return `<label>${text(f.label)}<select name="${id}">${options.map(v=>`<option value="${text(v)}" ${v===value?'selected':''}>${text(policyOptionLabels[v]||v)}</option>`).join('')}</select></label>`;
+  if(f.mode==='member-text'||f.key==='log-setting')return `<label>${text(f.label)}<select name="${id}"><option value="">None</option>${[...new Set([...(choices||[]),...(value?[value]:[])])].map(v=>`<option value="${text(v)}" ${v===value?'selected':''}>${text(v)}</option>`).join('')}</select></label>`;
   return `<label>${text(f.label)}<input name="${id}" value="${text(value)}" maxlength="1024" ${choices?.length?`list="${id}-choices"`:''}>${choices?.length?`<datalist id="${id}-choices">${choices.map(v=>`<option value="${text(v)}">`).join('')}</datalist>`:''}</label>`;
 }
 async function previewNatWorkspace(){
@@ -168,16 +193,29 @@ function editPolicyWorkspace(snapshot,url,existing,reload,clone=false){
   const row=existing?policySpec(existing):{name:'',description:'',enabled:false,settings:Object.fromEntries(snapshot.schema.fields.map(f=>[f.key,f.default??'']))};
   if(clone){row.name='';row.enabled=false;}
   const editable=snapshot.can_edit&&(!existing||existing.editable),tabs=[...new Set(['General',...snapshot.schema.fields.map(f=>f.tab)])];
+  const security=snapshot.kind==='security',usage=policyUsage(clone?{}:existing||{});
+  if(security)tabs.push('Rule Usage');
   const body=`<form id="pw-form" class="object-form"><div class="setup-tabs policy-tabs" role="tablist">${tabs.map((t,i)=>`<button class="${i===0?'active':''}" type="button" role="tab" aria-selected="${i===0}" data-tab="${i}">${_escSP(t)}</button>`).join('')}</div>
     ${tabs.map((tab,i)=>`<div data-panel="${i}" class="policy-panel" role="tabpanel" ${i?'hidden':''}>
       ${tab==='General'?`<label>Name<input name="rule-name" required maxlength="63" ${existing&&!clone?'readonly':''} value="${_escSP(row.name)}"></label>
       <label>Description<textarea name="rule-description" maxlength="1024">${_escSP(row.description)}</textarea></label>
       <label>Enabled<select name="rule-enabled"><option value="false" ${row.enabled?'':'selected'}>No</option><option value="true" ${row.enabled?'selected':''}>Yes</option></select></label>`:''}
-      ${snapshot.schema.fields.filter(f=>f.tab===tab).map(f=>policyFieldHTML(f,row.settings[f.key]??f.default??'',snapshot.choices[f.key])).join('')}</div>`).join('')}
+      ${snapshot.schema.fields.filter(f=>f.tab===tab).map(f=>policyFieldHTML(f,row.settings[f.key]??f.default??'',snapshot.choices[f.key])).join('')}
+      ${tab==='Rule Usage'?`<dl><dt>Hit Count</dt><dd>${_escSP(String(usage.count))}</dd><dt>Last Hit</dt><dd>${_escSP(usage.last)}</dd><dt>First Hit</dt><dd>${_escSP(usage.first)}</dd></dl><p>${_escSP(usage.reason)}</p><p>Usage is read only and is not copied when cloning a rule.</p>`:''}</div>`).join('')}
     <p class="text-dim">The control daemon stores this rule in candidate configuration. Activation requires a commissioned runtime provider; unsupported enabled rules block Commit.</p>
     <p id="pw-message" role="alert"></p><div class="modal-footer"><button type="submit" class="btn btn-primary" ${editable?'':'disabled'}>OK</button><button type="button" class="btn" id="pw-cancel">${editable?'Cancel':'Close'}</button></div></form>`;
   objectDialog(box,(clone?'Clone ':existing?(editable?'Edit ':'View '):'Add ')+snapshot.label+' Rule',body);
   const form=document.getElementById('pw-form');
+  if(security){
+    const mode=form.elements['pf-profile-mode'];
+    const syncProfiles=()=>{
+      for(const key of ['profile-group',...securityProfileKeys]){
+        const control=form.elements['pf-'+key];
+        control.closest('label').hidden=key==='profile-group'?mode.value!=='group':mode.value!=='profiles';
+      }
+    };
+    mode.onchange=syncProfiles;syncProfiles();
+  }
   if(!editable)for(const e of form.querySelectorAll('input,select,textarea'))e.disabled=true;
   form.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{
     form.querySelectorAll('[data-panel]').forEach(p=>p.hidden=p.dataset.panel!==b.dataset.tab);
@@ -192,6 +230,11 @@ function editPolicyWorkspace(snapshot,url,existing,reload,clone=false){
     event.preventDefault();if(!editable)return;const data=new FormData(form),button=form.querySelector('[type=submit]');
     const rule={name:data.get('rule-name'),description:data.get('rule-description'),enabled:data.get('rule-enabled')==='true',settings:{}};
     for(const f of snapshot.schema.fields){const value=data.get('pf-'+f.key)||'';rule.settings[f.key]=f.mode==='list'?value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean):value;}
+    if(security){
+      const s=rule.settings;
+      if(s['profile-mode']!=='group')s['profile-group']='';
+      if(s['profile-mode']!=='profiles')for(const key of securityProfileKeys)s[key]='';
+    }
     button.disabled=true;
     try{await consoleRequest(url,{method:'POST',body:JSON.stringify({action:existing&&!clone?'update':'create',revision:snapshot.revision,name:existing&&!clone?existing.name:undefined,rule})});
       refreshCommitIndicator();if(generation===policyWorkspaceGeneration)await reload();

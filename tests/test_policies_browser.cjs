@@ -46,6 +46,48 @@ async function main(){
       await page.locator('#pw-source').selectOption('running');await page.waitForFunction(()=>document.getElementById('pw-count').textContent==='0 of 0 rules');assert(await page.locator('#pw-add').isDisabled());
     }
     await open('security');await page.locator('[data-rule-edit="0"]').click();
+    const reveal=async key=>{
+      const control=page.locator('[name="pf-'+key+'"]');
+      const panel=await control.evaluate(e=>e.closest('[data-panel]').dataset.panel);
+      await page.locator('[data-tab="'+panel+'"]').click();return control;
+    };
+    await (await reveal('profile-mode')).selectOption('group');
+    await page.locator('[name=pf-profile-group]').selectOption('inspection');
+    assert(await page.locator('[name=pf-antivirus]').isHidden());
+    await page.locator('[name=pf-profile-mode]').selectOption('profiles');
+    assert(await page.locator('[name=pf-profile-group]').isHidden());
+    for(const key of ['antivirus','vulnerability','anti-spyware','url-filtering','file-blocking','data-filtering','crucible-analysis'])await page.locator('[name=pf-'+key+']').selectOption('inspect-'+key);
+    await page.locator('[name=pf-profile-mode]').selectOption('group');
+    assert.equal(await page.locator('[name=pf-profile-group]').inputValue(),'inspection');
+    await page.locator('[name=pf-profile-mode]').selectOption('profiles');
+    await (await reveal('source-device')).fill('workstation');
+    await (await reveal('destination-device')).fill('workstation');
+    await (await reveal('source-user')).fill('EXAMPLE\\alice');
+    await (await reveal('action')).selectOption('reset-both');
+    await page.locator('[name=pf-icmp-unreachable]').selectOption('yes');
+    await (await reveal('log-setting')).selectOption('central-logs');
+    await page.locator('[name=pf-log-start]').selectOption('yes');
+    await page.getByRole('tab',{name:'Rule Usage',exact:true}).click();
+    assert.match(await page.locator('.policy-panel:not([hidden])').innerText(),/Hit Count.*Unavailable.*Last Hit.*Unavailable.*First Hit.*Unavailable/s);
+    assert.equal(await page.locator('.policy-panel:not([hidden]) input').count(),0);
+    await page.locator('#pw-form [type=submit]').click();await page.locator('#pw-editor').waitFor({state:'hidden'});
+    await page.locator('[data-rule-edit="0"]').waitFor();
+    const snapshot=await (await fetch(url+'/api/config/policies/security')).json(),saved=snapshot.entries[0].settings;
+    assert.equal(saved['profile-mode'],'profiles');assert.equal(saved['profile-group'],'');
+    assert.equal(saved['crucible-analysis'],'inspect-crucible-analysis');assert.equal(saved['source-device'][0],'workstation');
+    assert.equal(saved['destination-device'][0],'workstation');assert.equal(saved['log-setting'],'central-logs');
+    for(const label of ['Source User','Source Device','Destination Device','Hit Count','Last Hit','First Hit'])assert(await page.getByRole('columnheader',{name:label,exact:true}).count());
+    await page.locator('[data-rule-edit="0"]').click();
+    await (await reveal('profile-mode')).selectOption('none');
+    await page.locator('#pw-cancel').click();
+    assert.equal((await (await fetch(url+'/api/config/policies/security')).json()).revision,snapshot.revision,'Cancel must not stage edits');
+    await page.locator('[data-rule-edit="0"]').click();
+    await (await reveal('profile-mode')).selectOption('none');
+    await page.locator('#pw-form [type=submit]').click();await page.locator('#pw-editor').waitFor({state:'hidden'});
+    await page.locator('[data-rule-edit="0"]').waitFor();
+    const cleared=(await (await fetch(url+'/api/config/policies/security')).json()).entries[0].settings;
+    assert.equal(cleared['profile-mode'],'none');assert.equal(cleared.antivirus,'');assert.equal(cleared['profile-group'],'');
+    await page.locator('[data-rule-edit="0"]').click();
     if(process.env.TEST_SCREENSHOT)await page.screenshot({path:process.env.TEST_SCREENSHOT,fullPage:true});
     assert.deepEqual(errors,[]);console.log('All ten policy editors, tabs, create/edit/clone, move, enable/disable, controller validation and running views passed.');
   }finally{if(browser)await browser.close();python.kill();}
