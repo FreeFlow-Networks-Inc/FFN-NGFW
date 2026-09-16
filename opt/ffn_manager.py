@@ -11617,6 +11617,11 @@ async def aggregate_status(user: dict = Depends(get_current_user)):
       - Bonding mode, MII status, AD partner info when available
       - Per-slave LACP state and link status
     """
+    provider=getattr(app.state,'platform_aggregate_status',None)
+    if provider is not None:
+        try:return await asyncio.to_thread(provider)
+        except Exception as error:
+            raise HTTPException(503,'Platform aggregate observations unavailable; refresh to retry') from error
     # Read configured AEs + member assignments from candidate config
     cfg = config_mgr.get_xpath(f"{DEV}.network.interface", source="candidate")
     configured = []

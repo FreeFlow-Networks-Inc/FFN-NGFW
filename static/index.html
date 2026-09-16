@@ -3979,13 +3979,18 @@ function _renderConfiguredAE() {
   tbody.innerHTML = list.map(ae=>{
     const cfgMembers = members[ae.name]||[];
     const live = liveByAe[ae.name];
-    const bondName = live ? live.bond : `(ae${(ae.name.match(/\d+/)||[''])[0]})`;
+    const hardware=live?.backend==='pa5200-bcm';
+    const bondName = hardware?'BCM / OCTEON':live ? live.bond : `(ae${(ae.name.match(/\d+/)||[''])[0]})`;
 
     // Status badge — kernel present? enslavement drift?
-    let statusBadge = '<span class="badge badge-down">PENDING COMMIT</span>';
-    let statusDetail = '';
+    let statusBadge = '<span class="badge badge-down">STATUS UNAVAILABLE</span>';
+    let statusDetail = 'Refresh to read aggregate controller status.';
     if (live) {
-      if (!live.kernel_exists) {
+      if (hardware) {
+        statusBadge='<span class="badge badge-down">'+_escSP(live.state.toUpperCase())+'</span>';
+        statusDetail=(live.committed?'Committed configuration. ':'Pending candidate changes. ')+
+          (live.blockers||[]).map(b=>_escSP(b.message)).join(' · ');
+      } else if (!live.kernel_exists) {
         statusBadge = '<span class="badge badge-down">NO KERNEL BOND</span>';
         statusDetail = 'Commit to create bond interface.';
       } else {
@@ -4003,16 +4008,18 @@ function _renderConfiguredAE() {
       }
     }
 
-    const cfgMemStr = cfgMembers.length
+    const cfgMemStr = hardware ? (live.members||[]).map(m=>_escSP(m.name)+' <span class="text-dim">(BCM '+_escSP(String(m.bcm_port))+')</span>').join(', ') : cfgMembers.length
       ? cfgMembers.map(m=>`${m.pan}${m.linux?` <span class="text-dim">(${m.linux})</span>`:''}`).join(', ')
       : '<span class="text-dim">(no members)</span>';
-    const liveMemStr = (live && live.kernel_slaves && live.kernel_slaves.length)
+    const liveMemStr = hardware ? (live.members||[]).map(m=>_escSP(m.name)+': '+
+      (m.link===true?_escSP(String(m.speed_mbps))+' Mb/s':m.link===false?'Link down':'Unknown')+
+      (m.partner_observation?' · Partner '+_escSP(m.partner_observation.actor.system):' · No LACP observation')).join('<br>') : (live && live.kernel_slaves && live.kernel_slaves.length)
       ? live.kernel_slaves.join(', ')
       : '<span class="text-dim">(none)</span>';
 
     return `<tr>
       <td><strong>${ae.name}</strong></td>
-      <td class="mono" style="font-size:11px">${bondName}${live&&live.kernel_exists?'':' <span class="text-red" style="font-size:9px">(not created)</span>'}</td>
+      <td class="mono" style="font-size:11px">${bondName}${hardware||live&&live.kernel_exists?'':' <span class="text-red" style="font-size:9px">(not created)</span>'}</td>
       <td><span class="badge" style="background:#1a4f9e;color:#fff">${ae.mode}</span></td>
       <td class="mono" style="font-size:10px">${cfgMemStr}</td>
       <td class="mono" style="font-size:10px">${liveMemStr}</td>
