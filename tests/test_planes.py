@@ -80,6 +80,30 @@ class PlaneTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(result['state']=='applied' for result in results))
         self.assertEqual(self.backend.applies,1)
 
+    async def test_other_resource_status_remains_available_during_slow_apply(self):
+        entered=asyncio.Event();release=asyncio.Event()
+        original=self.dp.runner
+        async def slow(argv,raw,timeout):
+            if argv[-1]=='apply':
+                entered.set();await release.wait()
+            return await original(argv,raw,timeout)
+        self.dp.runner=slow
+        self.dp.commands['vifs']={'status':[sys.executable,'status']}
+        pending=asyncio.create_task(self.dp.dispatch(request()))
+        same=None
+        try:
+            await asyncio.wait_for(entered.wait(),1)
+            same=asyncio.create_task(self.dp.dispatch(request('status',{})))
+            status=await asyncio.wait_for(self.dp.dispatch(request('status',{},'vifs')),1)
+            self.assertEqual(status['state'],'observed')
+            self.assertEqual(status['result']['config']['revision'],0)
+            self.assertFalse(pending.done())
+            self.assertFalse(same.done())
+        finally:
+            release.set();await pending
+            if same:
+                self.assertEqual((await same)['result']['config']['revision'],1)
+
     async def test_unknown_blocks_writes_until_explicit_reconciliation(self):
         self.backend.fail=True;req=request()
         self.assertEqual((await self.dp.dispatch(req))['state'],'unknown')

@@ -77,6 +77,18 @@ tar xzf /payload/opt-ffn-ngfw-v1.tgz -C /opt 2>/dev/null || true
 install -m755 /payload/ffn-cli /usr/local/bin/ffn-cli
 tar xzf /payload/etc-ffn-ngfw.tgz -C /etc
 
+# These control sources are owned by core, not whatever version happened to be
+# running on the image harvesting host. No platform channels are auto-enabled.
+for dir in /opt/ffn-ngfw /opt/ffn-ngfw-v2 /usr/local/lib/ffn; do
+  install -d -m 0755 "$dir"
+  for name in ffn_controld_client.py ffn_control_plane.py ffn_agent_protocol.py ffn_planed.py; do
+    install -m 0644 "/payload/control-code/$name" "$dir/$name"
+  done
+done
+install -m 0644 /payload/control-code/ffn_controld.py /opt/ffn-ngfw/
+install -m 0644 /payload/control-code/ffn_plane_api.py /opt/ffn-ngfw-v2/
+python3 /payload/control-code/install-control-api.py
+
 # --- FFN payload updater: public verification key only ------------------------
 # The build server keeps the ed25519 private seed. Shipping only the public key
 # means a copy of this image can verify updates but can never forge one, which
@@ -116,6 +128,10 @@ log "systemd units (faithful copies pulled from the reference box)"
 cp -a /payload/units/*.service /etc/systemd/system/ 2>/dev/null || true
 cp -a /payload/units/*.timer   /etc/systemd/system/ 2>/dev/null || true
 cp -a /payload/units/*.d       /etc/systemd/system/ 2>/dev/null || true
+# Agent credentials and worker selection belong to the target appliance.
+# Do not inherit the harvesting host's enabled channel or credential path.
+rm -f /etc/systemd/system/ffn-controld.service.d/30-control-channel.conf \
+      /etc/systemd/system/ffn-manager-v2.service.d/30-control-channel.conf
 
 log "service group + admin gateway account (ffn-cli login shell, key-only) + sudoers"
 groupadd -f ffn-mgmt   # ffn-controld chowns its socket to this group (FFN_CONTROLD_GROUP)
