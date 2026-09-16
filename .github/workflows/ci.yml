@@ -104,6 +104,8 @@ jobs:
 
       - name: console initialization and workflows
         run: node tests/test_console_ui.cjs
+      - name: Virtual Router interface selectors and route editor
+        run: node tests/test_vr_ui.cjs
 
       - name: selected platform WebUI isolation
         run: node tests/test_extensions_ui.cjs
@@ -233,6 +235,8 @@ jobs:
           python tests/test_plane_sockets.py
           python tests/test_control_gateway.py
           python tests/test_linux_network.py
+          python tests/test_vr_interfaces.py
+          python tests/test_vr_route_api.py
 
       - name: native L2 and L3 packet forwarding in disposable namespaces
         run: sudo python3 tests/test_network_namespace.py

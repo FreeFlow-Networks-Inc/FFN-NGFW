@@ -392,11 +392,11 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
 <!-- Static Route Modal (per virtual router) -->
 <div class="modal-overlay" id="modal-route">
   <div class="modal">
-    <h3>Add Static Route <span id="route-vr-label" class="text-dim" style="font-size:12px"></span></h3>
-    <input type="hidden" id="route-vr">
+    <h3><span id="route-modal-title">Add Static Route</span> <span id="route-vr-label" class="text-dim" style="font-size:12px"></span></h3>
+    <input type="hidden" id="route-vr"><input type="hidden" id="route-id">
     <div class="form-group"><label>Destination (CIDR)</label><input type="text" id="route-dest" placeholder="10.0.0.0/24"></div>
     <div class="form-group"><label>Next Hop</label><input type="text" id="route-nh" placeholder="10.0.0.1"></div>
-    <div class="form-group"><label>Device (optional)</label><input type="text" id="route-iface" placeholder="eth0"></div>
+    <div class="form-group"><label>Outgoing Interface</label><select id="route-iface"></select></div>
     <div class="form-group"><label>Metric</label><input type="number" id="route-metric" value="100"></div>
     <div id="route-msg" style="font-size:11px;min-height:14px"></div>
     <div class="form-actions">
@@ -412,7 +412,7 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
     <h3 id="vr-modal-title">Add Virtual Router</h3>
     <input type="hidden" id="vr-orig-name">
     <div class="form-group"><label>Name</label><input type="text" id="vr-name" placeholder="vr-tenant-a"></div>
-    <div class="form-group"><label>Member Interfaces (comma-separated)</label><input type="text" id="vr-ifaces" placeholder="eth1, eth2"></div>
+    <div class="form-group"><label>Layer 3 Interfaces</label><select id="vr-ifaces" multiple size="7" style="width:100%"></select><div id="vr-interface-help" class="text-dim"></div></div>
     <div class="form-group"><label>vsys (optional)</label><input type="text" id="vr-vsys" placeholder="vsys1"></div>
     <div class="form-group"><label>Routing Protocol (FRR)</label><select id="vr-protocol" onchange="_vrProtoToggle()">
       <option value="static">Static (staticd)</option>
@@ -4630,6 +4630,7 @@ async function loadVirtualRouters() {
   const box = document.getElementById('vr-list');
   if (!box) return;
   const vrs = _vrList(data);
+  try { const choices=await consoleRequest('/api/network/virtual-router-interfaces'); const def=vrs.find(v=>v.name==='default'); if(def)def.effective_interfaces=choices.interfaces.filter(i=>i.virtual_router==='default').map(i=>i.name); } catch(e) { /* Router list remains available if inventory fails. */ }
   box.innerHTML = `<div class="card"><div class="table-wrap"><table>
       <thead><tr><th style="width:22%">Name</th><th style="width:26%">Interfaces</th><th>Configuration</th><th></th></tr></thead>
       <tbody id="vr-grid-body">${vrs.length ? '' : '<tr><td colspan="4" class="text-dim" style="padding:16px">No virtual routers defined. Click <strong>+ Add Virtual Router</strong> to create an independent VRF instance.</td></tr>'}</tbody>
@@ -4643,7 +4644,7 @@ async function loadVirtualRouters() {
 function vrGridRow(vr, i) {
   const name = _escSP(vr.name);
   const nameAttr = _escSP(vr.name || '');
-  const ifaces = (vr.interfaces || vr.members || []);
+  const ifaces = (vr.effective_interfaces || vr.interfaces || vr.members || []);
   const ifHtml = ifaces.length ? _escSP(ifaces.join(', ')) : '<span class="text-dim">none</span>';
   const down = (vr.admin_up === false) ? ' <span class="badge badge-down" style="font-size:9px">admin down</span>' : '';
   return `<tr>
@@ -4719,10 +4720,11 @@ function vrrSubTab(sub){
   });
 }
 async function loadVrrStatic(name){
-  var tb=document.getElementById('vrr-static-tbody'); if(!tb) return;
-  var r=await api('/api/network/virtual-routers/'+encodeURIComponent(name)+'/routes');
-  var rows=(r&&(r.routes||r.entries))||(Array.isArray(r)?r:[]);
-  tb.innerHTML = rows.length ? rows.map(function(x){return `<tr><td class="mono">${_escSP(x.dest_cidr||x.destination||'')}</td><td class="mono">${_escSP(x.next_hop||'')}</td><td>${_escSP(x.dev||'')}</td><td>${_escSP(x.metric!=null?x.metric:0)}</td></tr>`;}).join('') : '<tr><td colspan="4" class="text-dim" style="padding:14px">No static routes in this VR.</td></tr>';
+  const tb=document.getElementById('vrr-static-tbody');if(!tb)return;
+  try {
+    const r=await consoleRequest('/api/network/virtual-routers/'+encodeURIComponent(name)+'/routes');
+    tb.innerHTML=r.routes.length?r.routes.map(row=>vrRouteRow(row,name)).join(''):'<tr><td colspan="5">No static routes in this router.</td></tr>';
+  }catch(e){tb.innerHTML='<tr><td colspan="5">'+_escSP(e.message)+'</td></tr>';}
 }
 function openVrRouting(name) {
   document.getElementById('info-modal-title').textContent = 'Virtual Router — ' + name;
@@ -4762,7 +4764,7 @@ function openVrRouting(name) {
         <div class="vrr-pane" id="vrr-p-static" style="display:none">
           <div class="page-header" style="margin-bottom:6px"><div class="section-title" style="margin:0">Static Routes</div>
             <div class="actions"><button class="btn btn-xs btn-primary" onclick="openVRouteModal(document.getElementById('vrr-name').value)">+ Add Route</button></div></div>
-          <div class="table-wrap"><table><thead><tr><th>Destination</th><th>Next Hop</th><th>Interface</th><th>Metric</th></tr></thead><tbody id="vrr-static-tbody"><tr><td colspan="4" class="text-dim">Select this tab to load…</td></tr></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>Destination</th><th>Next Hop</th><th>Interface</th><th>Metric</th><th>Actions</th></tr></thead><tbody id="vrr-static-tbody"><tr><td colspan="4" class="text-dim">Select this tab to load…</td></tr></tbody></table></div>
         </div>
         <div class="vrr-pane" id="vrr-p-redist" style="display:none">
           <div class="section-title">Redistribution Profile</div>
@@ -4871,7 +4873,7 @@ async function saveVrRouting() {
 function vrCardHtml(vr) {
   const name = _escSP(vr.name);
   const nameAttr = _escSP(vr.name || '');
-  const ifaces = (vr.interfaces || vr.members || []);
+  const ifaces = (vr.effective_interfaces || vr.interfaces || vr.members || []);
   const ifHtml = ifaces.length
     ? ifaces.map(i => `<span class="badge badge-info" style="font-size:10px">${_escSP(i)}</span>`).join(' ')
     : '<span class="text-dim">(no member interfaces)</span>';
@@ -4972,7 +4974,7 @@ async function loadFRRStatus() {
 
 /* --- Virtual Router CRUD --- */
 let _vrCache = [];
-function openVRModal() {
+async function openVRModal() {
   document.getElementById('vr-modal-title').textContent = 'Add Virtual Router';
   document.getElementById('vr-orig-name').value = '';
   document.getElementById('vr-name').value = '';
@@ -4985,6 +4987,9 @@ function openVRModal() {
   _vrProtoToggle();
   document.getElementById('vr-admin-up').checked = true;
   document.getElementById('vr-msg').textContent = '';
+  try { await vrLoadInterfaceChoices('vr-ifaces', document.getElementById('vr-orig-name').value || '', (typeof vr !== 'undefined' ? vr.interfaces || [] : []), true); }
+  catch(e) { document.getElementById('vr-msg').textContent=e.message; }
+  document.getElementById('vr-interface-help').textContent = document.getElementById('vr-orig-name').value === 'default' ? 'Default uses configured Layer 3 interfaces not assigned to another router.' : 'Select interfaces from Network > Interfaces. Interfaces owned by another router are unavailable.';
   document.getElementById('modal-vr').classList.add('show');
 }
 
@@ -5012,16 +5017,20 @@ async function editVR(name) {
   _vrProtoToggle();
   document.getElementById('vr-admin-up').checked = (vr.admin_up !== false);
   document.getElementById('vr-msg').textContent = '';
+  try { await vrLoadInterfaceChoices('vr-ifaces', document.getElementById('vr-orig-name').value || '', (typeof vr !== 'undefined' ? vr.interfaces || [] : []), true); }
+  catch(e) { document.getElementById('vr-msg').textContent=e.message; }
+  document.getElementById('vr-interface-help').textContent = document.getElementById('vr-orig-name').value === 'default' ? 'Default uses configured Layer 3 interfaces not assigned to another router.' : 'Select interfaces from Network > Interfaces. Interfaces owned by another router are unavailable.';
   document.getElementById('modal-vr').classList.add('show');
 }
 
 async function saveVR() {
+  if(document.getElementById('vr-orig-name').value!=='default' && document.getElementById('vr-ifaces').disabled){document.getElementById('vr-msg').textContent='Load the interface inventory before saving.';return;}
   const orig = document.getElementById('vr-orig-name').value;
   const proto = document.getElementById('vr-protocol').value;
   const asnRaw = document.getElementById('vr-asn').value.trim();
   const body = {
     name: document.getElementById('vr-name').value.trim(),
-    interfaces: (document.getElementById('vr-orig-name').value === 'default') ? null : document.getElementById('vr-ifaces').value.split(',').map(s => s.trim()).filter(Boolean),
+    interfaces: (document.getElementById('vr-orig-name').value === 'default') ? null : Array.from(document.getElementById('vr-ifaces').selectedOptions, o => o.value),
     vsys: document.getElementById('vr-vsys').value.trim() || null,
     protocol: proto,
     router_id: document.getElementById('vr-router-id').value.trim() || null,
@@ -5052,39 +5061,46 @@ async function deleteVR(name) {
 }
 
 /* --- per-VR static route editor --- */
-function openVRouteModal(vrName) {
-  document.getElementById('route-vr').value = vrName;
-  document.getElementById('route-vr-label').textContent = '· ' + vrName;
-  document.getElementById('route-dest').value = '';
-  document.getElementById('route-nh').value = '';
-  document.getElementById('route-iface').value = '';
-  document.getElementById('route-metric').value = '100';
-  document.getElementById('route-msg').textContent = '';
+async function openVRouteModal(vrName, route = null) {
+  document.getElementById('route-vr').value=vrName;
+  document.getElementById('route-id').value=route ? route.id : '';
+  document.getElementById('route-modal-title').textContent=route ? 'Edit Static Route' : 'Add Static Route';
+  document.getElementById('route-vr-label').textContent=' · '+vrName;
+  document.getElementById('route-dest').value=route?.dest_cidr || '';
+  document.getElementById('route-nh').value=route?.next_hop || '';
+  document.getElementById('route-metric').value=route?.metric ?? 100;
+  document.getElementById('route-msg').textContent='Loading configured interfaces…';
   document.getElementById('modal-route').classList.add('show');
+  try {
+    await vrLoadInterfaceChoices('route-iface',vrName,route?.dev ? [route.dev] : []);
+    document.getElementById('route-msg').textContent='Configuration is saved separately from dataplane activation.';
+  } catch(e) { document.getElementById('route-msg').textContent=e.message; }
 }
 
 async function saveVRoute() {
-  const vr = document.getElementById('route-vr').value;
-  const body = {
-    dest_cidr: document.getElementById('route-dest').value.trim(),
-    next_hop: document.getElementById('route-nh').value.trim(),
-    dev: document.getElementById('route-iface').value.trim() || null,
-    metric: parseInt(document.getElementById('route-metric').value) || 0,
-  };
-  const msg = document.getElementById('route-msg');
-  if (!vr || !body.dest_cidr) { msg.textContent = 'Destination required'; msg.style.color = 'var(--red)'; return; }
-  const r = await api(`/api/network/virtual-routers/${encodeURIComponent(vr)}/routes`, {method:'POST', body: JSON.stringify(body)});
-  if (r && r.detail && !(r.status === 'created' || r.id != null || r.ok)) {
-    msg.textContent = r.detail; msg.style.color = 'var(--red)'; return;
-  }
-  closeModal('modal-route');
-  loadVRRoutes(vr);
+  const vr=document.getElementById('route-vr').value, id=document.getElementById('route-id').value;
+  const msg=document.getElementById('route-msg');
+  if(document.getElementById('route-iface').disabled){msg.textContent='Load the interface inventory before saving.';return;}
+  const raw=document.getElementById('route-metric').value.trim();
+  const body={dest_cidr:document.getElementById('route-dest').value.trim(),next_hop:document.getElementById('route-nh').value.trim(),
+    dev:document.getElementById('route-iface').value || null,metric:Number(raw)};
+  if(!body.dest_cidr || !raw || !Number.isInteger(body.metric) || body.metric<0 || body.metric>4294967295){msg.textContent='Enter a destination prefix and a valid nonnegative metric.';return;}
+  if(!body.next_hop && !body.dev){msg.textContent='Choose a next hop or an outgoing interface.';return;}
+  if(saveVRoute.busy)return;saveVRoute.busy=true;
+  try {
+    await consoleRequest('/api/network/virtual-routers/'+encodeURIComponent(vr)+'/routes'+(id?'/'+encodeURIComponent(id):''),
+      {method:id?'PUT':'POST',body:JSON.stringify(body)});
+    closeModal('modal-route');await refreshVrRouteViews(vr);
+  } catch(e){msg.textContent=e.message;msg.style.color='var(--red)';}
+  finally{saveVRoute.busy=false;}
 }
 
 async function deleteVRoute(vrName, routeId) {
-  if (!confirm('Delete this static route?')) return;
-  await api(`/api/network/virtual-routers/${encodeURIComponent(vrName)}/routes/${encodeURIComponent(routeId)}`, {method:'DELETE'});
-  loadVRRoutes(vrName);
+  if(!confirm('Delete this static route?'))return;
+  try {
+    await consoleRequest('/api/network/virtual-routers/'+encodeURIComponent(vrName)+'/routes/'+encodeURIComponent(routeId),{method:'DELETE'});
+    await refreshVrRouteViews(vrName);
+  } catch(e){alert(e.message);}
 }
 
 /* ---- Network > ARP Table ---- */
@@ -8345,5 +8361,6 @@ if (token) {
 document.getElementById('login-pass').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
 document.getElementById('login-user').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
 </script>
+<script src="/static/vr-interfaces.js"></script>
 </body>
 </html>

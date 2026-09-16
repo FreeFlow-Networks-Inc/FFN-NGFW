@@ -6562,15 +6562,16 @@ async def vr_create(vr: VirtualRouterCreate, user: dict = Depends(get_current_us
                     f"{vr.name} table={table_id} proto={vr.protocol} ifaces={vr.interfaces}")
         await db.commit()
 
-    # Apply to the live kernel (no-op on non-Linux). l3mdev device FIRST...
-    _vrf_create(vr.name, table_id)
-    if not vr.admin_up:
-        _run_ip(["ip", "link", "set", vr.name, "down"])
-    for iface in vr.interfaces:
-        _vrf_enslave(vr.name, iface)
-    # ...THEN the FRR routing config (§6): zebra owns the VRF table, staticd/
-    # bgpd/ospfd own routing. No-op-with-log when vtysh is absent.
-    _get_frr().apply(vr.name, table_id, vr.protocol, vr.router_id, vr.asn, routes=[])
+    if not _vr_platform_managed():
+        # Apply to the live kernel (no-op on non-Linux). l3mdev device FIRST...
+        _vrf_create(vr.name, table_id)
+        if not vr.admin_up:
+            _run_ip(["ip", "link", "set", vr.name, "down"])
+        for iface in vr.interfaces:
+            _vrf_enslave(vr.name, iface)
+        # ...THEN the FRR routing config (§6): zebra owns the VRF table, staticd/
+        # bgpd/ospfd own routing. No-op-with-log when vtysh is absent.
+        _get_frr().apply(vr.name, table_id, vr.protocol, vr.router_id, vr.asn, routes=[])
     return {"status": "created", "name": vr.name, "table_id": table_id,
             "interfaces": vr.interfaces, "admin_up": vr.admin_up, "vsys": vr.vsys,
             "protocol": vr.protocol, "router_id": vr.router_id, "asn": vr.asn}
@@ -6647,17 +6648,18 @@ async def vr_update(name: str, upd: VirtualRouterUpdate,
                     f"{name} ifaces={new_ifaces} up={admin_up} vsys={vsys} proto={protocol}")
         await db.commit()
 
-    # Reconcile membership with the kernel (skip for the default/main table).
-    if not is_default:
-        added = [i for i in new_ifaces if i not in cur_ifaces]
-        removed = [i for i in cur_ifaces if i not in new_ifaces]
-        for iface in removed:
-            _run_ip(["ip", "link", "set", iface, "nomaster"])
-        for iface in added:
-            _vrf_enslave(name, iface)
-        _run_ip(["ip", "link", "set", name, "up" if admin_up else "down"])
-    # Re-apply the FRR routing config (routes flow through staticd, §6).
-    _get_frr().apply(name, table_id, protocol, router_id, asn, routes=routes)
+    if not _vr_platform_managed():
+        # Reconcile membership with the kernel (skip for the default/main table).
+        if not is_default:
+            added = [i for i in new_ifaces if i not in cur_ifaces]
+            removed = [i for i in cur_ifaces if i not in new_ifaces]
+            for iface in removed:
+                _run_ip(["ip", "link", "set", iface, "nomaster"])
+            for iface in added:
+                _vrf_enslave(name, iface)
+            _run_ip(["ip", "link", "set", name, "up" if admin_up else "down"])
+        # Re-apply the FRR routing config (routes flow through staticd, §6).
+        _get_frr().apply(name, table_id, protocol, router_id, asn, routes=routes)
     return {"status": "updated", "name": name, "interfaces": new_ifaces,
             "admin_up": admin_up, "vsys": vsys, "table_id": table_id,
             "protocol": protocol, "router_id": router_id, "asn": asn}
@@ -6753,9 +6755,61 @@ async def vr_routes_list(name: str, user: dict = Depends(get_current_user)):
     return {"virtual_router": name, "routes": routes}
 
 
+async def _vr_interface_inventory(user):
+    from ffn_vr_interfaces import inventory
+    configured = await interfaces_list(user)
+    routers = (await vr_list(user))['virtual_routers']
+    return inventory(configured, routers, _load_aliases())
+
+
+@app.get("/api/network/virtual-router-interfaces")
+async def vr_interface_choices(user: dict = Depends(get_current_user)):
+    return {'interfaces': await _vr_interface_inventory(user),
+            'default_membership': 'Configured Layer 3 interfaces not assigned to another virtual router'}
+
+
+async def _validate_vr_route(name, route, user):
+    from ffn_vr_interfaces import validate_route
+    _require_admin(user)
+    try:
+        data = validate_route(route.dict(), name, await _vr_interface_inventory(user))
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    return VRRoute(**data)
+
+
+def _vr_platform_managed():
+    return bool(os.environ.get('FFN_PLATFORM_EXTENSION'))
+
+
+@app.put("/api/network/virtual-routers/{name}/routes/{route_id}")
+async def vr_route_update(name: str, route_id: int, route: VRRoute,
+                          user: dict = Depends(get_current_user)):
+    route = await _validate_vr_route(name, route, user)
+    async with aiosqlite.connect(DB_PATH) as db:
+        row = await _vr_fetch(db, name)
+        if not row: raise HTTPException(404, 'Virtual router not found')
+        old = await (await db.execute('SELECT * FROM static_routes WHERE id=? AND vr_id=?', (route_id, row['id']))).fetchone()
+        if not old: raise HTTPException(404, 'Static route not found')
+        await db.execute('UPDATE static_routes SET dest_cidr=?,next_hop=?,dev=?,metric=? WHERE id=? AND vr_id=?',
+            (route.dest_cidr, route.next_hop, route.dev, route.metric, route_id, row['id']))
+        routes = await _vr_static_routes(db, row['id'])
+        vr = _vr_row_to_dict(row)
+        frag = FrrManager.render_fragment(name, row['table_id'], vr['protocol'], vr['router_id'], vr['asn'], routes=routes)
+        await db.execute("UPDATE virtual_routers SET frr_fragment=?,updated_at=datetime('now') WHERE id=?", (frag, row['id']))
+        await audit(db, user['username'], 'edit_vrf_route', name + ': ' + route.dest_cidr)
+        await db.commit()
+    if not _vr_platform_managed():
+        _get_frr().del_route(name, old['dest_cidr'], old['next_hop'], old['dev'])
+        _get_frr().add_route(name, route.dest_cidr, route.next_hop, route.dev, route.metric)
+    return {'status':'updated', 'id':route_id, 'runtime': 'not-applied' if _vr_platform_managed() else 'requested',
+            'message': 'Route saved. Dataplane activation must be verified separately.'}
+
+
 @app.post("/api/network/virtual-routers/{name}/routes")
 async def vr_route_add(name: str, route: VRRoute,
                        user: dict = Depends(get_current_user)):
+    route = await _validate_vr_route(name, route, user)
     async with aiosqlite.connect(DB_PATH) as db:
         row = await _vr_fetch(db, name)
         if not row:
@@ -6781,8 +6835,9 @@ async def vr_route_add(name: str, route: VRRoute,
         await db.commit()
 
     # Static routes go through staticd (FRR), NOT raw `ip route` (contract §6).
-    _get_frr().add_route(name, route.dest_cidr, route.next_hop, route.dev, route.metric)
-    return {"status": "added", "id": route_id, "virtual_router": name,
+    if not _vr_platform_managed():
+        _get_frr().add_route(name, route.dest_cidr, route.next_hop, route.dev, route.metric)
+    return {"runtime": "not-applied" if _vr_platform_managed() else "requested", "status": "added", "id": route_id, "virtual_router": name,
             "dest_cidr": route.dest_cidr, "next_hop": route.next_hop,
             "dev": route.dev, "metric": route.metric, "table_id": table_id}
 
@@ -6790,6 +6845,7 @@ async def vr_route_add(name: str, route: VRRoute,
 @app.delete("/api/network/virtual-routers/{name}/routes/{route_id}")
 async def vr_route_delete(name: str, route_id: int,
                           user: dict = Depends(get_current_user)):
+    _require_admin(user)
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         row = await _vr_fetch(db, name)
@@ -6817,7 +6873,8 @@ async def vr_route_delete(name: str, route_id: int,
         await db.commit()
 
     # Withdraw the route through staticd (FRR), NOT raw `ip route` (contract §6).
-    _get_frr().del_route(name, rt["dest_cidr"], rt["next_hop"], rt["dev"])
+    if not _vr_platform_managed():
+        _get_frr().del_route(name, rt["dest_cidr"], rt["next_hop"], rt["dev"])
     return {"status": "deleted", "id": route_id, "virtual_router": name}
 
 
