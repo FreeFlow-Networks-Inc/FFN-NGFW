@@ -110,6 +110,7 @@ class ControlPlane:
             fresh = state['connected'] and age is not None and age < self.config['agents'][name]['stale_after']
             sample = state['sample']
             observed[name] = {'role': self.config['agents'][name]['role'], 'connected': state['connected'],
+                'stale_after_seconds': self.config['agents'][name]['stale_after'],
                 'fresh': fresh, 'age_seconds': age, 'ready': bool(fresh and sample['report']['ready']),
                 'error': (state['error'] or 'Observation expired') if not fresh else None, 'reconnects': state['reconnects'],
                 # Historic reports are retained only as explicitly labelled last observations.

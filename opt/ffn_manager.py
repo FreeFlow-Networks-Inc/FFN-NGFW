@@ -1752,6 +1752,10 @@ class ConfigManager:
         tag = f"entry[@name={name}]" if (elem.tag == "entry" and name is not None) else elem.tag
         path = f"{prefix}.{tag}" if prefix else tag
 
+        # Rule order is semantic: a pure move must appear in diff/commit.
+        if elem.tag == 'rules':
+            out[path + '.@order'] = json.dumps([n.get('name') for n in elem.findall('entry')])
+
         # Treat <member>X</member> as an ordered list, emit one key per index
         members = elem.findall("member")
         if members and len(members) == len(list(elem)):
@@ -1799,6 +1803,11 @@ class ConfigManager:
         ("full"/"partial"). Callers may override (e.g., "rollback") so the
         history entry labels the commit accurately.
         """
+        # Shared WebUI/CLI/import boundary: do not promote unenforceable policies.
+        from ffn_policy_config import require_supported, PolicyError
+        if partial_xpath is None:
+            try: require_supported(CANDIDATE_CONFIG.read_bytes())
+            except PolicyError as error: return {'status':'error','message':str(error)}
         parent_version = self.history.latest_version()
         diff_before = self.diff()
         diff_counts = {
@@ -1859,6 +1868,8 @@ class ConfigManager:
             run_node.remove(old)
         import copy
         run_node.insert(index, copy.deepcopy(cand_node))
+        try: require_supported(ET.tostring(run_root,encoding='utf-8'))
+        except PolicyError as error: return {'status':'error','message':str(error)}
         self._save(run_root, RUNNING_CONFIG)
 
         ctype = commit_type or "partial"
@@ -5460,17 +5471,11 @@ IMMUTABLE_KIND_PREFIX = {"intrazone-default", "interzone-default", "lab-mgmt"}
 
 
 @app.get("/api/policy/rules")
-async def policy_list(show_hidden: bool = False, show_defaults: bool = True, user: dict = Depends(get_current_user)):
-    """
-    Returns rules in evaluation order: user rules first (by position),
-    then PAN-OS-style implicit defaults (intrazone-default, then
-    interzone-default) which always evaluate last.
+async def policy_list(show_hidden: bool = True, show_defaults: bool = True, user: dict = Depends(get_current_user)):
+    """Stored rules in engine order. Implicit defaults are always included.
 
-    Query params:
-      - show_hidden=true  — include intrazone-default (hidden by default,
-                            matching PAN-OS UI which shows it only when
-                            "Show default rules" is enabled)
-      - show_defaults=false — hide both implicit defaults entirely
+    The legacy visibility query parameters are accepted for API compatibility;
+    they no longer suppress immutable defaults from the inventory.
     """
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -5497,13 +5502,9 @@ async def policy_list(show_hidden: bool = False, show_defaults: bool = True, use
         for r in rows:
             r["compilation"] = compatibility[r["id"]]
             kind = r.get("kind", "user")
-            if not show_defaults and kind != "user":
-                continue
-            if kind == "intrazone-default" and not show_hidden:
-                continue
             # Expose computed flags for the UI
             r["is_default"] = kind != "user"
-            r["is_immutable"] = bool(r.get("immutable", 0))
+            r["is_immutable"] = bool(r.get("immutable", 0)) or kind in ("intrazone-default", "interzone-default", "lab-mgmt")
             out.append(r)
         return {"rules": out, "can_edit": user.get("role") in ADMIN_ROLES, "storage": "policy-database", "compilation": report}
 
@@ -5702,19 +5703,8 @@ async def policy_update(rule_id: int, rule: PolicyRule,
         existing = await cur.fetchone()
         if existing is None:
             raise HTTPException(status_code=404, detail="Rule not found")
-        if existing["immutable"]:
-            # Only description (and eventually profile/log fields) may be
-            # changed on an immutable default rule. Everything else is
-            # locked to preserve PAN-OS semantics.
-            await db.execute(
-                "UPDATE policy_rules SET description=?, "
-                " updated_at=datetime('now') WHERE id=?",
-                (rule.description, rule_id),
-            )
-            await audit(db, user["username"], "update_rule",
-                        f"id={rule_id} (immutable: description only)")
-            return {"status": "updated", "immutable": True,
-                    "message": "Immutable default rule — only description updated"}
+        if existing["immutable"] or existing['kind'] in ('intrazone-default', 'interzone-default', 'lab-mgmt'):
+            raise HTTPException(403, 'Implicit and system rules are read only; no fields may be modified')
 
         validate_policy_rule(rule.dict())
         await db.execute(
@@ -5743,7 +5733,7 @@ async def policy_delete(rule_id: int, user: dict = Depends(get_current_user)):
         existing = await cur.fetchone()
         if existing is None:
             raise HTTPException(status_code=404, detail="Rule not found")
-        if existing["immutable"]:
+        if existing["immutable"] or existing['kind'] in ('intrazone-default', 'interzone-default', 'lab-mgmt'):
             raise HTTPException(
                 status_code=403,
                 detail=f"Cannot delete immutable default rule ({existing['kind']})",
@@ -6458,122 +6448,65 @@ async def _iface_vrf_conflict(db, ifaces, exclude_vr: Optional[str] = None):
 @app.put("/api/network/interfaces/{iface}/virtual-router")
 async def iface_set_vr(iface: str, body: IfaceVrAssign,
                        user: dict = Depends(get_current_user)):
-    """Assign `iface` (Linux dev name) to a virtual router from the interface
-    side -- the mirror of the VR's member list. Moves the iface between SQLite
-    VR member lists and reconciles the kernel VRF enslavement. Empty / 'default'
-    -> the kernel main table (no VRF). An interface belongs to exactly one VR."""
-    mgmt = _mgmt_iface()
-    target = (body.virtual_router or "").strip()
-    if target.lower() in ("", "default", "none", "main"):
-        target = ""
-    if target and iface == mgmt:
-        raise HTTPException(
-            status_code=400,
-            detail=f"management interface '{iface}' cannot be enslaved to a VRF",
-        )
+    target = body.virtual_router or 'default'
+    return await _vr_candidate_edit('assign-interface', target, {'interface': iface}, user)
+
+
+async def _vr_candidate_seed():
+    # SQL is a read-only migration source. Edits never alter it or live routing.
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        cur = await db.execute("SELECT name, interfaces FROM virtual_routers")
-        rows = await cur.fetchall()
-        by_name = {r["name"]: r for r in rows}
-        if target and target not in by_name:
-            raise HTTPException(status_code=404,
-                                detail=f"no such virtual router '{target}'")
-        current = None
-        for r in rows:
-            if r["name"] == "default":
-                continue
-            if iface in json.loads(r["interfaces"] or "[]"):
-                current = r["name"]
-                break
-        if (current or "") == target:
-            return {"status": "unchanged", "interface": iface,
-                    "virtual_router": target or "default"}
-        if current:
-            lst = [x for x in json.loads(by_name[current]["interfaces"] or "[]")
-                   if x != iface]
-            await db.execute("UPDATE virtual_routers SET interfaces=?, "
-                             "updated_at=datetime('now') WHERE name=?",
-                             (json.dumps(lst), current))
-        if target:
-            lst = json.loads(by_name[target]["interfaces"] or "[]")
-            if iface not in lst:
-                lst.append(iface)
-            await db.execute("UPDATE virtual_routers SET interfaces=?, "
-                             "updated_at=datetime('now') WHERE name=?",
-                             (json.dumps(lst), target))
-        await audit(db, user["username"], "assign_iface_vrf",
-                    f"{iface} -> {target or 'default'} (was {current or 'default'})")
-        await db.commit()
-    # kernel reconcile (mgmt already refused above)
-    if current:
-        _run_ip(["ip", "link", "set", iface, "nomaster"])
-    if target:
-        _vrf_enslave(target, iface)
-        _run_ip(["ip", "link", "set", target, "up"])
-    return {"status": "updated", "interface": iface,
-            "virtual_router": target or "default", "previous": current or "default"}
+        rows = await (await db.execute('SELECT * FROM virtual_routers ORDER BY table_id')).fetchall()
+        result = []
+        for row in rows:
+            vr = _vr_row_to_dict(row)
+            vr['routes'] = [dict(r) for r in await (await db.execute(
+                'SELECT * FROM static_routes WHERE vr_id=? ORDER BY id', (row['id'],))).fetchall()]
+            result.append(vr)
+        return result
+
+
+async def _vr_candidate_list():
+    from ffn_vr_candidate import list_routers
+    seed = await _vr_candidate_seed()
+    return list_routers(config_mgr._load(CANDIDATE_CONFIG), seed)
+
+
+async def _vr_candidate_get(name):
+    for vr in await _vr_candidate_list():
+        if vr['name'] == name: return vr
+    raise HTTPException(404, 'Virtual router not found')
+
+
+async def _vr_candidate_edit(action, name, data, user, route_id=None):
+    from ffn_vr_candidate import edit, RouterError
+    _require_admin(user)
+    seed = await _vr_candidate_seed()
+    state = config_mgr.lock_status()
+    if state['locked'] and state.get('holder') != user['username']:
+        raise HTTPException(423, 'Configuration is locked by another administrator')
+    if not state['locked'] and not config_mgr.acquire_lock(user['username'], 'editing virtual routers'):
+        raise HTTPException(423, 'Could not acquire configuration lock')
+    try:
+        root = config_mgr._load(CANDIDATE_CONFIG)
+        result = edit(root, seed, action, name, data, route_id, _mgmt_iface())
+        config_mgr._save(root, CANDIDATE_CONFIG)
+    except Exception as error:
+        if not state['locked']: config_mgr.release_lock(user['username'])
+        if isinstance(error, RouterError): raise HTTPException(error.code, str(error)) from error
+        raise
+    await _audit(user, 'candidate_virtual_router_' + action, name)
+    return result
 
 
 @app.get("/api/network/virtual-routers")
 async def vr_list(user: dict = Depends(get_current_user)):
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cur = await db.execute(
-            "SELECT * FROM virtual_routers ORDER BY table_id"
-        )
-        vrs = [_vr_row_to_dict(r) for r in await cur.fetchall()]
-    return {"virtual_routers": vrs}
+    return {"virtual_routers": await _vr_candidate_list()}
 
 
 @app.post("/api/network/virtual-routers")
 async def vr_create(vr: VirtualRouterCreate, user: dict = Depends(get_current_user)):
-    mgmt = _mgmt_iface()
-    if mgmt in vr.interfaces:
-        raise HTTPException(
-            status_code=400,
-            detail=f"management interface '{mgmt}' cannot be enslaved to a VRF",
-        )
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cur = await db.execute(
-            "SELECT id FROM virtual_routers WHERE name=?", (vr.name,)
-        )
-        if await cur.fetchone():
-            raise HTTPException(status_code=409, detail=f"virtual router '{vr.name}' exists")
-        conflict = await _iface_vrf_conflict(db, vr.interfaces)
-        if conflict:
-            raise HTTPException(
-                status_code=409,
-                detail=f"interface '{conflict[0]}' already belongs to VRF '{conflict[1]}'",
-            )
-        table_id = await _alloc_vrf_table_id(db)
-        frag = FrrManager.render_fragment(
-            vr.name, table_id, vr.protocol, vr.router_id, vr.asn, routes=[])
-        await db.execute(
-            "INSERT INTO virtual_routers "
-            "(name, table_id, interfaces, admin_up, vsys, protocol, router_id, asn, frr_fragment) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (vr.name, table_id, json.dumps(vr.interfaces),
-             1 if vr.admin_up else 0, vr.vsys,
-             vr.protocol, vr.router_id, vr.asn, frag),
-        )
-        await audit(db, user["username"], "create_vrf",
-                    f"{vr.name} table={table_id} proto={vr.protocol} ifaces={vr.interfaces}")
-        await db.commit()
-
-    # Apply to the live kernel (no-op on non-Linux). l3mdev device FIRST...
-    _vrf_create(vr.name, table_id)
-    if not vr.admin_up:
-        _run_ip(["ip", "link", "set", vr.name, "down"])
-    for iface in vr.interfaces:
-        _vrf_enslave(vr.name, iface)
-    # ...THEN the FRR routing config (§6): zebra owns the VRF table, staticd/
-    # bgpd/ospfd own routing. No-op-with-log when vtysh is absent.
-    _get_frr().apply(vr.name, table_id, vr.protocol, vr.router_id, vr.asn, routes=[])
-    return {"status": "created", "name": vr.name, "table_id": table_id,
-            "interfaces": vr.interfaces, "admin_up": vr.admin_up, "vsys": vr.vsys,
-            "protocol": vr.protocol, "router_id": vr.router_id, "asn": vr.asn}
+    return await _vr_candidate_edit('create', vr.name, vr.dict(), user)
 
 
 async def _vr_fetch(db, name: str):
@@ -6584,105 +6517,18 @@ async def _vr_fetch(db, name: str):
 
 @app.get("/api/network/virtual-routers/{name}")
 async def vr_get(name: str, user: dict = Depends(get_current_user)):
-    async with aiosqlite.connect(DB_PATH) as db:
-        row = await _vr_fetch(db, name)
-        if not row:
-            raise HTTPException(status_code=404, detail=f"no such virtual router '{name}'")
-        return _vr_row_to_dict(row)
+    return await _vr_candidate_get(name)
 
 
 @app.put("/api/network/virtual-routers/{name}")
 async def vr_update(name: str, upd: VirtualRouterUpdate,
                     user: dict = Depends(get_current_user)):
-    mgmt = _mgmt_iface()
-    async with aiosqlite.connect(DB_PATH) as db:
-        row = await _vr_fetch(db, name)
-        if not row:
-            raise HTTPException(status_code=404, detail=f"no such virtual router '{name}'")
-        cur_ifaces = json.loads(row["interfaces"] or "[]")
-        table_id = row["table_id"]
-        is_default = (name == "default")
-
-        new_ifaces = cur_ifaces
-        if upd.interfaces is not None and not (is_default and not upd.interfaces):
-            if is_default:
-                raise HTTPException(
-                    status_code=400,
-                    detail="the default VRF is the kernel main table; it has no "
-                           "enslaved interfaces",
-                )
-            if mgmt in upd.interfaces:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"management interface '{mgmt}' cannot be enslaved to a VRF",
-                )
-            conflict = await _iface_vrf_conflict(db, upd.interfaces, exclude_vr=name)
-            if conflict:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"interface '{conflict[0]}' already belongs to VRF '{conflict[1]}'",
-                )
-            new_ifaces = upd.interfaces
-
-        admin_up = bool(row["admin_up"]) if upd.admin_up is None else upd.admin_up
-        vsys = row["vsys"] if upd.vsys is None else upd.vsys
-        cur_vr = _vr_row_to_dict(row)
-        protocol = cur_vr["protocol"] if upd.protocol is None else upd.protocol
-        router_id = cur_vr["router_id"] if upd.router_id is None else upd.router_id
-        asn = cur_vr["asn"] if upd.asn is None else upd.asn
-
-        # Re-render the FRR fragment from the current static routes + new proto.
-        routes = await _vr_static_routes(db, row["id"])
-        frag = FrrManager.render_fragment(
-            name, table_id, protocol, router_id, asn, routes=routes)
-
-        await db.execute(
-            "UPDATE virtual_routers SET interfaces=?, admin_up=?, vsys=?, "
-            "protocol=?, router_id=?, asn=?, frr_fragment=?, "
-            "updated_at=datetime('now') WHERE name=?",
-            (json.dumps(new_ifaces), 1 if admin_up else 0, vsys,
-             protocol, router_id, asn, frag, name),
-        )
-        await audit(db, user["username"], "update_vrf",
-                    f"{name} ifaces={new_ifaces} up={admin_up} vsys={vsys} proto={protocol}")
-        await db.commit()
-
-    # Reconcile membership with the kernel (skip for the default/main table).
-    if not is_default:
-        added = [i for i in new_ifaces if i not in cur_ifaces]
-        removed = [i for i in cur_ifaces if i not in new_ifaces]
-        for iface in removed:
-            _run_ip(["ip", "link", "set", iface, "nomaster"])
-        for iface in added:
-            _vrf_enslave(name, iface)
-        _run_ip(["ip", "link", "set", name, "up" if admin_up else "down"])
-    # Re-apply the FRR routing config (routes flow through staticd, §6).
-    _get_frr().apply(name, table_id, protocol, router_id, asn, routes=routes)
-    return {"status": "updated", "name": name, "interfaces": new_ifaces,
-            "admin_up": admin_up, "vsys": vsys, "table_id": table_id,
-            "protocol": protocol, "router_id": router_id, "asn": asn}
+    return await _vr_candidate_edit('update', name, upd.dict(exclude_unset=True), user)
 
 
 @app.delete("/api/network/virtual-routers/{name}")
 async def vr_delete(name: str, user: dict = Depends(get_current_user)):
-    if name == "default":
-        raise HTTPException(status_code=400, detail="the default virtual router cannot be deleted")
-    async with aiosqlite.connect(DB_PATH) as db:
-        row = await _vr_fetch(db, name)
-        if not row:
-            raise HTTPException(status_code=404, detail=f"no such virtual router '{name}'")
-        ifaces = json.loads(row["interfaces"] or "[]")
-        table_id = row["table_id"]
-        await db.execute("DELETE FROM static_routes WHERE vr_id=?", (row["id"],))
-        await db.execute("DELETE FROM virtual_routers WHERE name=?", (name,))
-        await audit(db, user["username"], "delete_vrf", f"{name} table={table_id}")
-        await db.commit()
-
-    # Remove the FRR routing config FIRST (staticd/bgpd/ospfd), then tear the
-    # l3mdev substrate down (flush table, un-enslave members, drop the device).
-    _get_frr().remove(name)
-    _vrf_teardown(name, table_id, ifaces)
-    return {"status": "deleted", "name": name}
+    return await _vr_candidate_edit('delete', name, {}, user)
 
 
 # --- VR static routes ------------------------------------------------------
@@ -6701,124 +6547,66 @@ class VrRoutingConfig(BaseModel):
 
 @app.get("/api/network/virtual-routers/{name}/routing")
 async def vr_get_routing(name: str, user: dict = Depends(get_current_user)):
-    async with aiosqlite.connect(DB_PATH) as db:
-        row = await _vr_fetch(db, name)
-        if not row:
-            raise HTTPException(status_code=404, detail=f"virtual router '{name}' not found")
-        vr = _vr_row_to_dict(row)
-    return {"name": name, "config": vr.get("config") or {}, "frr_fragment": vr.get("frr_fragment")}
+    vr = await _vr_candidate_get(name)
+    return {'name': name, 'config': vr.get('config') or {}, 'source': 'candidate', 'runtime': 'not-applied'}
 
 
 @app.put("/api/network/virtual-routers/{name}/routing")
 async def vr_set_routing(name: str, cfg: VrRoutingConfig, user: dict = Depends(get_current_user)):
-    async with aiosqlite.connect(DB_PATH) as db:
-        row = await _vr_fetch(db, name)
-        if not row:
-            raise HTTPException(status_code=404, detail=f"virtual router '{name}' not found")
-        vr = _vr_row_to_dict(row)
-        routes = await _vr_static_routes(db, vr["id"])
-        cfgd = cfg.dict()
-        frr = _get_frr()
-        clear = frr.render_clear_commands(name, cfgd)
-        if clear:
-            frr._vtysh(clear)                       # tolerated: 'can't find' on first apply is fine
-        cmds = frr.render_full_commands(name, vr["table_id"], cfgd, routes)
-        rc, out = frr._vtysh(cmds)                  # clean apply (no error-prone lines)
-        frag = "\n".join(cmds)
-        await db.execute(
-            "UPDATE virtual_routers SET vr_config=?, frr_fragment=?, updated_at=datetime('now') WHERE name=?",
-            (json.dumps(cfgd), frag, name))
-        await audit(db, user["username"], "vr_routing", name)
-        await db.commit()
-    return {"status": "applied", "name": name, "vtysh_rc": rc,
-            "config": cfgd, "frr_commands": cmds,
-            "vtysh_output": (out or "")[-2000:]}
+    return await _vr_candidate_edit('routing', name, cfg.dict(), user)
 
 
 @app.get("/api/network/virtual-routers/{name}/routes")
 async def vr_routes_list(name: str, user: dict = Depends(get_current_user)):
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        row = await _vr_fetch(db, name)
-        if not row:
-            raise HTTPException(status_code=404, detail=f"no such virtual router '{name}'")
-        cur = await db.execute(
-            "SELECT * FROM static_routes WHERE vr_id=? ORDER BY id", (row["id"],)
-        )
-        routes = [{
-            "id": r["id"], "vr_id": r["vr_id"], "dest_cidr": r["dest_cidr"],
-            "next_hop": r["next_hop"], "dev": r["dev"], "metric": r["metric"],
-            "table_id": r["table_id"],
-        } for r in await cur.fetchall()]
-    return {"virtual_router": name, "routes": routes}
+    vr = await _vr_candidate_get(name)
+    return {'virtual_router': name, 'routes': vr.get('routes', []), 'source': 'candidate'}
+
+
+async def _vr_interface_inventory(user):
+    from ffn_vr_interfaces import inventory
+    configured = await interfaces_list(user)
+    routers = (await vr_list(user))['virtual_routers']
+    return inventory(configured, routers, _load_aliases())
+
+
+@app.get("/api/network/virtual-router-interfaces")
+async def vr_interface_choices(user: dict = Depends(get_current_user)):
+    return {'interfaces': await _vr_interface_inventory(user),
+            'default_membership': 'Configured Layer 3 interfaces not assigned to another virtual router'}
+
+
+async def _validate_vr_route(name, route, user):
+    from ffn_vr_interfaces import validate_route
+    _require_admin(user)
+    try:
+        data = validate_route(route.dict(), name, await _vr_interface_inventory(user))
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    return VRRoute(**data)
+
+
+def _vr_platform_managed():
+    return bool(os.environ.get('FFN_PLATFORM_EXTENSION'))
+
+
+@app.put("/api/network/virtual-routers/{name}/routes/{route_id}")
+async def vr_route_update(name: str, route_id: int, route: VRRoute,
+                          user: dict = Depends(get_current_user)):
+    route = await _validate_vr_route(name, route, user)
+    return await _vr_candidate_edit('route-update', name, route.dict(), user, route_id)
 
 
 @app.post("/api/network/virtual-routers/{name}/routes")
 async def vr_route_add(name: str, route: VRRoute,
                        user: dict = Depends(get_current_user)):
-    async with aiosqlite.connect(DB_PATH) as db:
-        row = await _vr_fetch(db, name)
-        if not row:
-            raise HTTPException(status_code=404, detail=f"no such virtual router '{name}'")
-        table_id = row["table_id"]
-        cur = await db.execute(
-            "INSERT INTO static_routes (vr_id, dest_cidr, next_hop, dev, metric, table_id) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (row["id"], route.dest_cidr, route.next_hop, route.dev,
-             route.metric, table_id),
-        )
-        route_id = cur.lastrowid
-        # Re-render the FRR fragment now that the route set changed.
-        routes = await _vr_static_routes(db, row["id"])
-        vr = _vr_row_to_dict(row)
-        frag = FrrManager.render_fragment(
-            name, table_id, vr["protocol"], vr["router_id"], vr["asn"], routes=routes)
-        await db.execute(
-            "UPDATE virtual_routers SET frr_fragment=?, updated_at=datetime('now') "
-            "WHERE id=?", (frag, row["id"]))
-        await audit(db, user["username"], "add_vrf_route",
-                    f"{name}: {route.dest_cidr} via {route.next_hop or route.dev} table={table_id}")
-        await db.commit()
-
-    # Static routes go through staticd (FRR), NOT raw `ip route` (contract §6).
-    _get_frr().add_route(name, route.dest_cidr, route.next_hop, route.dev, route.metric)
-    return {"status": "added", "id": route_id, "virtual_router": name,
-            "dest_cidr": route.dest_cidr, "next_hop": route.next_hop,
-            "dev": route.dev, "metric": route.metric, "table_id": table_id}
+    route = await _validate_vr_route(name, route, user)
+    return await _vr_candidate_edit('route-add', name, route.dict(), user)
 
 
 @app.delete("/api/network/virtual-routers/{name}/routes/{route_id}")
 async def vr_route_delete(name: str, route_id: int,
                           user: dict = Depends(get_current_user)):
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        row = await _vr_fetch(db, name)
-        if not row:
-            raise HTTPException(status_code=404, detail=f"no such virtual router '{name}'")
-        cur = await db.execute(
-            "SELECT * FROM static_routes WHERE id=? AND vr_id=?",
-            (route_id, row["id"]),
-        )
-        rt = await cur.fetchone()
-        if not rt:
-            raise HTTPException(status_code=404, detail=f"no such route {route_id} on '{name}'")
-        await db.execute("DELETE FROM static_routes WHERE id=?", (route_id,))
-        # Re-render the FRR fragment now that the route set changed.
-        routes = await _vr_static_routes(db, row["id"])
-        vr = _vr_row_to_dict(row)
-        frag = FrrManager.render_fragment(
-            name, row["table_id"], vr["protocol"], vr["router_id"], vr["asn"],
-            routes=routes)
-        await db.execute(
-            "UPDATE virtual_routers SET frr_fragment=?, updated_at=datetime('now') "
-            "WHERE id=?", (frag, row["id"]))
-        await audit(db, user["username"], "delete_vrf_route",
-                    f"{name}: {rt['dest_cidr']} table={rt['table_id']}")
-        await db.commit()
-
-    # Withdraw the route through staticd (FRR), NOT raw `ip route` (contract §6).
-    _get_frr().del_route(name, rt["dest_cidr"], rt["next_hop"], rt["dev"])
-    return {"status": "deleted", "id": route_id, "virtual_router": name}
+    return await _vr_candidate_edit('route-delete', name, {}, user, route_id)
 
 
 @app.get("/api/network/virtual-routers/{name}/fib")
@@ -9727,14 +9515,17 @@ async def dpd_reload(user: dict = Depends(get_current_user)):
 
 @app.get("/api/system/plane-usage")
 async def plane_usage(user: dict = Depends(get_current_user)):
-    """
-    Return per-plane CPU + memory usage.
-      - Data plane  : cores listed in isolcpus (or FFN_DPDK_CORES env)
-      - Control plane: cores running ffn-controld + ffn-configd + ffn-manager
-                        (and adjacent "system" cores). Default = non-isolcpus - mgmt
-      - Management plane: cores dedicated to the webUI/ssh (default = first 2)
-    Usage is averaged over a 500ms sample.
-    """
+    """Selected agent CPU usage, or local CPU allocation on shared hosts."""
+    from ffn_agent_resources import agent_plane_usage
+    from ffn_control_plane import control_rpc
+    try:
+        control = await control_rpc('state/control', timeout=2)
+        if not isinstance(control, dict) or not isinstance(control.get('agents'), dict):
+            raise ValueError('invalid control state')
+    except Exception:
+        # An unavailable controller must never relabel MP samples as CP/DP.
+        control = None
+    remote = bool(control and control['agents'])
     total_cores = os.cpu_count() or 2
 
     # Precedence for plane-to-core mapping:
@@ -9760,13 +9551,16 @@ async def plane_usage(user: dict = Depends(get_current_user)):
     ctrl_cores = [c for c in ctrl_cores if c < total_cores]
     data_cores = [c for c in data_cores if c < total_cores]
 
+    if remote:
+        mgmt_cores = sorted(all_cores)
+
     # Sample per-core usage (blocking 0.5s — run in thread pool)
     import asyncio as _aio
     per_core = await _aio.to_thread(psutil.cpu_percent, 0.5, True)
 
     def avg(cores):
         vals = [per_core[c] for c in cores if c < len(per_core)]
-        return round(sum(vals) / len(vals), 1) if vals else 0.0
+        return round(sum(vals) / len(vals), 1) if vals else None
 
     mem = psutil.virtual_memory()
     swap = psutil.swap_memory()
@@ -9792,7 +9586,7 @@ async def plane_usage(user: dict = Depends(get_current_user)):
                          "charon", "swanctl", "lldpd"])
     data_rss = _rss_for(["ffn_dpdk_fwd", "dpdk-testpmd"])
 
-    return {
+    result = {
         "cores_total": total_cores,
         "management_plane": {
             "cores": mgmt_cores,
@@ -9824,6 +9618,14 @@ async def plane_usage(user: dict = Depends(get_current_user)):
             "swap_used_gb":  round(swap.used  / 1e9, 2),
         },
     }
+    for key in ('management_plane', 'control_plane', 'data_plane'):
+        result[key].update(source='local', state='available' if result[key]['cores'] else 'unassigned',
+                           fresh=True, age_seconds=0, expires_in_seconds=10, memory_scope='processes')
+    if remote or control is None:
+        result['control_plane'] = agent_plane_usage(control, 'cp')
+        result['data_plane'] = agent_plane_usage(control, 'dp')
+    return result
+
 
 
 @app.get("/api/config/snapshots")
@@ -12270,6 +12072,8 @@ _install_patch_api(app, get_current_user, _require_admin, _extension_audit, _upd
 
 from ffn_config_objects import install as _install_object_api
 _install_object_api(app, get_current_user, _require_admin, _extension_audit, config_mgr, CANDIDATE_CONFIG)
+from ffn_policy_api import install as _install_policy_api
+_install_policy_api(app, get_current_user, _require_admin, _extension_audit, config_mgr)
 
 from ffn_plane_api import install as _install_plane_api
 _install_plane_api(app, get_current_user, _require_admin, _extension_audit)

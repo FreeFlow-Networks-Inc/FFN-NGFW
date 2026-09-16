@@ -258,6 +258,10 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
 }
 </style>
 <link rel="stylesheet" href="/static/console-shell.css">
+<link rel="stylesheet" href="/static/modal-layers.css">
+<script src="/static/config-objects.js"></script>
+<link rel="stylesheet" href="/static/config-objects.css">
+<script src="/static/config-policies.js"></script>
 </head>
 <body>
 
@@ -392,16 +396,16 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
 <!-- Static Route Modal (per virtual router) -->
 <div class="modal-overlay" id="modal-route">
   <div class="modal">
-    <h3>Add Static Route <span id="route-vr-label" class="text-dim" style="font-size:12px"></span></h3>
-    <input type="hidden" id="route-vr">
+    <h3><span id="route-modal-title">Add Static Route</span> <span id="route-vr-label" class="text-dim" style="font-size:12px"></span></h3>
+    <input type="hidden" id="route-vr"><input type="hidden" id="route-id">
     <div class="form-group"><label>Destination (CIDR)</label><input type="text" id="route-dest" placeholder="10.0.0.0/24"></div>
     <div class="form-group"><label>Next Hop</label><input type="text" id="route-nh" placeholder="10.0.0.1"></div>
-    <div class="form-group"><label>Device (optional)</label><input type="text" id="route-iface" placeholder="eth0"></div>
+    <div class="form-group"><label>Outgoing Interface</label><select id="route-iface"></select></div>
     <div class="form-group"><label>Metric</label><input type="number" id="route-metric" value="100"></div>
     <div id="route-msg" style="font-size:11px;min-height:14px"></div>
     <div class="form-actions">
       <button class="btn" onclick="closeModal('modal-route')">Cancel</button>
-      <button class="btn btn-primary" onclick="saveVRoute()">Save</button>
+      <button class="btn btn-primary" onclick="saveVRoute()">OK</button>
     </div>
   </div>
 </div>
@@ -412,7 +416,7 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
     <h3 id="vr-modal-title">Add Virtual Router</h3>
     <input type="hidden" id="vr-orig-name">
     <div class="form-group"><label>Name</label><input type="text" id="vr-name" placeholder="vr-tenant-a"></div>
-    <div class="form-group"><label>Member Interfaces (comma-separated)</label><input type="text" id="vr-ifaces" placeholder="eth1, eth2"></div>
+    <div class="form-group"><label>Layer 3 Interfaces</label><select id="vr-ifaces" multiple size="7" style="width:100%"></select><div id="vr-interface-help" class="text-dim"></div></div>
     <div class="form-group"><label>vsys (optional)</label><input type="text" id="vr-vsys" placeholder="vsys1"></div>
     <div class="form-group"><label>Routing Protocol (FRR)</label><select id="vr-protocol" onchange="_vrProtoToggle()">
       <option value="static">Static (staticd)</option>
@@ -426,7 +430,7 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
     <div id="vr-msg" style="font-size:11px;min-height:14px"></div>
     <div class="form-actions">
       <button class="btn" onclick="closeModal('modal-vr')">Cancel</button>
-      <button class="btn btn-primary" onclick="saveVR()">Save</button>
+      <button class="btn btn-primary" onclick="saveVR()">OK</button>
     </div>
   </div>
 </div>
@@ -441,7 +445,7 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
     <div class="form-group"><label>MTU</label><input type="number" id="iface-mtu" value="9000"></div>
     <div class="form-actions">
       <button class="btn" onclick="closeModal('modal-iface')">Cancel</button>
-      <button class="btn btn-primary" onclick="saveIface()">Save</button>
+      <button class="btn btn-primary" onclick="saveIface()">OK</button>
     </div>
   </div>
 </div>
@@ -633,12 +637,30 @@ const TAB_MENUS = {
   ],
   policy: [
     {id:'security',label:'Security'},
-    {id:'ddos-protection',label:'DDoS Protection'},
+    {id:'nat',label:'NAT'},
+    {id:'policy-qos',label:'QoS'},
+    {id:'pbf',label:'Policy Based Forwarding'},
+    {id:'decryption',label:'Decryption'},
+    {id:'tunnel-inspection',label:'Tunnel Inspection'},
+    {id:'application-override',label:'Application Override'},
+    {id:'authentication-policy',label:'Authentication'},
+    {id:'ddos-protection',label:'DoS Protection'},
+    {id:'sdwan',label:'SD-WAN'},
   ],
   objects: [
     {id:'addresses',label:'Addresses'},
-    {id:'services',label:'Services'},
+    {id:'address-groups',label:'Address Groups'},
+    {id:'regions',label:'Regions'},
+    {id:'dynamic-user-groups',label:'Dynamic User Groups'},
     {id:'applications',label:'Applications'},
+    {id:'application-groups',label:'Application Groups'},
+    {id:'application-filters',label:'Application Filters'},
+    {id:'services',label:'Services'},
+    {id:'service-groups',label:'Service Groups'},
+    {id:'tags',label:'Tags'},
+    {id:'devices',label:'Devices'},
+    {id:'external-dynamic-lists',label:'External Dynamic Lists'},
+    {section:'Security Content'},
     {id:'threat-sigs',label:'Threat Signatures'},
     {id:'url-categories',label:'URL Categories'},
     {id:'databases',label:'Databases'},
@@ -1518,16 +1540,29 @@ function renderPage(pageId) {
     'crucible': renderCrucible,
     'iot-devices': renderIoTDevices,
     // Policy tab
-    'security': renderPolicySecurity,
-    'nat': renderPolicyNAT,
-    'policy-qos': renderPolicyQoS,
-    'decryption': renderPolicyDecryption,
-    'ddos-protection': renderPolicyDDoS,
-    'sdwan': renderPolicySDWAN,
+    'security': c => renderPolicyWorkspace(c, 'security'),
+    'nat': c => renderPolicyWorkspace(c, 'nat'),
+    'policy-qos': c => renderPolicyWorkspace(c, 'qos'),
+    'pbf': c => renderPolicyWorkspace(c, 'pbf'),
+    'decryption': c => renderPolicyWorkspace(c, 'decryption'),
+    'tunnel-inspection': c => renderPolicyWorkspace(c, 'tunnel-inspect'),
+    'application-override': c => renderPolicyWorkspace(c, 'application-override'),
+    'authentication-policy': c => renderPolicyWorkspace(c, 'authentication'),
+    'ddos-protection': c => renderPolicyWorkspace(c, 'dos'),
+    'sdwan': c => renderPolicyWorkspace(c, 'sdwan'),
     // Objects tab
-    'addresses': renderObjectsAddresses,
-    'services': renderObjectsServices,
-    'applications': renderObjectsApps,
+    'addresses': c => renderConfigObjects(c, 'address'),
+    'address-groups': c => renderConfigObjects(c, 'address-group'),
+    'regions': c => renderConfigObjects(c, 'region'),
+    'dynamic-user-groups': c => renderConfigObjects(c, 'dynamic-user-group'),
+    'applications': c => renderConfigObjects(c, 'application'),
+    'application-groups': c => renderConfigObjects(c, 'application-group'),
+    'application-filters': c => renderConfigObjects(c, 'application-filter'),
+    'services': c => renderConfigObjects(c, 'service'),
+    'service-groups': c => renderConfigObjects(c, 'service-group'),
+    'tags': c => renderConfigObjects(c, 'tag'),
+    'devices': c => renderConfigObjects(c, 'device'),
+    'external-dynamic-lists': c => renderConfigObjects(c, 'external-list'),
     'threat-sigs': renderObjectsThreatSigs,
     'url-categories': renderObjectsURLCategories,
     'databases': renderObjectsDatabases,
@@ -1662,6 +1697,8 @@ function renderDashOverview(c) {
         <h3>Control Plane</h3>
         <div class="big-num" id="dash-cp-cpu">--%</div>
         <div class="sub" id="dash-cp-cores" style="font-size:10px">cores: --</div>
+        <div class="sub" id="dash-cp-source" style="font-size:10px" aria-live="polite">Awaiting statistics</div>
+        <details style="margin-top:6px;font-size:10px"><summary>Per-core utilization</summary><div id="dash-cp-per-core" style="max-height:140px;overflow:auto;white-space:pre-wrap">--</div></details>
         <div class="bar-track" style="margin-top:6px;height:6px"><div id="dash-cp-bar" class="bar-fill" style="width:0%;background:var(--accent);height:6px"></div></div>
         <div class="sub" style="margin-top:6px;font-size:10px">Memory: <span id="dash-cp-mem">--</span></div>
       </div>
@@ -1669,6 +1706,8 @@ function renderDashOverview(c) {
         <h3>Management Plane</h3>
         <div class="big-num" id="dash-mp-cpu">--%</div>
         <div class="sub" id="dash-mp-cores" style="font-size:10px">cores: --</div>
+        <div class="sub" id="dash-mp-source" style="font-size:10px" aria-live="polite">Awaiting statistics</div>
+        <details style="margin-top:6px;font-size:10px"><summary>Per-core utilization</summary><div id="dash-mp-per-core" style="max-height:140px;overflow:auto;white-space:pre-wrap">--</div></details>
         <div class="bar-track" style="margin-top:6px;height:6px"><div id="dash-mp-bar" class="bar-fill" style="width:0%;background:var(--orange);height:6px"></div></div>
         <div class="sub" style="margin-top:6px;font-size:10px">Memory: <span id="dash-mp-mem">--</span></div>
       </div>
@@ -1678,8 +1717,10 @@ function renderDashOverview(c) {
         <h3>Data Plane</h3>
         <div class="big-num" id="dash-dp-cpu">--%</div>
         <div class="sub" id="dash-dp-cores" style="font-size:10px">cores: --</div>
+        <div class="sub" id="dash-dp-source" style="font-size:10px" aria-live="polite">Awaiting statistics</div>
+        <details style="margin-top:6px;font-size:10px"><summary>Per-core utilization</summary><div id="dash-dp-per-core" style="max-height:140px;overflow:auto;white-space:pre-wrap">--</div></details>
         <div class="bar-track" style="margin-top:6px;height:6px"><div id="dash-dp-bar" class="bar-fill" style="width:0%;background:var(--red);height:6px"></div></div>
-        <div class="sub" style="margin-top:6px;font-size:10px"><span id="dash-dp-isolcpus">isolcpus: --</span></div>
+        <div class="sub" style="margin-top:6px;font-size:10px"><span id="dash-dp-isolcpus">CPU allocation: --</span></div>
       </div>
       <div class="card"><h3>FPGA Resources</h3><div id="fpga-resources"></div></div>
       <div class="card"><h3>System</h3><div id="system-info" style="font-size:12px;line-height:2"></div></div>
@@ -1725,28 +1766,54 @@ function initDashboardCharts() {
 const _chartColors = ['#2f81f7','#3fb950','#d29922','#f85149','#a371f7','#f0883e','#56d4dd','#db61a2'];
 
 function _setPlaneWidget(prefix, info) {
-  if (!info) return;
-  const pct = info.cpu_percent || 0;
+  info = info || {state:'unavailable'};
+  const available = info.state === 'available' && info.fresh !== false;
+  const pct = available && Number.isFinite(info.cpu_percent) ? info.cpu_percent : null;
   const cpuEl = document.getElementById(`dash-${prefix}-cpu`);
-  if (cpuEl) cpuEl.textContent = pct.toFixed(1) + '%';
+  if (!cpuEl) return;
+  const generation = (cpuEl._usageGeneration || 0) + 1;
+  cpuEl._usageGeneration = generation;
+  cpuEl.textContent = pct === null ? '--' : pct.toFixed(1) + '%';
   const barEl = document.getElementById(`dash-${prefix}-bar`);
   if (barEl) {
-    barEl.style.width = Math.min(pct, 100) + '%';
-    if (pct > 90) barEl.style.background = 'var(--red)';
-    else if (pct > 70) barEl.style.background = 'var(--orange)';
+    barEl.style.width = (pct === null ? 0 : Math.max(0, Math.min(pct, 100))) + '%';
+    barEl.style.background = pct > 90 ? 'var(--red)' : pct > 70 ? 'var(--orange)' : 'var(--accent)';
   }
   const coresEl = document.getElementById(`dash-${prefix}-cores`);
-  if (coresEl) coresEl.textContent = 'cores: ' + ((info.cores||[]).join(',') || 'none');
+  if (coresEl) coresEl.textContent = info.cores?.length ? `${info.cores.length} logical cores`
+    : info.state === 'unassigned' ? 'No cores assigned' : 'Cores: --';
+  const source = info.source === 'agent'
+    ? `Agent: ${(info.agents || []).map(a => a.name).join(', ') || 'unavailable'} · Linux CPU`
+    : info.source === 'local' ? 'Local CPU allocation' : 'Statistics unavailable';
+  const state = {available:'Current', sampling:'Sampling CPU counters', stale:'Stale',
+    unavailable:'Unavailable', unassigned:'No cores assigned'}[info.state] || 'Unavailable';
+  const age = Number.isFinite(info.age_seconds) ? ` · ${Math.floor(info.age_seconds)}s ago` : '';
+  const window = Number.isFinite(info.sample_seconds) ? ` · ${info.sample_seconds.toFixed(1)}s sample` : '';
+  const sourceEl = document.getElementById(`dash-${prefix}-source`);
+  if (sourceEl) sourceEl.textContent = `${source} · ${state}${age}${window}`;
+  const detail = document.getElementById(`dash-${prefix}-per-core`);
+  if (detail) detail.textContent = Object.entries(info.per_core || {}).map(([core, value]) =>
+    `CPU ${core}: ${available && Number.isFinite(value) ? value.toFixed(1) + '%' : '--'}`).join('\n') || '--';
   const memEl = document.getElementById(`dash-${prefix}-mem`);
-  if (memEl) {
-    const mb = (info.memory_bytes||0) / 1e6;
-    memEl.textContent = `${mb.toFixed(1)} MB (${(info.memory_percent||0).toFixed(2)}%)`;
+  if (memEl) memEl.textContent = info.fresh !== false && Number.isFinite(info.memory_bytes)
+    ? `${(info.memory_bytes / 1e6).toFixed(1)} MB (${Number.isFinite(info.memory_percent) ? info.memory_percent.toFixed(2) : '--'}%) · ${info.memory_scope === 'host' ? 'host' : 'processes'}` : '--';
+  const iso = prefix === 'dp' ? document.getElementById('dash-dp-isolcpus') : null;
+  if (iso) iso.textContent = info.source === 'agent' ? 'CPU load reported by dataplane agent'
+    : info.source === 'local' ? 'CPU allocation: see Hardware Inventory' : 'CPU allocation: unavailable';
+  // Expire the display even if the next request hangs or the browser loses its connection.
+  if (info.fresh && Number.isFinite(info.expires_in_seconds) && info.expires_in_seconds > 0) {
+    setTimeout(() => {
+      if (cpuEl.isConnected && cpuEl._usageGeneration === generation)
+        _setPlaneWidget(prefix, {...info, state:'stale', fresh:false, age_seconds:null});
+    }, info.expires_in_seconds * 1000);
   }
 }
 
+let _dashboardRefreshSequence = 0;
 async function refreshDashboard() {
   const marker = document.getElementById('dash-time');
   if (!marker) return;
+  const sequence = ++_dashboardRefreshSequence;
   const overview = currentSubPage === 'dash-overview';
   const [tp, threats, sessions, status, resources, planes] = await Promise.all([
     api('/api/dashboard/throughput'),
@@ -1756,7 +1823,12 @@ async function refreshDashboard() {
     overview ? api('/api/system/resources') : null,
     overview ? api('/api/system/plane-usage') : null,
   ]);
-  if (!marker.isConnected) return;
+  if (!marker.isConnected || sequence !== _dashboardRefreshSequence) return;
+  if (overview) {
+    _setPlaneWidget('cp', planes?.control_plane);
+    _setPlaneWidget('mp', planes?.management_plane);
+    _setPlaneWidget('dp', planes?.data_plane);
+  }
   if (!tp || !Array.isArray(tp.ports)) { marker.textContent = 'Throughput unavailable'; return; }
 
   document.getElementById('dash-time').textContent = 'Updated: '+timeStr();
@@ -1831,17 +1903,6 @@ async function refreshDashboard() {
       barEl.style.background = pct > 90 ? 'var(--red)' : (pct > 70 ? 'var(--orange)' : 'var(--green)');
     }
     document.getElementById('dash-hit-ratio').textContent = `Hit ratio: ${sessions.hit_ratio}% | Hits: ${fmt(sessions.hits)} | Misses: ${fmt(sessions.misses)}`;
-  }
-
-  // Control / Management / Data plane usage meters
-  if (planes) {
-    _setPlaneWidget('cp', planes.control_plane);
-    _setPlaneWidget('mp', planes.management_plane);
-    _setPlaneWidget('dp', planes.data_plane);
-    const iso = document.getElementById('dash-dp-isolcpus');
-    if (iso) iso.textContent = planes.data_plane?.isolcpus_detected
-      ? `isolcpus: ${(planes.data_plane.cores || []).join(',')||'(none)'}`
-      : 'CPU allocation: see Hardware Inventory';
   }
 
   // Resources
@@ -2833,21 +2894,14 @@ function showSessionDetail(i) {
 
 /* ---- Policy > Security ---- */
 let policyRows = [], policyCanEdit = false, policyLoadGeneration = 0;
-let policyEditor = null;
+let policyEditor = null, policyEditorReload = null;
 function renderPolicySecurity(c) {
-  c.innerHTML = `<div class="page-header"><h2>Security Policy</h2></div>
-    <div class="filters-bar"><input id="policy-search" aria-label="Filter security rules" placeholder="Filter rules" oninput="renderPolicyRows()">
-    <label><input type="checkbox" id="policy-show-hidden" onchange="loadPolicies()"> Show implicit defaults</label>
-    <button class="btn" onclick="loadPolicies()">Refresh</button><button id="policy-add" class="btn btn-primary" disabled onclick="openRuleModal()">Add</button></div>
-    <p id="policy-notice" role="status" class="mb-8">Loading policy rules…</p>
-    <p class="text-dim mb-8">Rules are stored in the policy database. Storage does not confirm dataplane application. Zone and application matching are not implemented here; the fast-path compiler rejects unsupported IPv6, interface and reset conditions.</p>
-    <div class="table-wrap"><table id="policy-table"><thead><tr><th>#</th><th>Name</th><th>Enabled</th><th>Source Interface</th><th>Destination Interface</th><th>Source</th><th>Destination</th><th>Service</th><th>Vsys</th><th>Action</th><th>Hits</th><th>Compilation</th><th>Actions</th></tr></thead><tbody id="policy-table-body"></tbody></table></div>`;
-  loadPolicies();refreshTimer=setInterval(loadPolicies,10000);
+  renderPolicyWorkspace(c, 'security');
 }
 async function loadPolicies() {
   const generation=++policyLoadGeneration, body=document.getElementById('policy-table-body');
   try {
-    const data=await consoleRequest('/api/policy/rules?show_hidden='+(document.getElementById('policy-show-hidden')?.checked?'true':'false'));
+    const data=await consoleRequest('/api/policy/rules?show_hidden=true&show_defaults=true');
     if(generation!==policyLoadGeneration || !body.isConnected) return;
     if(!Array.isArray(data.rules)) throw new Error('Invalid rule inventory');
     policyRows=data.rules;policyCanEdit=!!data.can_edit;
@@ -2883,7 +2937,9 @@ function renderPolicyRows() {
 const RULE_FIELDS={name:'name',position:'position',src_iface:'src-iface',dst_iface:'dst-iface',src_ip:'src',dst_ip:'dst',src_port:'sport',dst_port:'dport',proto:'proto',action:'action',vsys:'vsys',description:'desc'};
 function openRuleModal(){if(policyCanEdit)editRule(null);}
 function cloneRule(rule){if(policyCanEdit&&!rule.is_immutable)editRule({...rule,id:null,name:((rule.name||'rule')+'-copy').slice(0,127),position:0,enabled:0});}
-function editRule(rule) {
+function editRule(rule, options = {}) {
+  policyEditorReload = options.reload || null;
+  if (options.canEdit !== undefined) policyCanEdit = options.canEdit;
   const data=rule || {name:'',position:0,src_iface:'',dst_iface:'',src_ip:'0.0.0.0/0',dst_ip:'0.0.0.0/0',src_port:0,dst_port:0,proto:'any',action:'permit',vsys:0,description:'',enabled:1};
   policyEditor={...data};
   document.getElementById('rule-modal-title').textContent=data.id?'Security Rule: '+(data.name||data.id):'Add Security Rule';
@@ -2894,16 +2950,16 @@ function editRule(rule) {
       const option=document.createElement('option');option.value=data[key];option.textContent=data[key];element.appendChild(option);
     }
     element.value=data[key]??'';
-    element.disabled=!policyCanEdit || !!data.is_immutable && key!=='description';
+    element.disabled=!policyCanEdit || !!data.is_immutable;
   }
   document.getElementById('rule-enabled').checked=!!data.enabled;
   document.getElementById('rule-enabled').disabled=!policyCanEdit || !!data.is_immutable;
-  document.getElementById('rule-save').disabled=!policyCanEdit;
-  document.getElementById('rule-msg').textContent=data.is_immutable?'Default rule: only the description can be changed.':(!data.enabled?'Disabled rule. Enable explicitly when ready.':'');
+  document.getElementById('rule-save').disabled=!policyCanEdit || !!data.is_immutable;
+  document.getElementById('rule-msg').textContent=data.is_immutable?'Implicit/system rule: read only. All fields are protected.':(!data.enabled?'Disabled rule. Enable explicitly when ready.':'');
   document.getElementById('modal-rule').classList.add('show');
 }
 async function saveRule() {
-  if(!policyCanEdit || !policyEditor)return;
+  if(!policyCanEdit || !policyEditor || policyEditor.is_immutable)return;
   const button=document.getElementById('rule-save'),message=document.getElementById('rule-msg');
   if(button.disabled)return;
   const editor=policyEditor, payload={};
@@ -2916,7 +2972,8 @@ async function saveRule() {
     const result=await consoleRequest('/api/policy/rules'+(editor.id?'/'+editor.id:''),{method:editor.id?'PUT':'POST',body:JSON.stringify(payload)});
     if(!['created','updated'].includes(result.status))throw new Error('Rule save was not confirmed.');
     if(policyEditor===editor){message.textContent='Saved to policy database. Dataplane application is not confirmed.';}
-    await loadPolicies();
+    if(policyEditorReload){closeModal('modal-rule');await policyEditorReload();}
+    else await loadPolicies();
   } catch(e){if(policyEditor===editor){message.textContent=e.message;button.disabled=false;}}
 }
 async function deleteRule(id) {
@@ -3045,91 +3102,8 @@ async function saveDoS() {
    =========================================================================== */
 
 /* ---- Objects > Addresses ---- */
-function renderObjectsAddresses(c) { renderConfigObjects(c, 'address'); }
-function renderObjectsServices(c) { renderConfigObjects(c, 'service'); }
-function renderConfigObjects(c, family) {
-  c.innerHTML = `<div class="page-header"><h2>${family==='address'?'Address':'Service'} Objects</h2></div>
-    <p class="text-dim">Edits are saved to candidate configuration. Runtime enforcement depends on the selected platform's policy implementation.</p>
-    <div class="workflow-actions"><label>Configuration <select id="object-source"><option>candidate</option><option>running</option></select></label>
-    <label>Scope <select id="object-scope"><option>shared</option></select></label>
-    <label>Kind <select id="object-kind"><option value="${family}">Objects</option><option value="${family}-group">Groups</option></select></label>
-    <button id="object-refresh" class="btn">Refresh</button><button id="object-add" class="btn" disabled>Add</button></div>
-    <div id="object-list" class="card">Loading…</div><div id="object-editor" class="card" hidden></div>`;
-  for (const id of ['object-source','object-scope','object-kind']) document.getElementById(id).onchange = loadConfigObjects;
-  document.getElementById('object-refresh').onclick = loadConfigObjects;
-  loadConfigObjects();
-}
-let objectRequestId = 0;
-async function loadConfigObjects() {
-  const id = ++objectRequestId, list = document.getElementById('object-list');
-  const source = document.getElementById('object-source').value;
-  const scope = document.getElementById('object-scope').value;
-  const kind = document.getElementById('object-kind').value;
-  const add = document.getElementById('object-add');
-  document.getElementById('object-editor').hidden = true;
-  add.disabled = true; list.textContent = 'Loading objects…';
-  try {
-    const base = '/api/config/objects/'+kind;
-    const query = '?scope='+encodeURIComponent(scope);
-    const r = await consoleRequest(base+query+'&source='+source);
-    if (!list.isConnected || id !== objectRequestId) return;
-    document.getElementById('object-scope').innerHTML = r.scopes.map(v=>`<option value="${_escSP(v)}">${_escSP(v)}</option>`).join('');
-    document.getElementById('object-scope').value = scope;
-    add.disabled = !r.can_edit; add.onclick = () => editConfigObject(r, base, query);
-    list.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Value / Members</th><th>Description</th><th>Actions</th></tr></thead><tbody>`+
-      r.entries.map((o,i)=>`<tr><td>${_escSP(o.name)}</td><td>${_escSP(o.type)}</td><td>${_escSP(o.members.length?o.members.join(', '):o.value)}</td><td>${_escSP(o.description)}</td><td>
-      <button class="btn btn-sm" data-object-ref="${i}">References</button>
-      <button class="btn btn-sm" data-object-edit="${i}" ${r.can_edit&&o.editable?'':'disabled'}>Edit</button>
-      <button class="btn btn-sm" data-object-delete="${i}" ${r.can_edit&&o.editable?'':'disabled'}>Delete</button></td></tr>`).join('')+
-      '</tbody></table></div>'+(r.entries.length?'':'<p>No objects in this scope.</p>');
-    list.querySelectorAll('[data-object-edit]').forEach(b=>b.onclick=()=>editConfigObject(r,base,query,r.entries[Number(b.dataset.objectEdit)]));
-    list.querySelectorAll('[data-object-ref]').forEach(b=>b.onclick=async()=>{
-      const box=document.getElementById('object-editor'); box.hidden=false; box.textContent='Loading references…';
-      try {
-        const refs=await consoleRequest(base+'/'+encodeURIComponent(r.entries[Number(b.dataset.objectRef)].name)+'/references'+query+'&source='+source);
-        if (id===objectRequestId && box.isConnected) box.textContent=refs.references.map(x=>x.path).join('\n') || 'No references.';
-      } catch(e) { if (id===objectRequestId) box.textContent=e.message; }
-    });
-    list.querySelectorAll('[data-object-delete]').forEach(b=>b.onclick=async()=>{
-      const o=r.entries[Number(b.dataset.objectDelete)];
-      if (!confirm('Delete '+o.name+' from candidate configuration?')) return;
-      b.disabled=true;
-      try {
-        await consoleRequest(base+'/'+encodeURIComponent(o.name)+query+'&revision='+r.revision,{method:'DELETE'});
-        refreshCommitIndicator(); if(id===objectRequestId) await loadConfigObjects();
-      } catch(e) { const box=document.getElementById('object-editor'); if(id===objectRequestId){box.hidden=false;box.textContent=e.message;b.disabled=false;} }
-    });
-  } catch(e) { if (list.isConnected && id===objectRequestId) list.textContent=e.message; }
-}
-function editConfigObject(snapshot, base, query, existing) {
-  const box=document.getElementById('object-editor'), generation=objectRequestId;
-  const group=snapshot.kind.endsWith('-group'), service=snapshot.kind==='service';
-  const o=existing || {name:'',type:group?'static':service?'tcp':'ip-netmask',value:'',source_port:'',members:[],description:''};
-  const choices=group?['static']:service?['tcp','udp']:['ip-netmask','ip-range','fqdn'];
-  box.hidden=false;
-  box.innerHTML=`<h3>${existing?'Edit':'Add'} ${_escSP(snapshot.kind)}</h3><form id="object-form">
-    <label>Name <input name="name" maxlength="63" required ${existing?'readonly':''} value="${_escSP(o.name)}"></label>
-    <label>Type <select name="type">${choices.map(v=>`<option ${v===o.type?'selected':''}>${v}</option>`).join('')}</select></label>
-    ${group?`<label>Members (one name per line)<textarea name="members" required>${_escSP(o.members.join('\n'))}</textarea></label><p class="text-dim">Available: ${_escSP(snapshot.member_choices.filter(x=>x.name!==o.name).map(x=>x.name).join(', '))}</p>`:
-    `<label>${service?'Destination ports':'Address value'} <input name="value" required value="${_escSP(o.value)}"></label>`}
-    ${service?`<label>Source ports (optional) <input name="source_port" value="${_escSP(o.source_port)}"></label>`:''}
-    <label>Description <textarea name="description" maxlength="1024">${_escSP(o.description)}</textarea></label>
-    <button type="submit" class="btn">Save to candidate</button><button type="button" id="object-cancel" class="btn">Cancel</button><p id="object-message" role="status"></p></form>`;
-  document.getElementById('object-cancel').onclick=()=>{box.hidden=true;};
-  document.getElementById('object-form').onsubmit=async event=>{
-    event.preventDefault(); const form=event.currentTarget, button=form.querySelector('[type=submit]');
-    const data=new FormData(form), payload={revision:snapshot.revision,name:data.get('name'),type:data.get('type'),description:data.get('description'),
-      value:data.get('value')||'',source_port:data.get('source_port')||'',members:group?data.get('members').split(/\r?\n/).map(x=>x.trim()).filter(Boolean):[]};
-    button.disabled=true;
-    try {
-      await consoleRequest(base+(existing?'/'+encodeURIComponent(existing.name):'')+query,{method:existing?'PUT':'POST',body:JSON.stringify(payload)});
-      refreshCommitIndicator(); if(generation===objectRequestId) await loadConfigObjects();
-    } catch(e) { if(generation===objectRequestId && form.isConnected){form.querySelector('[role=status]').textContent=e.message;button.disabled=false;} }
-  };
-}
-
 /* ---- Objects > Applications ---- */
-function renderObjectsApps(c) {
+function renderObjectsAppCatalog(c) {
   c.innerHTML = `
     <div class="page-header"><h2>Application Database</h2></div>
     <div class="filters-bar"><input type="text" id="app-search" placeholder="Search applications..." oninput="filterApps()" style="width:300px"></div>
@@ -3163,7 +3137,7 @@ function renderAppDB(data) {
     tbody.innerHTML = '<tr><td colspan="5" class="text-dim">No application data available.</td></tr>';
     return;
   }
-  tbody.innerHTML = data.map(a=>`<tr><td>${a.name}</td><td>${a.cat}</td><td>${a.subcat}</td><td>${a.tech}</td><td>${sevBadge(a.risk)}</td></tr>`).join('');
+  tbody.innerHTML = data.map(a=>`<tr><td>${_escSP(a.name)}</td><td>${_escSP(a.cat)}</td><td>${_escSP(a.subcat)}</td><td>${_escSP(a.tech)}</td><td>${sevBadge(a.risk)}</td></tr>`).join('');
 }
 
 function filterApps() {
@@ -4200,7 +4174,7 @@ async function openIfaceModal(name) {
 
     </div>
     <div class="settings-toolbar">
-      <button class="btn btn-primary btn-sm" id="ifm-save" onclick="saveIface()">Save to Candidate</button>
+      <button class="btn btn-primary btn-sm" id="ifm-save" onclick="saveIface()">OK</button>
       <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
       <span id="ifm-msg" style="font-size:11px;align-self:center"></span>
     </div>`;
@@ -4340,7 +4314,7 @@ function openAliasModal(panName) {
     <div class="form-group"><label>PAN-OS name</label><input type="text" value="${panName}" readonly style="width:100%"></div>
     <div class="form-group"><label>Map to Linux NIC</label><select id="alias-linux" style="width:100%">${opts}</select></div>
     <div style="margin-top:12px;display:flex;gap:8px">
-      <button class="btn btn-primary btn-sm" onclick="saveAlias('${panName}')">Save</button>
+      <button class="btn btn-primary btn-sm" onclick="saveAlias('${panName}')">OK</button>
       <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
       <span id="alias-msg" style="font-size:11px;align-self:center"></span>
     </div>`;
@@ -4391,7 +4365,7 @@ async function openSubinterfaceModal(parent, childName = null) {
       </div>
       <div class="form-group"><label for="sif-comment">Comment</label><input id="sif-comment" maxlength="1024" value="${_escSP(entry.comment)}"></div>
       <p class="text-dim">${_escSP(snapshot.runtime_note)}</p>
-      <div class="settings-toolbar"><span id="sif-msg" role="status"></span><button class="btn" type="button" onclick="closeModal('modal-info')">Cancel</button><button id="sif-save" class="btn btn-primary" type="submit" ${snapshot.can_edit?'':'disabled'}>Save to Candidate</button></div></form>`;
+      <div class="settings-toolbar"><span id="sif-msg" role="status"></span><button class="btn" type="button" onclick="closeModal('modal-info')">Cancel</button><button id="sif-save" class="btn btn-primary" type="submit" ${snapshot.can_edit?'':'disabled'}>OK</button></div></form>`;
     const row = ((_ifaceState.enriched || {}).ethernet || []).find(e=>e.name===(childName || parent));
     const vsys = row && row.virtual_system;
     document.getElementById('sif-vsys').value = systems.entries.some(v=>v.name===vsys) ? vsys : snapshot.vsys;
@@ -4455,7 +4429,7 @@ function openJumboModal() {
     <div class="form-group"><label>MTU (bytes)</label><input id="jumbo-mtu" type="number" value="${_ifaceState.jumbo.mtu}" min="576" max="16000" style="width:100%"></div>
     <div class="form-group"><label>Comment</label><input id="jumbo-comment" type="text" value="${_ifaceState.jumbo.comment||''}" style="width:100%"></div>
     <div style="margin-top:12px;display:flex;gap:8px">
-      <button class="btn btn-primary btn-sm" onclick="saveJumbo()">Save</button>
+      <button class="btn btn-primary btn-sm" onclick="saveJumbo()">OK</button>
       <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
       <span id="jumbo-msg" style="font-size:11px;align-self:center"></span>
     </div>`;
@@ -4553,7 +4527,7 @@ function openZoneModal(existing) {
     <div class="form-group"><label for="zm-log">Log Setting</label><input id="zm-log" maxlength="63" value="${_escSP(zone.log_setting || '')}"></div></div>
     <div class="form-group"><label for="zm-comment">Comment</label><input id="zm-comment" maxlength="1024" value="${_escSP(zone.comment)}"></div>
     <p class="text-dim">${_escSP(snapshot.enforcement)}</p>
-    <div class="settings-toolbar"><span id="zm-msg" role="status"></span><button class="btn" type="button" onclick="closeModal('modal-info')">Cancel</button><button id="zm-save" class="btn btn-primary" type="submit">Save to Candidate</button></div></form>`;
+    <div class="settings-toolbar"><span id="zm-msg" role="status"></span><button class="btn" type="button" onclick="closeModal('modal-info')">Cancel</button><button id="zm-save" class="btn btn-primary" type="submit">OK</button></div></form>`;
   document.getElementById('zone-form').onsubmit = event => {event.preventDefault();saveZone(existing&&existing.name,snapshot);};
   document.getElementById('modal-info').classList.add('show');
   document.getElementById('zm-name').focus();
@@ -4630,6 +4604,7 @@ async function loadVirtualRouters() {
   const box = document.getElementById('vr-list');
   if (!box) return;
   const vrs = _vrList(data);
+  try { const choices=await consoleRequest('/api/network/virtual-router-interfaces'); const def=vrs.find(v=>v.name==='default'); if(def)def.effective_interfaces=choices.interfaces.filter(i=>i.virtual_router==='default').map(i=>i.name); } catch(e) { /* Router list remains available if inventory fails. */ }
   box.innerHTML = `<div class="card"><div class="table-wrap"><table>
       <thead><tr><th style="width:22%">Name</th><th style="width:26%">Interfaces</th><th>Configuration</th><th></th></tr></thead>
       <tbody id="vr-grid-body">${vrs.length ? '' : '<tr><td colspan="4" class="text-dim" style="padding:16px">No virtual routers defined. Click <strong>+ Add Virtual Router</strong> to create an independent VRF instance.</td></tr>'}</tbody>
@@ -4643,7 +4618,7 @@ async function loadVirtualRouters() {
 function vrGridRow(vr, i) {
   const name = _escSP(vr.name);
   const nameAttr = _escSP(vr.name || '');
-  const ifaces = (vr.interfaces || vr.members || []);
+  const ifaces = (vr.effective_interfaces || vr.interfaces || vr.members || []);
   const ifHtml = ifaces.length ? _escSP(ifaces.join(', ')) : '<span class="text-dim">none</span>';
   const down = (vr.admin_up === false) ? ' <span class="badge badge-down" style="font-size:9px">admin down</span>' : '';
   return `<tr>
@@ -4719,10 +4694,11 @@ function vrrSubTab(sub){
   });
 }
 async function loadVrrStatic(name){
-  var tb=document.getElementById('vrr-static-tbody'); if(!tb) return;
-  var r=await api('/api/network/virtual-routers/'+encodeURIComponent(name)+'/routes');
-  var rows=(r&&(r.routes||r.entries))||(Array.isArray(r)?r:[]);
-  tb.innerHTML = rows.length ? rows.map(function(x){return `<tr><td class="mono">${_escSP(x.dest_cidr||x.destination||'')}</td><td class="mono">${_escSP(x.next_hop||'')}</td><td>${_escSP(x.dev||'')}</td><td>${_escSP(x.metric!=null?x.metric:0)}</td></tr>`;}).join('') : '<tr><td colspan="4" class="text-dim" style="padding:14px">No static routes in this VR.</td></tr>';
+  const tb=document.getElementById('vrr-static-tbody');if(!tb)return;
+  try {
+    const r=await consoleRequest('/api/network/virtual-routers/'+encodeURIComponent(name)+'/routes');
+    tb.innerHTML=r.routes.length?r.routes.map(row=>vrRouteRow(row,name)).join(''):'<tr><td colspan="5">No static routes in this router.</td></tr>';
+  }catch(e){tb.innerHTML='<tr><td colspan="5">'+_escSP(e.message)+'</td></tr>';}
 }
 function openVrRouting(name) {
   document.getElementById('info-modal-title').textContent = 'Virtual Router — ' + name;
@@ -4762,7 +4738,7 @@ function openVrRouting(name) {
         <div class="vrr-pane" id="vrr-p-static" style="display:none">
           <div class="page-header" style="margin-bottom:6px"><div class="section-title" style="margin:0">Static Routes</div>
             <div class="actions"><button class="btn btn-xs btn-primary" onclick="openVRouteModal(document.getElementById('vrr-name').value)">+ Add Route</button></div></div>
-          <div class="table-wrap"><table><thead><tr><th>Destination</th><th>Next Hop</th><th>Interface</th><th>Metric</th></tr></thead><tbody id="vrr-static-tbody"><tr><td colspan="4" class="text-dim">Select this tab to load…</td></tr></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>Destination</th><th>Next Hop</th><th>Interface</th><th>Metric</th><th>Actions</th></tr></thead><tbody id="vrr-static-tbody"><tr><td colspan="4" class="text-dim">Select this tab to load…</td></tr></tbody></table></div>
         </div>
         <div class="vrr-pane" id="vrr-p-redist" style="display:none">
           <div class="section-title">Redistribution Profile</div>
@@ -4806,7 +4782,7 @@ function openVrRouting(name) {
       </div>
     </div>
     <div style="display:flex;gap:8px;margin-top:12px;border-top:1px solid var(--border,#333);padding-top:10px">
-      <button class="btn btn-primary btn-sm" onclick="saveVrRouting()">Save &amp; Apply</button>
+      <button class="btn btn-primary btn-sm" id="vrr-save" disabled onclick="saveVrRouting()">OK</button>
       <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
       <span id="vrr-msg" style="font-size:11px;align-self:center"></span></div>`;
   document.getElementById('modal-info').classList.add('show');
@@ -4814,7 +4790,10 @@ function openVrRouting(name) {
 }
 
 async function loadVrRouting(name) {
-  const r = await api('/api/network/virtual-routers/' + encodeURIComponent(name) + '/routing');
+  const marker=document.getElementById('vrr-name');
+  try {
+  const r = await consoleRequest('/api/network/virtual-routers/' + encodeURIComponent(name) + '/routing');
+  if (!marker.isConnected) return;
   const c = (r && r.config) || {};
   const set = function(id, v){ var e=document.getElementById(id); if(e && v!=null) e.value=v; };
   const chk = function(id, v){ var e=document.getElementById(id); if(e) e.checked=!!v; };
@@ -4834,9 +4813,15 @@ async function loadVrRouting(name) {
   _vrrSetRedist('ospf',ospf.redistribute);
   const o6=c.ospfv3||{}; chk('vrr-ospfv3-en',o6.enable); set('vrr-ospfv3-rid',o6.router_id); _vrrSetRedist('ospfv3',o6.redistribute);
   const rip=c.rip||{}; chk('vrr-rip-en',rip.enable); set('vrr-rip-nets',(rip.networks||[]).join('\n')); _vrrSetRedist('rip',rip.redistribute);
+  document.getElementById('vrr-save').disabled=false;
+  } catch(e) {if(marker.isConnected)document.getElementById('vrr-msg').textContent=e.message;}
+
 }
 
 async function saveVrRouting() {
+  const button=document.getElementById('vrr-save');
+  if(button.disabled)return;
+  button.disabled=true;
   const name = document.getElementById('vrr-name').value;
   const num = function(id){ var e=document.getElementById(id); var v=e&&e.value!==''?Number(e.value):null; return v; };
   const val = function(id){ var e=document.getElementById(id); return e?e.value.trim():''; };
@@ -4856,22 +4841,20 @@ async function saveVrRouting() {
     redist_profiles: val('vrr-redist').split('\n').map(function(l){return l.trim();}).filter(Boolean).map(function(l){var p=l.split(/\s+/);return {name:p[0], priority:Number(p[1])||0};}),
     rip: {enable: chk('vrr-rip-en'), networks: val('vrr-rip-nets').split(/[\s,]+/).filter(Boolean), redistribute: _vrrGetRedist('rip',['connected','static','ospf','bgp'])},
   };
-  const msg=document.getElementById('vrr-msg'); msg.textContent='Applying to FRR...'; msg.style.color='var(--orange)';
-  const r = await api('/api/network/virtual-routers/'+encodeURIComponent(name)+'/routing', {method:'PUT', body: JSON.stringify(cfg)});
-  if (r && r.status==='applied') {
-    msg.textContent = 'Applied (FRR rc '+r.vtysh_rc+')' + (r.vtysh_rc===0?'':' — '+(r.vtysh_output||'').slice(-120));
-    msg.style.color = r.vtysh_rc===0 ? 'var(--green)' : 'var(--red)';
-    refreshCommitIndicator();
-    if (r.vtysh_rc===0) setTimeout(function(){closeModal('modal-info');}, 900);
-  } else {
-    msg.textContent = (r&&r.detail) || 'Failed'; msg.style.color='var(--red)';
-  }
+  const msg=document.getElementById('vrr-msg'); msg.textContent='Staging candidate changes...';
+  try {
+    const r = await consoleRequest('/api/network/virtual-routers/'+encodeURIComponent(name)+'/routing', {method:'PUT', body:JSON.stringify(cfg)});
+    if (r.status !== 'candidate-updated') throw new Error('Candidate save was not confirmed');
+    await refreshCommitIndicator();
+    closeModal('modal-info');
+  } catch(e) { msg.textContent=e.message; msg.style.color='var(--red)';button.disabled=false; }
+
 }
 
 function vrCardHtml(vr) {
   const name = _escSP(vr.name);
   const nameAttr = _escSP(vr.name || '');
-  const ifaces = (vr.interfaces || vr.members || []);
+  const ifaces = (vr.effective_interfaces || vr.interfaces || vr.members || []);
   const ifHtml = ifaces.length
     ? ifaces.map(i => `<span class="badge badge-info" style="font-size:10px">${_escSP(i)}</span>`).join(' ')
     : '<span class="text-dim">(no member interfaces)</span>';
@@ -4972,7 +4955,7 @@ async function loadFRRStatus() {
 
 /* --- Virtual Router CRUD --- */
 let _vrCache = [];
-function openVRModal() {
+async function openVRModal() {
   document.getElementById('vr-modal-title').textContent = 'Add Virtual Router';
   document.getElementById('vr-orig-name').value = '';
   document.getElementById('vr-name').value = '';
@@ -4985,6 +4968,9 @@ function openVRModal() {
   _vrProtoToggle();
   document.getElementById('vr-admin-up').checked = true;
   document.getElementById('vr-msg').textContent = '';
+  try { await vrLoadInterfaceChoices('vr-ifaces', document.getElementById('vr-orig-name').value || '', (typeof vr !== 'undefined' ? vr.interfaces || [] : []), true); }
+  catch(e) { document.getElementById('vr-msg').textContent=e.message; }
+  document.getElementById('vr-interface-help').textContent = document.getElementById('vr-orig-name').value === 'default' ? 'Default uses configured Layer 3 interfaces not assigned to another router.' : 'Select interfaces from Network > Interfaces. Interfaces owned by another router are unavailable.';
   document.getElementById('modal-vr').classList.add('show');
 }
 
@@ -5012,16 +4998,20 @@ async function editVR(name) {
   _vrProtoToggle();
   document.getElementById('vr-admin-up').checked = (vr.admin_up !== false);
   document.getElementById('vr-msg').textContent = '';
+  try { await vrLoadInterfaceChoices('vr-ifaces', document.getElementById('vr-orig-name').value || '', (typeof vr !== 'undefined' ? vr.interfaces || [] : []), true); }
+  catch(e) { document.getElementById('vr-msg').textContent=e.message; }
+  document.getElementById('vr-interface-help').textContent = document.getElementById('vr-orig-name').value === 'default' ? 'Default uses configured Layer 3 interfaces not assigned to another router.' : 'Select interfaces from Network > Interfaces. Interfaces owned by another router are unavailable.';
   document.getElementById('modal-vr').classList.add('show');
 }
 
 async function saveVR() {
+  if(document.getElementById('vr-orig-name').value!=='default' && document.getElementById('vr-ifaces').disabled){document.getElementById('vr-msg').textContent='Load the interface inventory before saving.';return;}
   const orig = document.getElementById('vr-orig-name').value;
   const proto = document.getElementById('vr-protocol').value;
   const asnRaw = document.getElementById('vr-asn').value.trim();
   const body = {
     name: document.getElementById('vr-name').value.trim(),
-    interfaces: (document.getElementById('vr-orig-name').value === 'default') ? null : document.getElementById('vr-ifaces').value.split(',').map(s => s.trim()).filter(Boolean),
+    interfaces: (document.getElementById('vr-orig-name').value === 'default') ? null : Array.from(document.getElementById('vr-ifaces').selectedOptions, o => o.value),
     vsys: document.getElementById('vr-vsys').value.trim() || null,
     protocol: proto,
     router_id: document.getElementById('vr-router-id').value.trim() || null,
@@ -5030,18 +5020,15 @@ async function saveVR() {
   };
   const msg = document.getElementById('vr-msg');
   if (!body.name) { msg.textContent = 'Name required'; msg.style.color = 'var(--red)'; return; }
-  let r;
-  if (orig) {
-    r = await api(`/api/network/virtual-routers/${encodeURIComponent(orig)}`, {method:'PUT', body: JSON.stringify(body)});
-  } else {
-    r = await api('/api/network/virtual-routers', {method:'POST', body: JSON.stringify(body)});
-  }
-  if (r && r.detail && !(r.status === 'created' || r.status === 'updated' || r.name || r.ok)) {
-    msg.textContent = r.detail; msg.style.color = 'var(--red)'; return;
-  }
-  closeModal('modal-vr');
-  if (typeof refreshCommitIndicator === 'function') refreshCommitIndicator();
-  loadVirtualRouters();
+  try {
+    const r = await consoleRequest('/api/network/virtual-routers'+(orig?'/'+encodeURIComponent(orig):''),
+      {method:orig?'PUT':'POST',body:JSON.stringify(body)});
+    if(r.status!=='candidate-updated')throw new Error('Candidate save was not confirmed');
+    closeModal('modal-vr');
+    await refreshCommitIndicator();
+    loadVirtualRouters();
+  } catch(e) {msg.textContent=e.message;msg.style.color='var(--red)';}
+
 }
 
 async function deleteVR(name) {
@@ -5052,39 +5039,46 @@ async function deleteVR(name) {
 }
 
 /* --- per-VR static route editor --- */
-function openVRouteModal(vrName) {
-  document.getElementById('route-vr').value = vrName;
-  document.getElementById('route-vr-label').textContent = '· ' + vrName;
-  document.getElementById('route-dest').value = '';
-  document.getElementById('route-nh').value = '';
-  document.getElementById('route-iface').value = '';
-  document.getElementById('route-metric').value = '100';
-  document.getElementById('route-msg').textContent = '';
+async function openVRouteModal(vrName, route = null) {
+  document.getElementById('route-vr').value=vrName;
+  document.getElementById('route-id').value=route ? route.id : '';
+  document.getElementById('route-modal-title').textContent=route ? 'Edit Static Route' : 'Add Static Route';
+  document.getElementById('route-vr-label').textContent=' · '+vrName;
+  document.getElementById('route-dest').value=route?.dest_cidr || '';
+  document.getElementById('route-nh').value=route?.next_hop || '';
+  document.getElementById('route-metric').value=route?.metric ?? 100;
+  document.getElementById('route-msg').textContent='Loading configured interfaces…';
   document.getElementById('modal-route').classList.add('show');
+  try {
+    await vrLoadInterfaceChoices('route-iface',vrName,route?.dev ? [route.dev] : []);
+    document.getElementById('route-msg').textContent='OK stages this route in candidate configuration. Commit is required to activate changes.';
+  } catch(e) { document.getElementById('route-msg').textContent=e.message; }
 }
 
 async function saveVRoute() {
-  const vr = document.getElementById('route-vr').value;
-  const body = {
-    dest_cidr: document.getElementById('route-dest').value.trim(),
-    next_hop: document.getElementById('route-nh').value.trim(),
-    dev: document.getElementById('route-iface').value.trim() || null,
-    metric: parseInt(document.getElementById('route-metric').value) || 0,
-  };
-  const msg = document.getElementById('route-msg');
-  if (!vr || !body.dest_cidr) { msg.textContent = 'Destination required'; msg.style.color = 'var(--red)'; return; }
-  const r = await api(`/api/network/virtual-routers/${encodeURIComponent(vr)}/routes`, {method:'POST', body: JSON.stringify(body)});
-  if (r && r.detail && !(r.status === 'created' || r.id != null || r.ok)) {
-    msg.textContent = r.detail; msg.style.color = 'var(--red)'; return;
-  }
-  closeModal('modal-route');
-  loadVRRoutes(vr);
+  const vr=document.getElementById('route-vr').value, id=document.getElementById('route-id').value;
+  const msg=document.getElementById('route-msg');
+  if(document.getElementById('route-iface').disabled){msg.textContent='Load the interface inventory before saving.';return;}
+  const raw=document.getElementById('route-metric').value.trim();
+  const body={dest_cidr:document.getElementById('route-dest').value.trim(),next_hop:document.getElementById('route-nh').value.trim(),
+    dev:document.getElementById('route-iface').value || null,metric:Number(raw)};
+  if(!body.dest_cidr || !raw || !Number.isInteger(body.metric) || body.metric<0 || body.metric>4294967295){msg.textContent='Enter a destination prefix and a valid nonnegative metric.';return;}
+  if(!body.next_hop && !body.dev){msg.textContent='Choose a next hop or an outgoing interface.';return;}
+  if(saveVRoute.busy)return;saveVRoute.busy=true;
+  try {
+    await consoleRequest('/api/network/virtual-routers/'+encodeURIComponent(vr)+'/routes'+(id?'/'+encodeURIComponent(id):''),
+      {method:id?'PUT':'POST',body:JSON.stringify(body)});
+    closeModal('modal-route');await refreshVrRouteViews(vr);
+  } catch(e){msg.textContent=e.message;msg.style.color='var(--red)';}
+  finally{saveVRoute.busy=false;}
 }
 
 async function deleteVRoute(vrName, routeId) {
-  if (!confirm('Delete this static route?')) return;
-  await api(`/api/network/virtual-routers/${encodeURIComponent(vrName)}/routes/${encodeURIComponent(routeId)}`, {method:'DELETE'});
-  loadVRRoutes(vrName);
+  if(!confirm('Delete this static route?'))return;
+  try {
+    await consoleRequest('/api/network/virtual-routers/'+encodeURIComponent(vrName)+'/routes/'+encodeURIComponent(routeId),{method:'DELETE'});
+    await refreshVrRouteViews(vrName);
+  } catch(e){alert(e.message);}
 }
 
 /* ---- Network > ARP Table ---- */
@@ -7837,7 +7831,7 @@ function openVsysModal(existing) {
     </div>
     <div class="form-group"><label>Comment</label><input id="vm-comment" type="text" style="width:100%"></div>
     <div style="margin-top:12px;display:flex;gap:8px">
-      <button class="btn btn-primary btn-sm" onclick="saveVsys(${existing?`'${existing.name}'`:'null'})">Save to Candidate</button>
+      <button class="btn btn-primary btn-sm" onclick="saveVsys(${existing?`'${existing.name}'`:'null'})">OK</button>
       <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
       <span id="vm-msg" style="font-size:11px;align-self:center"></span>
     </div>`;
@@ -8324,12 +8318,7 @@ async function loadIoTDevices() {
 
 function closeModal(id) { document.getElementById(id).classList.remove('show'); }
 
-document.addEventListener('click',e=>{
-  if (e.target.classList.contains('modal-overlay')) e.target.classList.remove('show');
-});
-document.addEventListener('keydown',e=>{
-  if (e.key==='Escape') document.querySelectorAll('.modal-overlay.show').forEach(m=>m.classList.remove('show'));
-});
+// modal-layers.js owns backdrop/Escape handling for the topmost dialog.
 
 /* ===========================================================================
    AUTO-LOGIN & INIT
@@ -8345,5 +8334,7 @@ if (token) {
 document.getElementById('login-pass').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
 document.getElementById('login-user').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
 </script>
+<script src="/static/vr-interfaces.js"></script>
+<script src="/static/modal-layers.js"></script>
 </body>
 </html>

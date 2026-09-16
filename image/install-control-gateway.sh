@@ -15,7 +15,7 @@ deploy() {
 }
 install -d -m 0755 /usr/local/lib/ffn
 for dir in /opt/ffn-ngfw /opt/ffn-ngfw-v2 /usr/local/lib/ffn; do
-    for name in ffn_control_plane.py ffn_agent_protocol.py ffn_controld_client.py ffn_planed.py; do
+    for name in ffn_control_plane.py ffn_agent_protocol.py ffn_agent_resources.py ffn_controld_client.py ffn_planed.py ffn_policy_config.py; do
         deploy "$root/opt/$name" "$dir/$name"
     done
 done

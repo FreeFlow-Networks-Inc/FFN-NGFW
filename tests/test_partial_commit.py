@@ -1,5 +1,7 @@
 import ast,unittest,re
+import sys
 from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'opt'))
 from types import SimpleNamespace
 from unittest.mock import Mock
 from typing import Optional

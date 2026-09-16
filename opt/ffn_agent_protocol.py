@@ -5,6 +5,8 @@ import sys
 import time
 import uuid
 
+from ffn_agent_resources import ResourceSampler
+
 LIMIT = 262144
 
 
@@ -36,6 +38,7 @@ def serve(provider, role, platform, source=None, sink=None):
     sink = sink or sys.stdout.buffer
     instance = str(uuid.uuid4())
     sequence = 0
+    resources = ResourceSampler()
     while True:
         raw = source.readline(LIMIT + 1)
         if not raw:
@@ -49,6 +52,7 @@ def serve(provider, role, platform, source=None, sink=None):
         if not isinstance(report, dict) or type(report.get('ready')) is not bool:
             raise ValueError('invalid provider report')
         boot = canonical(report['boot_id'])
+        report = dict(report, host_resources=resources.sample(boot))
         sequence += 1
         sink.write(frame({'v': 1, 'nonce': nonce, 'role': role, 'platform': platform,
                          'instance': instance, 'boot_id': boot, 'sequence': sequence,

@@ -104,6 +104,8 @@ jobs:
 
       - name: console initialization and workflows
         run: node tests/test_console_ui.cjs
+      - name: Virtual Router interface selectors and route editor
+        run: node tests/test_vr_ui.cjs
 
       - name: selected platform WebUI isolation
         run: node tests/test_extensions_ui.cjs
@@ -224,7 +226,17 @@ jobs:
       - name: candidate objects and selected runtime providers
         run: |
           python tests/test_config_objects.py
+          python tests/test_policy_config.py
+          python tests/test_partial_commit.py
+          python tests/test_policy_barrier.py
           python tests/test_extensions.py
+
+      - name: Objects browser workflows against disposable candidate configuration
+        run: |
+          npm install --prefix "$RUNNER_TEMP/objects-browser" --no-save --package-lock=false playwright@1.62.1
+          "$RUNNER_TEMP/objects-browser/node_modules/.bin/playwright" install --with-deps chromium
+          NODE_PATH="$RUNNER_TEMP/objects-browser/node_modules" TEST_PYTHON=python node tests/test_objects_browser.cjs
+          NODE_PATH="$RUNNER_TEMP/objects-browser/node_modules" TEST_PYTHON=python node tests/test_policies_browser.cjs
 
       - name: plane protocol, transport and Linux networking
         run: |
@@ -233,6 +245,8 @@ jobs:
           python tests/test_plane_sockets.py
           python tests/test_control_gateway.py
           python tests/test_linux_network.py
+          python tests/test_vr_interfaces.py
+          python tests/test_vr_route_api.py
 
       - name: native L2 and L3 packet forwarding in disposable namespaces
         run: sudo python3 tests/test_network_namespace.py

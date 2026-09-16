@@ -1,0 +1,25 @@
+.object-dialog { width: min(760px, 94vw); max-height: 90vh; overflow: auto; }
+.object-form { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 20px; }
+.object-form label { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.object-form input, .object-form textarea, .object-form select { width: 100%; box-sizing: border-box; }
+.object-form textarea { min-height: 65px; resize: vertical; }
+.object-form fieldset, .object-form > p, .object-form .modal-footer { grid-column: 1 / -1; }
+.object-form fieldset { border: 1px solid var(--border, #ccc); padding: 12px; }
+.object-form fieldset select { margin: 8px 0; }
+.object-form [hidden] { display: none !important; }
+.object-dialog .modal-header { position: relative; }
+.object-dialog #object-close { position: absolute; right: 0; top: 0; padding: 0 6px; }
+.object-form input, .object-form textarea, .object-form select { background: #fff; border: 1px solid var(--border, #ccc); border-radius: 2px; padding: 5px 7px; font: inherit; }
+.object-form .modal-footer { display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--border, #ccc); padding-top: 12px; }
+#object-references { white-space: pre-wrap; overflow-wrap: anywhere; }
+#object-list td { max-width: 340px; overflow-wrap: anywhere; }
+#object-search { min-width: 280px; }
+@media (max-width: 650px) { .object-form { grid-template-columns: 1fr; } }
+.policy-tabs, .policy-panel { grid-column: 1 / -1; }
+.policy-tabs { flex-wrap: wrap; }
+.policy-panel { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 20px; }
+#pw-form { display: block; }
+#pw-form > p { margin-top: 12px; }
+#pw-validation { white-space: pre-wrap; overflow-wrap: anywhere; }
+#pw-list td { max-width: 300px; overflow-wrap: anywhere; }
+@media (max-width: 650px) { .policy-panel { grid-template-columns: 1fr; } }

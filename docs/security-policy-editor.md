@@ -2,7 +2,7 @@
 
 The policy editor preserves name, interface constraints, virtual-system ID and
 enabled state. Rules can be cloned (clones start disabled), filtered, enabled,
-disabled and edited. Immutable defaults expose description editing only. Failed
+disabled and edited. Implicit and system defaults are entirely read only. Failed
 writes retain the dialog and its input. API writes require administrator role.
 Source/destination zone and application controls that never submitted data are
 removed; the table now shows the stored interface conditions and tenant ID.
@@ -36,3 +36,11 @@ writing any binary. Virtual-system IDs and rule IDs must fit the wire format;
 numeric protocol zero is rejected during compilation because it aliases the
 format's wildcard. Ten isolated API/compiler tests also cover a successful
 binary round trip, aggregate errors, excluded rules and identity overflow.
+
+Security now shows fast-path and XML rules in one table; the Policy Source
+column distinguishes their stores. Implicit rules cannot be hidden by search
+or the legacy `show_hidden` / `show_defaults` API parameters. A failed source
+request leaves the other inventory visible with an explicit warning. Combining
+the display changes neither compiler order nor configuration or traffic.
+`node tests/test_security_inventory.cjs` covers both stores, immutable fields,
+search, scope filtering, running-view protection, failed sources and edit refresh.

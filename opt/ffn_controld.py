@@ -623,10 +623,19 @@ class IPCServer:
         self.commit = commit
         self.planes = planes or ControlPlane({'worker_socket': None, 'agents': {}})
         self.handlers: Dict[str, Callable] = {}
+        from ffn_policy_config import PolicyController
+        self.policy = PolicyController(os.getenv('FFN_CONFIG_DIR','/var/lib/ffn-ngfw/config'), commit)
+        from ffn_nat_control import NatGateway
+        self.nat = NatGateway(self.planes, os.getenv('FFN_CONFIG_DIR','/var/lib/ffn-ngfw/config'))
         self._register_handlers()
 
     def _register_handlers(self):
         self.handlers.update({
+            "policy/request":           self.policy.request,
+            "nat/preview":              self.nat.preview,
+            "nat/validate":             self.nat.validate,
+            "nat/apply":                self.nat.apply,
+            "nat/tools":                self.nat.tools,
             "plane/request":            self.planes.request,
             "state/control":            self.planes.status,
             "state/agents":             self.planes.status,

@@ -15,6 +15,8 @@ const context = vm.createContext({console, window:{}, localStorage:{getItem(){re
   setInterval(){return 1;}, clearInterval(){},setTimeout(){},alert(){},confirm(){return true;},
   fetch:async()=>({ok:true,status:200,json:async()=>({})})});
 // Must evaluate the whole bundle: sliced function tests miss declaration-order failures.
+vm.runInContext(fs.readFileSync(__dirname+'/../static/config-objects.js','utf8'),context);
+vm.runInContext(fs.readFileSync(__dirname+'/../static/config-policies.js','utf8'),context);
 vm.runInContext(script,context);
 const run = code => vm.runInContext(code,context);
 (async()=>{
@@ -29,6 +31,10 @@ const run = code => vm.runInContext(code,context);
   context.switchSetupTab('management');
   assert.equal(element('setup-hostname').value,'unsaved-name','Setup tab switches preserve edits');
   const menus=run('TAB_MENUS');
+  assert.deepEqual(Array.from(menus.policy,x=>x.label),['Security','NAT','QoS','Policy Based Forwarding','Decryption','Tunnel Inspection','Application Override','Authentication','DoS Protection','SD-WAN']);
+  assert.deepEqual(Array.from(menus.objects.slice(0,12),x=>x.label),[
+    'Addresses','Address Groups','Regions','Dynamic User Groups','Applications',
+    'Application Groups','Application Filters','Services','Service Groups','Tags','Devices','External Dynamic Lists']);
   const ids=Object.values(menus).flat().filter(x=>x.id).map(x=>x.id);
   assert.equal(new Set(ids).size,ids.length,'Every page must have one menu owner');
   assert.equal(ids.filter(x=>x==='device-updates').length,1);
@@ -82,6 +88,34 @@ const run = code => vm.runInContext(code,context);
   assert.equal(element('setup-msg').textContent,'Forbidden');
   run("consoleRole = 'readonly'");
   body=null;await context.saveSetup();assert.equal(body,null);
+  const usage = {source:'agent', state:'available', fresh:true, cores:[0,1],
+    cpu_percent:95, per_core:{'0':90,'1':100}, agents:[{name:'dp'}],
+    age_seconds:2, expires_in_seconds:30, sample_seconds:10};
+  let expire;
+  context.setTimeout = fn => {expire=fn;};
+  context._setPlaneWidget('dp', usage);
+  assert.equal(element('dash-dp-cpu').textContent,'95.0%');
+  assert.equal(element('dash-dp-bar').style.background,'var(--red)');
+  assert.match(element('dash-dp-per-core').textContent,/CPU 1: 100.0%/);
+  assert.match(element('dash-dp-source').textContent,/Agent: dp/);
+  const oldExpiry=expire;
+  context._setPlaneWidget('dp', {...usage,cpu_percent:0});
+  oldExpiry();
+  assert.equal(element('dash-dp-cpu').textContent,'0.0%','Old timers cannot expire a newer sample');
+  assert.equal(element('dash-dp-bar').style.background,'var(--accent)');
+  expire();
+  assert.equal(element('dash-dp-cpu').textContent,'--');
+  assert.match(element('dash-dp-source').textContent,/Stale/);
+  assert(!element('dash-dp-per-core').textContent.includes('100.0%'));
+  context._setPlaneWidget('dp',null);
+  assert.equal(element('dash-dp-bar').style.width,'0%');
+  run("currentSubPage='dash-overview'");
+  context.api=async path=>path.endsWith('plane-usage')?{data_plane:usage}:null;
+  await context.refreshDashboard();
+  assert.equal(element('dash-dp-cpu').textContent,'95.0%','Agent data must update without throughput');
+  context.api=async()=>null;
+  await context.refreshDashboard();
+  assert.equal(element('dash-dp-cpu').textContent,'--','Failed refresh must clear previous readings');
   const requested=[];
   context.api=async path=>{requested.push(path);return {ports:[]};};
   run("currentSubPage='dash-throughput'");
