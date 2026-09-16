@@ -44,9 +44,16 @@ running XML. Configd validates again before any local or platform side effect;
 its dry-run mode uses the same guard. The UI and CLI display the same blockers
 from controld and never report a stored rule as dataplane-applied.
 
-Disabled definitions may be stored and committed. The existing SQL Security
-rule table and its compiler remain available through **Existing fast-path
-rules**. They are not migrated, cleared, or implicitly merged with XML rules.
+Disabled definitions may be stored and committed. **Policies > Security** shows
+XML and SQL fast-path rules in one table, with Policy Source identifying their
+storage. The candidate/running selector applies to XML; fast-path rows show
+stored SQL policy in both views and are read only in the running view. This is
+an inventory, not a combined execution order: each compiler retains its own
+ordering. Same-named rows in different stores remain distinct. No rules are
+migrated, cleared, or applied by combining the display.
+Implicit defaults are always visible, including during searches, and all fields
+are read only. Their API protection includes descriptions and default entries
+imported into XML. Virtual-system filtering retains global system defaults.
 The existing DoS engine controls remain accessible separately. Full control
 unification still requires migration of that SQL rulebase plus commissioned
 runtime compilers and CP/DP acknowledgments for each policy kind.

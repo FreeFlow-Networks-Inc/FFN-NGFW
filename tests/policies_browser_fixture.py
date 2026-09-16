@@ -10,6 +10,11 @@ fixture=PolicyTests();fixture.setUp();app=fixture.client.app
 app.mount('/static',StaticFiles(directory=root/'static'),name='static')
 
 
+@app.get('/api/policy/rules')
+def fast_path_empty():
+    return {'rules': [], 'can_edit': True}
+
+
 @app.get('/')
 def policy_page():
     return HTMLResponse(page().body.decode().replace('</body>','<script src="/static/config-policies.js"></script></body>'))

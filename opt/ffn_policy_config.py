@@ -171,7 +171,8 @@ def describe(kind,entry):
     expected=serialize(kind,spec)
     # Absent disabled means enabled in imported PAN-style configurations.
     if entry.find('disabled') is None:expected.remove(expected.find('disabled'))
-    spec['editable']=shape(expected)==shape(entry)
+    spec['is_implicit']=kind=='security' and spec['name'].lower() in ('intrazone-default','interzone-default')
+    spec['editable']=not spec['is_implicit'] and shape(expected)==shape(entry)
     for f in fields:settings.setdefault(f['key'],[] if f['mode']=='list' else '')
     spec['state']='blocked' if spec['enabled'] else 'disabled'
     return spec
@@ -313,6 +314,9 @@ class PolicyController:
             if state['locked'] and state.get('holder')!=user:raise PolicyError('Configuration is locked by another administrator',423)
         if args.get('revision')!=rev:raise PolicyError('Candidate changed. Refresh and review before retrying',409)
         name=args.get('name');entry=next((r for r in rows if r.get('name')==name),None)
+        incoming=args.get('rule');incoming_name=incoming.get('name') if isinstance(incoming,dict) else None
+        if kind=='security' and any(str(n or '').lower() in ('intrazone-default','interzone-default') for n in (name,incoming_name)):
+            raise PolicyError('Implicit security rules are read only',403)
         if action=='create':
             spec=args.get('rule');validate(kind,spec,root,scope)
             if spec['name'] in names:raise PolicyError('A rule with this name already exists',409)

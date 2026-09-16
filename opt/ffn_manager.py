@@ -5471,17 +5471,11 @@ IMMUTABLE_KIND_PREFIX = {"intrazone-default", "interzone-default", "lab-mgmt"}
 
 
 @app.get("/api/policy/rules")
-async def policy_list(show_hidden: bool = False, show_defaults: bool = True, user: dict = Depends(get_current_user)):
-    """
-    Returns rules in evaluation order: user rules first (by position),
-    then PAN-OS-style implicit defaults (intrazone-default, then
-    interzone-default) which always evaluate last.
+async def policy_list(show_hidden: bool = True, show_defaults: bool = True, user: dict = Depends(get_current_user)):
+    """Stored rules in engine order. Implicit defaults are always included.
 
-    Query params:
-      - show_hidden=true  — include intrazone-default (hidden by default,
-                            matching PAN-OS UI which shows it only when
-                            "Show default rules" is enabled)
-      - show_defaults=false — hide both implicit defaults entirely
+    The legacy visibility query parameters are accepted for API compatibility;
+    they no longer suppress immutable defaults from the inventory.
     """
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -5508,13 +5502,9 @@ async def policy_list(show_hidden: bool = False, show_defaults: bool = True, use
         for r in rows:
             r["compilation"] = compatibility[r["id"]]
             kind = r.get("kind", "user")
-            if not show_defaults and kind != "user":
-                continue
-            if kind == "intrazone-default" and not show_hidden:
-                continue
             # Expose computed flags for the UI
             r["is_default"] = kind != "user"
-            r["is_immutable"] = bool(r.get("immutable", 0))
+            r["is_immutable"] = bool(r.get("immutable", 0)) or kind in ("intrazone-default", "interzone-default", "lab-mgmt")
             out.append(r)
         return {"rules": out, "can_edit": user.get("role") in ADMIN_ROLES, "storage": "policy-database", "compilation": report}
 
@@ -5713,19 +5703,8 @@ async def policy_update(rule_id: int, rule: PolicyRule,
         existing = await cur.fetchone()
         if existing is None:
             raise HTTPException(status_code=404, detail="Rule not found")
-        if existing["immutable"]:
-            # Only description (and eventually profile/log fields) may be
-            # changed on an immutable default rule. Everything else is
-            # locked to preserve PAN-OS semantics.
-            await db.execute(
-                "UPDATE policy_rules SET description=?, "
-                " updated_at=datetime('now') WHERE id=?",
-                (rule.description, rule_id),
-            )
-            await audit(db, user["username"], "update_rule",
-                        f"id={rule_id} (immutable: description only)")
-            return {"status": "updated", "immutable": True,
-                    "message": "Immutable default rule — only description updated"}
+        if existing["immutable"] or existing['kind'] in ('intrazone-default', 'interzone-default', 'lab-mgmt'):
+            raise HTTPException(403, 'Implicit and system rules are read only; no fields may be modified')
 
         validate_policy_rule(rule.dict())
         await db.execute(
@@ -5754,7 +5733,7 @@ async def policy_delete(rule_id: int, user: dict = Depends(get_current_user)):
         existing = await cur.fetchone()
         if existing is None:
             raise HTTPException(status_code=404, detail="Rule not found")
-        if existing["immutable"]:
+        if existing["immutable"] or existing['kind'] in ('intrazone-default', 'interzone-default', 'lab-mgmt'):
             raise HTTPException(
                 status_code=403,
                 detail=f"Cannot delete immutable default rule ({existing['kind']})",

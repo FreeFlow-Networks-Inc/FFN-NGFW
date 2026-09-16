@@ -2894,21 +2894,14 @@ function showSessionDetail(i) {
 
 /* ---- Policy > Security ---- */
 let policyRows = [], policyCanEdit = false, policyLoadGeneration = 0;
-let policyEditor = null;
+let policyEditor = null, policyEditorReload = null;
 function renderPolicySecurity(c) {
-  c.innerHTML = `<div class="page-header"><h2>Security Policy</h2></div>
-    <div class="filters-bar"><input id="policy-search" aria-label="Filter security rules" placeholder="Filter rules" oninput="renderPolicyRows()">
-    <label><input type="checkbox" id="policy-show-hidden" onchange="loadPolicies()"> Show implicit defaults</label>
-    <button class="btn" onclick="loadPolicies()">Refresh</button><button id="policy-add" class="btn btn-primary" disabled onclick="openRuleModal()">Add</button></div>
-    <p id="policy-notice" role="status" class="mb-8">Loading policy rules…</p>
-    <p class="text-dim mb-8">Rules are stored in the policy database. Storage does not confirm dataplane application. Zone and application matching are not implemented here; the fast-path compiler rejects unsupported IPv6, interface and reset conditions.</p>
-    <div class="table-wrap"><table id="policy-table"><thead><tr><th>#</th><th>Name</th><th>Enabled</th><th>Source Interface</th><th>Destination Interface</th><th>Source</th><th>Destination</th><th>Service</th><th>Vsys</th><th>Action</th><th>Hits</th><th>Compilation</th><th>Actions</th></tr></thead><tbody id="policy-table-body"></tbody></table></div>`;
-  loadPolicies();refreshTimer=setInterval(loadPolicies,10000);
+  renderPolicyWorkspace(c, 'security');
 }
 async function loadPolicies() {
   const generation=++policyLoadGeneration, body=document.getElementById('policy-table-body');
   try {
-    const data=await consoleRequest('/api/policy/rules?show_hidden='+(document.getElementById('policy-show-hidden')?.checked?'true':'false'));
+    const data=await consoleRequest('/api/policy/rules?show_hidden=true&show_defaults=true');
     if(generation!==policyLoadGeneration || !body.isConnected) return;
     if(!Array.isArray(data.rules)) throw new Error('Invalid rule inventory');
     policyRows=data.rules;policyCanEdit=!!data.can_edit;
@@ -2944,7 +2937,9 @@ function renderPolicyRows() {
 const RULE_FIELDS={name:'name',position:'position',src_iface:'src-iface',dst_iface:'dst-iface',src_ip:'src',dst_ip:'dst',src_port:'sport',dst_port:'dport',proto:'proto',action:'action',vsys:'vsys',description:'desc'};
 function openRuleModal(){if(policyCanEdit)editRule(null);}
 function cloneRule(rule){if(policyCanEdit&&!rule.is_immutable)editRule({...rule,id:null,name:((rule.name||'rule')+'-copy').slice(0,127),position:0,enabled:0});}
-function editRule(rule) {
+function editRule(rule, options = {}) {
+  policyEditorReload = options.reload || null;
+  if (options.canEdit !== undefined) policyCanEdit = options.canEdit;
   const data=rule || {name:'',position:0,src_iface:'',dst_iface:'',src_ip:'0.0.0.0/0',dst_ip:'0.0.0.0/0',src_port:0,dst_port:0,proto:'any',action:'permit',vsys:0,description:'',enabled:1};
   policyEditor={...data};
   document.getElementById('rule-modal-title').textContent=data.id?'Security Rule: '+(data.name||data.id):'Add Security Rule';
@@ -2955,16 +2950,16 @@ function editRule(rule) {
       const option=document.createElement('option');option.value=data[key];option.textContent=data[key];element.appendChild(option);
     }
     element.value=data[key]??'';
-    element.disabled=!policyCanEdit || !!data.is_immutable && key!=='description';
+    element.disabled=!policyCanEdit || !!data.is_immutable;
   }
   document.getElementById('rule-enabled').checked=!!data.enabled;
   document.getElementById('rule-enabled').disabled=!policyCanEdit || !!data.is_immutable;
-  document.getElementById('rule-save').disabled=!policyCanEdit;
-  document.getElementById('rule-msg').textContent=data.is_immutable?'Default rule: only the description can be changed.':(!data.enabled?'Disabled rule. Enable explicitly when ready.':'');
+  document.getElementById('rule-save').disabled=!policyCanEdit || !!data.is_immutable;
+  document.getElementById('rule-msg').textContent=data.is_immutable?'Implicit/system rule: read only. All fields are protected.':(!data.enabled?'Disabled rule. Enable explicitly when ready.':'');
   document.getElementById('modal-rule').classList.add('show');
 }
 async function saveRule() {
-  if(!policyCanEdit || !policyEditor)return;
+  if(!policyCanEdit || !policyEditor || policyEditor.is_immutable)return;
   const button=document.getElementById('rule-save'),message=document.getElementById('rule-msg');
   if(button.disabled)return;
   const editor=policyEditor, payload={};
@@ -2977,7 +2972,8 @@ async function saveRule() {
     const result=await consoleRequest('/api/policy/rules'+(editor.id?'/'+editor.id:''),{method:editor.id?'PUT':'POST',body:JSON.stringify(payload)});
     if(!['created','updated'].includes(result.status))throw new Error('Rule save was not confirmed.');
     if(policyEditor===editor){message.textContent='Saved to policy database. Dataplane application is not confirmed.';}
-    await loadPolicies();
+    if(policyEditorReload){closeModal('modal-rule');await policyEditorReload();}
+    else await loadPolicies();
   } catch(e){if(policyEditor===editor){message.textContent=e.message;button.disabled=false;}}
 }
 async function deleteRule(id) {

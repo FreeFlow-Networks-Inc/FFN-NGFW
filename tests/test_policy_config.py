@@ -56,6 +56,26 @@ class PolicyTests(unittest.TestCase):
 
     def tearDown(self):self.temp.cleanup()
 
+    def test_reserved_security_defaults_cannot_be_created(self):
+        for name in ('intrazone-default','interzone-default'):
+            before=(self.directory/'candidate-config.xml').read_bytes()
+            result=self.mutate('security',rule=self.spec('security',name))
+            self.assertEqual(result.status_code,403)
+            self.assertEqual((self.directory/'candidate-config.xml').read_bytes(),before)
+
+    def test_imported_security_defaults_are_read_only(self):
+        self.assertEqual(self.mutate('security',rule=self.spec('security','import-me')).status_code,200)
+        path=self.directory/'candidate-config.xml'
+        path.write_text(path.read_text().replace('name="import-me"','name="intrazone-default"'),newline='\n')
+        before=path.read_bytes()
+        row=self.client.get('/api/config/policies/security').json()['entries'][0]
+        self.assertTrue(row['is_implicit']);self.assertFalse(row['editable'])
+        for action,payload in [('update',{'rule':self.spec('security','renamed')}),
+                               ('toggle',{'enabled':True}),('move',{'position':1}),('delete',{})]:
+            with self.subTest(action=action):
+                self.assertEqual(self.mutate('security',action,name='intrazone-default',**payload).status_code,403)
+                self.assertEqual(path.read_bytes(),before)
+
     def spec(self,kind,name='rule',**settings):
         fields={f['key']:copy.deepcopy(f['default']) if f['default'] is not None else '' for f in SCHEMAS[kind]['fields']}
         fields.update({'application-override':dict(application='custom-app',port='443'),

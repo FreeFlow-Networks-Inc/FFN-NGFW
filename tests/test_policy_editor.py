@@ -50,15 +50,26 @@ class PolicyEditorTests(unittest.TestCase):
         self.create(enabled=False)
         self.assertEqual(self.client.put('/api/policy/rules/1',json={'name':'renamed','description':'edit'}).status_code,200)
         self.assertEqual(self.client.get('/api/policy/rules').json()['rules'][0]['enabled'],0)
-    def test_default_only_description_changes(self):
+    def test_default_rejects_all_changes(self):
         self.create()
         import sqlite3
         with closing(sqlite3.connect(self.path)) as db:
             db.execute('UPDATE policy_rules SET immutable=1,kind="interzone-default"');db.commit()
-        self.assertEqual(self.client.put('/api/policy/rules/1',json={'name':'replacement','description':'edited','enabled':True}).status_code,200)
+        self.assertEqual(self.client.put('/api/policy/rules/1',json={'name':'replacement','description':'edited','enabled':True}).status_code,403)
         rule=self.client.get('/api/policy/rules').json()['rules'][0]
-        self.assertEqual(rule['description'],'edited');self.assertEqual(rule['name'],'test');self.assertEqual(rule['enabled'],0)
+        self.assertNotEqual(rule['description'],'edited');self.assertEqual(rule['name'],'test');self.assertEqual(rule['enabled'],0)
         self.assertEqual(self.client.delete('/api/policy/rules/1').status_code,403)
+    def test_implicit_visibility_and_kind_protection(self):
+        self.create()
+        import sqlite3
+        with closing(sqlite3.connect(self.path)) as db:
+            db.execute('UPDATE policy_rules SET name="intrazone-default",kind="intrazone-default",immutable=0,hidden=1');db.commit()
+        for query in ('','?show_hidden=false','?show_defaults=false&show_hidden=false'):
+            rule=self.client.get('/api/policy/rules'+query).json()['rules'][0]
+            self.assertTrue(rule['is_immutable']);self.assertEqual(rule['name'],'intrazone-default')
+        self.assertEqual(self.client.put('/api/policy/rules/1',json={'description':'not allowed'}).status_code,403)
+        self.assertEqual(self.client.delete('/api/policy/rules/1').status_code,403)
+
     def test_compile_rejects_unsupported_without_replacing_binary(self):
         self.create(src_iface='ethernet1/1',enabled=True)
         blob=Path(self.tmp.name)/'policy.bin';blob.write_bytes(b'existing-policy')

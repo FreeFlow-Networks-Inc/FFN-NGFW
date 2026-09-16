@@ -9,6 +9,33 @@ function policyActionText(kind,s){
   if(kind==='application-override')return (s.protocol||'')+'/'+(s.port||'')+' → '+(s.application||'');
   return s.action||s['authentication-enforcement']||s['traffic-distribution-profile']||'';
 }
+function securityInventory(data, fast, scope) {
+  const implicit = r => !!r.is_implicit || [r.kind,r.name].some(v=>['intrazone-default','interzone-default'].includes(String(v||'').toLowerCase()));
+  const rows = data.entries.map((r,i)=>({r,i,fast:false,implicit:implicit(r)}));
+  const vsys = /^vsys([1-9][0-9]*)$/.exec(scope)?.[1];
+  for (const original of fast.rules || []) {
+    if (Number(original.vsys || 0)!==0 && String(original.vsys)!==vsys) continue;
+    const r={...original};
+    r.is_immutable=!!(r.is_immutable || r.immutable || implicit(r) || r.kind && r.kind!=='user');
+    rows.push({r,i:rows.length,fast:true,implicit:implicit(r)});
+  }
+  const rank = row => row.r.kind==='lab-mgmt'?0:row.implicit?(row.r.kind==='intrazone-default'||row.r.name==='intrazone-default'?3:4):row.fast?2:1;
+  return rows.sort((a,b)=>rank(a)-rank(b));
+}
+function fastPathRow(row, index, editable) {
+  const r=row.r, text=v=>_escSP(v??''), locked=r.is_immutable, compilation=r.compilation;
+  const state=locked?(row.implicit?'Implicit / read only':'System / read only'):r.enabled?'Enabled':'Disabled';
+  const issue=compilation?(compilation.included?(compilation.compatible?'Compatible':'Blocked: '+compilation.issue):'Excluded'+(compilation.issue?': '+compilation.issue:'')):'Application unconfirmed';
+  return `<tr data-fast-row="${text(r.id)}" class="${r.enabled?'':'policy-disabled'}"><td>${text(r.position)}</td>
+    <td><button class="btn btn-sm" data-fast-view="${index}">${text(r.name || 'Rule '+r.id)}</button></td>
+    <td>${text(state)}<br><span class="text-dim">${text(issue)}</span></td>
+    <td>${text(r.src_iface?'Interface: '+r.src_iface:'Any interface')}<br>${text(r.src_ip)}</td>
+    <td>${text(r.dst_iface?'Interface: '+r.dst_iface:'Any interface')}<br>${text(r.dst_ip)}</td>
+    <td>${text(r.proto || 'any')} · ${text(r.src_port || '*')} → ${text(r.dst_port || '*')}</td>
+    <td>${text(r.action)}</td><td>—</td><td>Fast path · stored<br>${text(r.vsys?'vsys'+r.vsys:'All virtual systems')}</td><td>${text(r.hit_count??'—')}</td>
+    <td>${locked?'Read only':`<button class="btn btn-sm" data-fast-view="${index}">${editable?'Edit':'View'}</button>`+
+      (editable?` <button class="btn btn-sm" data-fast-clone="${index}">Clone</button> <button class="btn btn-sm" data-fast-delete="${index}">Delete</button>`:'')}</td></tr>`;
+}
 function renderPolicyWorkspace(c,kind){
   if(typeof refreshTimer!=='undefined'&&refreshTimer){clearInterval(refreshTimer);refreshTimer=null;}
   ++policyWorkspaceGeneration;
@@ -20,7 +47,6 @@ function renderPolicyWorkspace(c,kind){
     <p id="pw-status" role="status">Loading rulebase from control daemon…</p><div id="pw-list" class="card"></div>
     <div class="workflow-actions"><button class="btn btn-primary" id="pw-add" disabled>Add</button>
     <button class="btn" id="pw-validate">Validate activation</button>
-    ${kind==='security'?'<button class="btn" id="pw-existing">Existing fast-path rules</button>':''}
     ${kind==='dos'?'<button class="btn" id="pw-dos">DoS engine controls</button>':''}
     <span class="text-dim">Candidate changes require Commit. New rules start disabled.</span></div>
     <div class="modal-overlay" id="pw-editor" role="dialog" aria-modal="true" aria-labelledby="object-title"></div>`;
@@ -28,7 +54,6 @@ function renderPolicyWorkspace(c,kind){
   const legacy=(renderer)=>{
     ++policyWorkspaceGeneration;renderer(c);const button=document.createElement('button');button.className='btn';button.textContent='Back to '+policyKinds[kind];button.onclick=()=>renderPolicyWorkspace(c,kind);c.prepend(button);
   };
-  if(kind==='security')document.getElementById('pw-existing').onclick=()=>legacy(renderPolicySecurity);
   if(kind==='dos')document.getElementById('pw-dos').onclick=()=>legacy(renderPolicyDDoS);
   loadPolicyWorkspace(c,kind);
 }
@@ -39,34 +64,61 @@ async function loadPolicyWorkspace(c,kind){
   editor.classList.remove('show');table.textContent='Loading…';add.disabled=true;document.getElementById('pw-validate').disabled=true;
   try{
     const url='/api/config/policies/'+kind+'?scope='+encodeURIComponent(scope);
-    const data=await consoleRequest(url+'&source='+source);
+    const results=await Promise.allSettled([consoleRequest(url+'&source='+source),
+      kind==='security'?consoleRequest('/api/policy/rules?show_hidden=true&show_defaults=true'):Promise.resolve({rules:[]})]);
+    const xmlError=results[0].status==='rejected'?results[0].reason.message:'';
+    const fastError=results[1].status==='rejected'?results[1].reason.message:'';
+    if(xmlError && kind!=='security')throw results[0].reason;
+    const data=xmlError?{entries:[],scopes:[scope],can_edit:false,runtime:{owner:'ffn-controld',valid:false,blockers:[]}}:results[0].value;
+    const fast=fastError?{rules:[],can_edit:false}:results[1].value;
+    if(!Array.isArray(data.entries)||!Array.isArray(fast.rules))throw new Error('Invalid rule inventory');
     if(!table.isConnected||generation!==policyWorkspaceGeneration)return;
     const select=document.getElementById('pw-scope');select.innerHTML=data.scopes.map(s=>`<option>${_escSP(s)}</option>`).join('');select.value=scope;
-    status.textContent='Control owner: '+data.runtime.owner+' · '+(data.runtime.valid?'No enabled XML policies to apply.':data.runtime.blockers.length+' enabled rule(s) block activation.')+' Existing fast-path rules remain separate. Dataplane application is not confirmed.';
+    status.textContent=(xmlError?'Candidate/running rules unavailable: '+xmlError:
+      'Control owner: '+data.runtime.owner+' · '+(data.runtime.valid?'No enabled XML policies to apply.':data.runtime.blockers.length+' enabled rule(s) block activation.'))+
+      (kind==='security'?(fastError?' · Fast-path and implicit rules unavailable: '+fastError:' · Implicit rules are always shown and read only. Fast-path rows show stored policy in both views.'):'')+
+      ' Dataplane application is not confirmed.';
     add.disabled=!data.can_edit;add.onclick=()=>editPolicyWorkspace(data,url,null,()=>loadPolicyWorkspace(c,kind));
-    document.getElementById('pw-validate').disabled=false;
+    document.getElementById('pw-validate').disabled=!!xmlError;
     document.getElementById('pw-validate').onclick=async()=>{
       objectDialog(editor,'Policy Activation Validation','<pre id="pw-validation">Checking control daemon…</pre>');const target=document.getElementById('pw-validation');
       try{const report=await consoleRequest('/api/config/policies/status?source='+source);
         if(target.isConnected)target.textContent=report.blockers.length?report.blockers.map(b=>b.scope+' / '+policyKinds[b.kind]+' / '+b.name+': '+b.reason).join('\n'):'No enabled XML policies. Disabled definitions can be committed; no runtime enforcement is claimed.';
       }catch(e){if(target.isConnected)target.textContent=e.message;}
     };
+    const inventory=kind==='security'?securityInventory(data,fast,scope):data.entries.map((r,i)=>({r,i}));
     const draw=()=>{
       const q=document.getElementById('pw-search').value.toLowerCase();
-      const rows=data.entries.map((r,i)=>({r,i})).filter(({r})=>JSON.stringify(r).toLowerCase().includes(q));
-      document.getElementById('pw-count').textContent=rows.length+' of '+data.entries.length+' rules';
+      const rows=inventory.filter(row=>row.implicit || row.r.is_immutable || JSON.stringify(row.r).toLowerCase().includes(q));
+      document.getElementById('pw-count').textContent=rows.length+' of '+inventory.length+' rules';
       const text=v=>_escSP(Array.isArray(v)?v.join(', '):v||'');
-      table.innerHTML='<div class="table-wrap"><table><thead><tr><th>#</th><th>Name</th><th>State</th><th>Source Zone / Address</th><th>Destination Zone / Address</th><th>Application / Service</th><th>Action</th><th>Tags</th><th>Actions</th></tr></thead><tbody>'+rows.map(({r,i})=>{
-        const s=r.settings,locked=!data.can_edit||!r.editable;
-        return `<tr class="${r.enabled?'':'policy-disabled'}"><td>${r.position}</td><td><button class="btn btn-sm" data-rule-edit="${i}">${text(r.name)}</button></td><td>${r.editable?text(r.state):'Imported / read only'}</td>
+      table.innerHTML='<div class="table-wrap"><table><thead><tr><th>#</th><th>Name</th><th>State</th><th>Source Zone / Address</th><th>Destination Zone / Address</th><th>Application / Service</th><th>Action</th><th>Tags</th>'+ (kind==='security'?'<th>Policy Source</th><th>Hits</th>':'') +'<th>Actions</th></tr></thead><tbody>'+rows.map((row,index)=>{
+        if(row.fast)return fastPathRow(row,index,source==='candidate'&&fast.can_edit);
+        const {r,i}=row;
+        const s=r.settings,locked=!data.can_edit||!r.editable||row.implicit;
+        return `<tr class="${r.enabled?'':'policy-disabled'}"><td>${r.position}</td><td><button class="btn btn-sm" data-rule-edit="${i}">${text(r.name)}</button></td><td>${row.implicit?'Implicit / read only':r.editable?text(r.state):'Imported / read only'}</td>
           <td>${text(s.from)}<br>${text(s.source)}</td><td>${text(s.to)}<br>${text(s.destination)}</td><td>${text(s.application)}<br>${text(s.service)}</td>
-          <td>${text(policyActionText(kind,s))}</td><td>${text(s.tag)}</td><td>
+          <td>${text(policyActionText(kind,s))}</td><td>${text(s.tag)}</td>${kind==='security'?`<td>${text(source)} · XML</td><td>—</td>`:''}<td>
           <button class="btn btn-sm" data-rule-clone="${i}" ${locked?'disabled':''}>Clone</button>
           <button class="btn btn-sm" data-rule-op="toggle" data-index="${i}" ${locked?'disabled':''}>${r.enabled?'Disable':'Enable'}</button>
           <button class="btn btn-sm" data-rule-op="up" data-index="${i}" aria-label="Move rule up" ${locked||i===0?'disabled':''}>↑</button>
           <button class="btn btn-sm" data-rule-op="down" data-index="${i}" aria-label="Move rule down" ${locked||i===data.entries.length-1?'disabled':''}>↓</button>
           <button class="btn btn-sm" data-rule-op="delete" data-index="${i}" ${locked?'disabled':''}>Delete</button></td></tr>`;
       }).join('')+'</tbody></table></div>'+(rows.length?'':'<p>No matching rules.</p>');
+      const reload=()=>loadPolicyWorkspace(c,kind);
+      table.querySelectorAll('[data-fast-view],[data-fast-clone]').forEach(b=>b.onclick=()=>{
+        const clone=b.hasAttribute('data-fast-clone'),row=rows[Number(clone?b.dataset.fastClone:b.dataset.fastView)].r;
+        if(clone&&row.is_immutable)return;
+        editRule(clone?{...row,id:null,name:(row.name+'-copy').slice(0,127),enabled:0,position:0}:row,
+          {canEdit:source==='candidate'&&!!fast.can_edit&&!row.is_immutable,reload});
+      });
+      table.querySelectorAll('[data-fast-delete]').forEach(b=>b.onclick=async()=>{
+        const row=rows[Number(b.dataset.fastDelete)].r;
+        if(row.is_immutable||source!=='candidate'||!fast.can_edit||!confirm('Delete '+row.name+' from stored fast-path policy?'))return;
+        b.disabled=true;
+        try{await consoleRequest('/api/policy/rules/'+encodeURIComponent(row.id),{method:'DELETE'});if(generation===policyWorkspaceGeneration)await reload();}
+        catch(e){if(table.isConnected&&generation===policyWorkspaceGeneration){status.textContent=e.message;b.disabled=false;}}
+      });
       table.querySelectorAll('[data-rule-edit]').forEach(b=>b.onclick=()=>editPolicyWorkspace(data,url,data.entries[Number(b.dataset.ruleEdit)],()=>loadPolicyWorkspace(c,kind)));
       table.querySelectorAll('[data-rule-clone]').forEach(b=>b.onclick=()=>editPolicyWorkspace(data,url,data.entries[Number(b.dataset.ruleClone)],()=>loadPolicyWorkspace(c,kind),true));
       table.querySelectorAll('[data-rule-op]').forEach(b=>b.onclick=async()=>{
