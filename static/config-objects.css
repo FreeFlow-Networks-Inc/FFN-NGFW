@@ -15,3 +15,11 @@
 #object-list td { max-width: 340px; overflow-wrap: anywhere; }
 #object-search { min-width: 280px; }
 @media (max-width: 650px) { .object-form { grid-template-columns: 1fr; } }
+.policy-tabs, .policy-panel { grid-column: 1 / -1; }
+.policy-tabs { flex-wrap: wrap; }
+.policy-panel { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 20px; }
+#pw-form { display: block; }
+#pw-form > p { margin-top: 12px; }
+#pw-validation { white-space: pre-wrap; overflow-wrap: anywhere; }
+#pw-list td { max-width: 300px; overflow-wrap: anywhere; }
+@media (max-width: 650px) { .policy-panel { grid-template-columns: 1fr; } }

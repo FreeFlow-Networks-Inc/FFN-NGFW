@@ -260,6 +260,7 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
 <link rel="stylesheet" href="/static/console-shell.css">
 <script src="/static/config-objects.js"></script>
 <link rel="stylesheet" href="/static/config-objects.css">
+<script src="/static/config-policies.js"></script>
 </head>
 <body>
 
@@ -635,7 +636,15 @@ const TAB_MENUS = {
   ],
   policy: [
     {id:'security',label:'Security'},
-    {id:'ddos-protection',label:'DDoS Protection'},
+    {id:'nat',label:'NAT'},
+    {id:'policy-qos',label:'QoS'},
+    {id:'pbf',label:'Policy Based Forwarding'},
+    {id:'decryption',label:'Decryption'},
+    {id:'tunnel-inspection',label:'Tunnel Inspection'},
+    {id:'application-override',label:'Application Override'},
+    {id:'authentication-policy',label:'Authentication'},
+    {id:'ddos-protection',label:'DoS Protection'},
+    {id:'sdwan',label:'SD-WAN'},
   ],
   objects: [
     {id:'addresses',label:'Addresses'},
@@ -1530,12 +1539,16 @@ function renderPage(pageId) {
     'crucible': renderCrucible,
     'iot-devices': renderIoTDevices,
     // Policy tab
-    'security': renderPolicySecurity,
-    'nat': renderPolicyNAT,
-    'policy-qos': renderPolicyQoS,
-    'decryption': renderPolicyDecryption,
-    'ddos-protection': renderPolicyDDoS,
-    'sdwan': renderPolicySDWAN,
+    'security': c => renderPolicyWorkspace(c, 'security'),
+    'nat': c => renderPolicyWorkspace(c, 'nat'),
+    'policy-qos': c => renderPolicyWorkspace(c, 'qos'),
+    'pbf': c => renderPolicyWorkspace(c, 'pbf'),
+    'decryption': c => renderPolicyWorkspace(c, 'decryption'),
+    'tunnel-inspection': c => renderPolicyWorkspace(c, 'tunnel-inspect'),
+    'application-override': c => renderPolicyWorkspace(c, 'application-override'),
+    'authentication-policy': c => renderPolicyWorkspace(c, 'authentication'),
+    'ddos-protection': c => renderPolicyWorkspace(c, 'dos'),
+    'sdwan': c => renderPolicyWorkspace(c, 'sdwan'),
     // Objects tab
     'addresses': c => renderConfigObjects(c, 'address'),
     'address-groups': c => renderConfigObjects(c, 'address-group'),

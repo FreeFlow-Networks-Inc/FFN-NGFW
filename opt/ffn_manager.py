@@ -1752,6 +1752,10 @@ class ConfigManager:
         tag = f"entry[@name={name}]" if (elem.tag == "entry" and name is not None) else elem.tag
         path = f"{prefix}.{tag}" if prefix else tag
 
+        # Rule order is semantic: a pure move must appear in diff/commit.
+        if elem.tag == 'rules':
+            out[path + '.@order'] = json.dumps([n.get('name') for n in elem.findall('entry')])
+
         # Treat <member>X</member> as an ordered list, emit one key per index
         members = elem.findall("member")
         if members and len(members) == len(list(elem)):
@@ -1799,6 +1803,11 @@ class ConfigManager:
         ("full"/"partial"). Callers may override (e.g., "rollback") so the
         history entry labels the commit accurately.
         """
+        # Shared WebUI/CLI/import boundary: do not promote unenforceable policies.
+        from ffn_policy_config import require_supported, PolicyError
+        if partial_xpath is None:
+            try: require_supported(CANDIDATE_CONFIG.read_bytes())
+            except PolicyError as error: return {'status':'error','message':str(error)}
         parent_version = self.history.latest_version()
         diff_before = self.diff()
         diff_counts = {
@@ -1859,6 +1868,8 @@ class ConfigManager:
             run_node.remove(old)
         import copy
         run_node.insert(index, copy.deepcopy(cand_node))
+        try: require_supported(ET.tostring(run_root,encoding='utf-8'))
+        except PolicyError as error: return {'status':'error','message':str(error)}
         self._save(run_root, RUNNING_CONFIG)
 
         ctype = commit_type or "partial"
@@ -12327,6 +12338,8 @@ _install_patch_api(app, get_current_user, _require_admin, _extension_audit, _upd
 
 from ffn_config_objects import install as _install_object_api
 _install_object_api(app, get_current_user, _require_admin, _extension_audit, config_mgr, CANDIDATE_CONFIG)
+from ffn_policy_api import install as _install_policy_api
+_install_policy_api(app, get_current_user, _require_admin, _extension_audit, config_mgr)
 
 from ffn_plane_api import install as _install_plane_api
 _install_plane_api(app, get_current_user, _require_admin, _extension_audit)

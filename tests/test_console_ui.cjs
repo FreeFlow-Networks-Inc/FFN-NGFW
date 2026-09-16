@@ -16,6 +16,7 @@ const context = vm.createContext({console, window:{}, localStorage:{getItem(){re
   fetch:async()=>({ok:true,status:200,json:async()=>({})})});
 // Must evaluate the whole bundle: sliced function tests miss declaration-order failures.
 vm.runInContext(fs.readFileSync(__dirname+'/../static/config-objects.js','utf8'),context);
+vm.runInContext(fs.readFileSync(__dirname+'/../static/config-policies.js','utf8'),context);
 vm.runInContext(script,context);
 const run = code => vm.runInContext(code,context);
 (async()=>{
@@ -30,6 +31,7 @@ const run = code => vm.runInContext(code,context);
   context.switchSetupTab('management');
   assert.equal(element('setup-hostname').value,'unsaved-name','Setup tab switches preserve edits');
   const menus=run('TAB_MENUS');
+  assert.deepEqual(Array.from(menus.policy,x=>x.label),['Security','NAT','QoS','Policy Based Forwarding','Decryption','Tunnel Inspection','Application Override','Authentication','DoS Protection','SD-WAN']);
   assert.deepEqual(Array.from(menus.objects.slice(0,12),x=>x.label),[
     'Addresses','Address Groups','Regions','Dynamic User Groups','Applications',
     'Application Groups','Application Filters','Services','Service Groups','Tags','Devices','External Dynamic Lists']);

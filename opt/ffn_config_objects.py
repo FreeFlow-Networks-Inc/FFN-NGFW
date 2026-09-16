@@ -252,7 +252,7 @@ def references(root, target):
                     continue
                 if family != 'tag' and child.tag in KINDS and child.tag.removesuffix('-group') != family and child.tag not in ('tag','dynamic-user-group','address-group'):
                     continue
-                if child.tag == 'member' and child.text == target[2]:
+                if child.tag in ('member','translated-address','application') and child.text == target[2]:
                     result.append({'scope': scope, 'path': child_path})
                 if family == 'tag' and child.tag == 'filter' and child.text:
                     # Conservative token extraction also protects imported expressions.
