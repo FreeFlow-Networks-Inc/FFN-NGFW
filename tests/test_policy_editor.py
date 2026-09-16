@@ -25,7 +25,7 @@ class PolicyEditorTests(unittest.TestCase):
                      IMMUTABLE_RULE_NAMES={'intrazone-default','interzone-default'},validate_policy_rule=validate_policy_rule,policy_compilation_report=policy_compilation_report,os=os)
         tree=ast.parse((Path(__file__).resolve().parents[1]/'opt/ffn_manager.py').read_text(encoding='utf-8'))
         for node in tree.body:
-            if isinstance(node,(ast.ClassDef,ast.AsyncFunctionDef,ast.FunctionDef)) and node.name in ('_cidr_to_pair','_proto_to_num','PolicyRule','policy_list','policy_add','policy_update','policy_delete','_compile_policy_bin','policy_compile'):
+            if isinstance(node,(ast.ClassDef,ast.AsyncFunctionDef,ast.FunctionDef)) and node.name in ('_remove_legacy_management_rules','_cidr_to_pair','_proto_to_num','PolicyRule','policy_list','policy_add','policy_update','policy_delete','_compile_policy_bin','policy_compile'):
                 exec(compile(ast.Module(body=[node],type_ignores=[]),'<policy>','exec'),self.ns)
         self.client=TestClient(self.app)
     def tearDown(self):self.tmp.cleanup()
@@ -69,6 +69,26 @@ class PolicyEditorTests(unittest.TestCase):
             self.assertTrue(rule['is_immutable']);self.assertEqual(rule['name'],'intrazone-default')
         self.assertEqual(self.client.put('/api/policy/rules/1',json={'description':'not allowed'}).status_code,403)
         self.assertEqual(self.client.delete('/api/policy/rules/1').status_code,403)
+
+    def test_management_rows_are_excluded_and_migrated_without_touching_user_rules(self):
+        import sqlite3
+        self.create(name='management')
+        with closing(sqlite3.connect(self.path)) as db:
+            db.execute('UPDATE policy_rules SET position=0')
+            for kind in ('lab-mgmt','mgmt','intrazone-default','interzone-default'):
+                db.execute('INSERT INTO policy_rules(position,name,kind,immutable,enabled) VALUES (0,?,?,1,1)',(kind,kind))
+            db.commit()
+        rules=self.client.get('/api/policy/rules').json()['rules']
+        self.assertEqual([r['kind'] for r in rules],['user','intrazone-default','interzone-default'])
+        async def migrate():
+            async with aiosqlite.connect(self.path) as db:
+                await self.ns['_remove_legacy_management_rules'](db)
+                await self.ns['_remove_legacy_management_rules'](db)
+                await db.commit()
+        asyncio.run(migrate())
+        with closing(sqlite3.connect(self.path)) as db:
+            rows=db.execute('SELECT name,kind FROM policy_rules ORDER BY id').fetchall()
+        self.assertEqual(rows,[('management','user'),('intrazone-default','intrazone-default'),('interzone-default','interzone-default')])
 
     def test_compile_rejects_unsupported_without_replacing_binary(self):
         self.create(src_iface='ethernet1/1',enabled=True)

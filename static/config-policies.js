@@ -14,12 +14,13 @@ function securityInventory(data, fast, scope) {
   const rows = data.entries.map((r,i)=>({r,i,fast:false,implicit:implicit(r)}));
   const vsys = /^vsys([1-9][0-9]*)$/.exec(scope)?.[1];
   for (const original of fast.rules || []) {
+    if (['lab-mgmt','mgmt'].includes(original.kind)) continue;
     if (Number(original.vsys || 0)!==0 && String(original.vsys)!==vsys) continue;
     const r={...original};
     r.is_immutable=!!(r.is_immutable || r.immutable || implicit(r) || r.kind && r.kind!=='user');
     rows.push({r,i:rows.length,fast:true,implicit:implicit(r)});
   }
-  const rank = row => row.r.kind==='lab-mgmt'?0:row.implicit?(row.r.kind==='intrazone-default'||row.r.name==='intrazone-default'?3:4):row.fast?2:1;
+  const rank = row => row.implicit?(row.r.kind==='intrazone-default'||row.r.name==='intrazone-default'?3:4):row.fast?2:1;
   return rows.sort((a,b)=>rank(a)-rank(b));
 }
 function fastPathRow(row, index, editable) {

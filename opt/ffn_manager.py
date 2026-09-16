@@ -2426,8 +2426,8 @@ async def init_db():
 
         # NOTE: no sample/example user policy rules are seeded. A fresh box
         # starts with an empty user rule set; only the immutable PAN-OS-style
-        # defaults (intrazone/interzone) and the lab-mgmt safety net below are
-        # created. Operators add their own rules.
+        # defaults (intrazone/interzone) are created. MP management access is
+        # configured separately from dataplane policy. Operators add user rules.
 
         # Seed immutable PAN-OS-style default rules. `intrazone-default`
         # permits any traffic within the same zone (hidden implicit); it
@@ -2455,31 +2455,17 @@ async def init_db():
                      name, action, desc, kind, hidden),
                 )
 
-        # Lab / dev safety net: always permit traffic on the lab mgmt
-        # interface (env-overridable). Without this, an operator who
-        # accidentally commits a deny-all policy can lock themselves
-        # out of the box. Rule is immutable and sits at position 0 so
-        # it evaluates before any user rule. Operators can disable it
-        # explicitly via the UI (enabled=0) but cannot delete it.
-        lab_iface = os.getenv("FFN_LAB_MGMT_IFACE", "eno1np0")
-        if lab_iface:
-            cur = await db.execute(
-                "SELECT id FROM policy_rules WHERE kind='lab-mgmt'"
-            )
-            if not await cur.fetchone():
-                await db.execute(
-                    "INSERT INTO policy_rules "
-                    "(position, name, src_ip, dst_ip, src_iface, "
-                    " src_port, dst_port, proto, action, description, "
-                    " kind, immutable, hidden) "
-                    "VALUES (0, ?, '0.0.0.0/0', '0.0.0.0/0', ?, "
-                    " 0, 0, 'any', 'permit', ?, 'lab-mgmt', 1, 0)",
-                    (f"allow-lab-mgmt-{lab_iface}", lab_iface,
-                     f"Lab dev/test: permit any traffic on {lab_iface}"),
-                )
+        # Remove obsolete position-0 management exceptions on upgraded systems.
+        # MP access belongs to the management service configuration, not policy.
+        await _remove_legacy_management_rules(db)
 
         await db.commit()
     logger.info("Database initialized at %s", DB_PATH)
+
+
+async def _remove_legacy_management_rules(db):
+    """Remove only reserved MP-management rows; preserve user/default rules."""
+    await db.execute("DELETE FROM policy_rules WHERE kind IN ('lab-mgmt', 'mgmt')")
 
 
 async def get_db():
@@ -5481,13 +5467,12 @@ async def policy_list(show_hidden: bool = True, show_defaults: bool = True, user
         db.row_factory = aiosqlite.Row
         # User rules in position order, then defaults (intrazone before
         # interzone because intrazone is more specific).
-        # Evaluation order: lab-mgmt override → user rules →
+        # Evaluation order: user rules →
         # intrazone-default → interzone-default.
         cursor = await db.execute(
-            "SELECT * FROM policy_rules "
+            "SELECT * FROM policy_rules WHERE COALESCE(kind, 'user') NOT IN ('lab-mgmt', 'mgmt') "
             "ORDER BY "
             "  CASE kind "
-            "    WHEN 'lab-mgmt' THEN 0 "
             "    WHEN 'user' THEN 1 "
             "    WHEN 'intrazone-default' THEN 2 "
             "    WHEN 'interzone-default' THEN 3 "
