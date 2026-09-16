@@ -9795,14 +9795,17 @@ async def dpd_reload(user: dict = Depends(get_current_user)):
 
 @app.get("/api/system/plane-usage")
 async def plane_usage(user: dict = Depends(get_current_user)):
-    """
-    Return per-plane CPU + memory usage.
-      - Data plane  : cores listed in isolcpus (or FFN_DPDK_CORES env)
-      - Control plane: cores running ffn-controld + ffn-configd + ffn-manager
-                        (and adjacent "system" cores). Default = non-isolcpus - mgmt
-      - Management plane: cores dedicated to the webUI/ssh (default = first 2)
-    Usage is averaged over a 500ms sample.
-    """
+    """Selected agent CPU usage, or local CPU allocation on shared hosts."""
+    from ffn_agent_resources import agent_plane_usage
+    from ffn_control_plane import control_rpc
+    try:
+        control = await control_rpc('state/control', timeout=2)
+        if not isinstance(control, dict) or not isinstance(control.get('agents'), dict):
+            raise ValueError('invalid control state')
+    except Exception:
+        # An unavailable controller must never relabel MP samples as CP/DP.
+        control = None
+    remote = bool(control and control['agents'])
     total_cores = os.cpu_count() or 2
 
     # Precedence for plane-to-core mapping:
@@ -9828,13 +9831,16 @@ async def plane_usage(user: dict = Depends(get_current_user)):
     ctrl_cores = [c for c in ctrl_cores if c < total_cores]
     data_cores = [c for c in data_cores if c < total_cores]
 
+    if remote:
+        mgmt_cores = sorted(all_cores)
+
     # Sample per-core usage (blocking 0.5s — run in thread pool)
     import asyncio as _aio
     per_core = await _aio.to_thread(psutil.cpu_percent, 0.5, True)
 
     def avg(cores):
         vals = [per_core[c] for c in cores if c < len(per_core)]
-        return round(sum(vals) / len(vals), 1) if vals else 0.0
+        return round(sum(vals) / len(vals), 1) if vals else None
 
     mem = psutil.virtual_memory()
     swap = psutil.swap_memory()
@@ -9860,7 +9866,7 @@ async def plane_usage(user: dict = Depends(get_current_user)):
                          "charon", "swanctl", "lldpd"])
     data_rss = _rss_for(["ffn_dpdk_fwd", "dpdk-testpmd"])
 
-    return {
+    result = {
         "cores_total": total_cores,
         "management_plane": {
             "cores": mgmt_cores,
@@ -9892,6 +9898,14 @@ async def plane_usage(user: dict = Depends(get_current_user)):
             "swap_used_gb":  round(swap.used  / 1e9, 2),
         },
     }
+    for key in ('management_plane', 'control_plane', 'data_plane'):
+        result[key].update(source='local', state='available' if result[key]['cores'] else 'unassigned',
+                           fresh=True, age_seconds=0, expires_in_seconds=10, memory_scope='processes')
+    if remote or control is None:
+        result['control_plane'] = agent_plane_usage(control, 'cp')
+        result['data_plane'] = agent_plane_usage(control, 'dp')
+    return result
+
 
 
 @app.get("/api/config/snapshots")

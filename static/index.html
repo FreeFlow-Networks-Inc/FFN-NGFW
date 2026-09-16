@@ -1696,6 +1696,8 @@ function renderDashOverview(c) {
         <h3>Control Plane</h3>
         <div class="big-num" id="dash-cp-cpu">--%</div>
         <div class="sub" id="dash-cp-cores" style="font-size:10px">cores: --</div>
+        <div class="sub" id="dash-cp-source" style="font-size:10px" aria-live="polite">Awaiting statistics</div>
+        <details style="margin-top:6px;font-size:10px"><summary>Per-core utilization</summary><div id="dash-cp-per-core" style="max-height:140px;overflow:auto;white-space:pre-wrap">--</div></details>
         <div class="bar-track" style="margin-top:6px;height:6px"><div id="dash-cp-bar" class="bar-fill" style="width:0%;background:var(--accent);height:6px"></div></div>
         <div class="sub" style="margin-top:6px;font-size:10px">Memory: <span id="dash-cp-mem">--</span></div>
       </div>
@@ -1703,6 +1705,8 @@ function renderDashOverview(c) {
         <h3>Management Plane</h3>
         <div class="big-num" id="dash-mp-cpu">--%</div>
         <div class="sub" id="dash-mp-cores" style="font-size:10px">cores: --</div>
+        <div class="sub" id="dash-mp-source" style="font-size:10px" aria-live="polite">Awaiting statistics</div>
+        <details style="margin-top:6px;font-size:10px"><summary>Per-core utilization</summary><div id="dash-mp-per-core" style="max-height:140px;overflow:auto;white-space:pre-wrap">--</div></details>
         <div class="bar-track" style="margin-top:6px;height:6px"><div id="dash-mp-bar" class="bar-fill" style="width:0%;background:var(--orange);height:6px"></div></div>
         <div class="sub" style="margin-top:6px;font-size:10px">Memory: <span id="dash-mp-mem">--</span></div>
       </div>
@@ -1712,8 +1716,10 @@ function renderDashOverview(c) {
         <h3>Data Plane</h3>
         <div class="big-num" id="dash-dp-cpu">--%</div>
         <div class="sub" id="dash-dp-cores" style="font-size:10px">cores: --</div>
+        <div class="sub" id="dash-dp-source" style="font-size:10px" aria-live="polite">Awaiting statistics</div>
+        <details style="margin-top:6px;font-size:10px"><summary>Per-core utilization</summary><div id="dash-dp-per-core" style="max-height:140px;overflow:auto;white-space:pre-wrap">--</div></details>
         <div class="bar-track" style="margin-top:6px;height:6px"><div id="dash-dp-bar" class="bar-fill" style="width:0%;background:var(--red);height:6px"></div></div>
-        <div class="sub" style="margin-top:6px;font-size:10px"><span id="dash-dp-isolcpus">isolcpus: --</span></div>
+        <div class="sub" style="margin-top:6px;font-size:10px"><span id="dash-dp-isolcpus">CPU allocation: --</span></div>
       </div>
       <div class="card"><h3>FPGA Resources</h3><div id="fpga-resources"></div></div>
       <div class="card"><h3>System</h3><div id="system-info" style="font-size:12px;line-height:2"></div></div>
@@ -1759,28 +1765,54 @@ function initDashboardCharts() {
 const _chartColors = ['#2f81f7','#3fb950','#d29922','#f85149','#a371f7','#f0883e','#56d4dd','#db61a2'];
 
 function _setPlaneWidget(prefix, info) {
-  if (!info) return;
-  const pct = info.cpu_percent || 0;
+  info = info || {state:'unavailable'};
+  const available = info.state === 'available' && info.fresh !== false;
+  const pct = available && Number.isFinite(info.cpu_percent) ? info.cpu_percent : null;
   const cpuEl = document.getElementById(`dash-${prefix}-cpu`);
-  if (cpuEl) cpuEl.textContent = pct.toFixed(1) + '%';
+  if (!cpuEl) return;
+  const generation = (cpuEl._usageGeneration || 0) + 1;
+  cpuEl._usageGeneration = generation;
+  cpuEl.textContent = pct === null ? '--' : pct.toFixed(1) + '%';
   const barEl = document.getElementById(`dash-${prefix}-bar`);
   if (barEl) {
-    barEl.style.width = Math.min(pct, 100) + '%';
-    if (pct > 90) barEl.style.background = 'var(--red)';
-    else if (pct > 70) barEl.style.background = 'var(--orange)';
+    barEl.style.width = (pct === null ? 0 : Math.max(0, Math.min(pct, 100))) + '%';
+    barEl.style.background = pct > 90 ? 'var(--red)' : pct > 70 ? 'var(--orange)' : 'var(--accent)';
   }
   const coresEl = document.getElementById(`dash-${prefix}-cores`);
-  if (coresEl) coresEl.textContent = 'cores: ' + ((info.cores||[]).join(',') || 'none');
+  if (coresEl) coresEl.textContent = info.cores?.length ? `${info.cores.length} logical cores`
+    : info.state === 'unassigned' ? 'No cores assigned' : 'Cores: --';
+  const source = info.source === 'agent'
+    ? `Agent: ${(info.agents || []).map(a => a.name).join(', ') || 'unavailable'} · Linux CPU`
+    : info.source === 'local' ? 'Local CPU allocation' : 'Statistics unavailable';
+  const state = {available:'Current', sampling:'Sampling CPU counters', stale:'Stale',
+    unavailable:'Unavailable', unassigned:'No cores assigned'}[info.state] || 'Unavailable';
+  const age = Number.isFinite(info.age_seconds) ? ` · ${Math.floor(info.age_seconds)}s ago` : '';
+  const window = Number.isFinite(info.sample_seconds) ? ` · ${info.sample_seconds.toFixed(1)}s sample` : '';
+  const sourceEl = document.getElementById(`dash-${prefix}-source`);
+  if (sourceEl) sourceEl.textContent = `${source} · ${state}${age}${window}`;
+  const detail = document.getElementById(`dash-${prefix}-per-core`);
+  if (detail) detail.textContent = Object.entries(info.per_core || {}).map(([core, value]) =>
+    `CPU ${core}: ${available && Number.isFinite(value) ? value.toFixed(1) + '%' : '--'}`).join('\n') || '--';
   const memEl = document.getElementById(`dash-${prefix}-mem`);
-  if (memEl) {
-    const mb = (info.memory_bytes||0) / 1e6;
-    memEl.textContent = `${mb.toFixed(1)} MB (${(info.memory_percent||0).toFixed(2)}%)`;
+  if (memEl) memEl.textContent = info.fresh !== false && Number.isFinite(info.memory_bytes)
+    ? `${(info.memory_bytes / 1e6).toFixed(1)} MB (${Number.isFinite(info.memory_percent) ? info.memory_percent.toFixed(2) : '--'}%) · ${info.memory_scope === 'host' ? 'host' : 'processes'}` : '--';
+  const iso = prefix === 'dp' ? document.getElementById('dash-dp-isolcpus') : null;
+  if (iso) iso.textContent = info.source === 'agent' ? 'CPU load reported by dataplane agent'
+    : info.source === 'local' ? 'CPU allocation: see Hardware Inventory' : 'CPU allocation: unavailable';
+  // Expire the display even if the next request hangs or the browser loses its connection.
+  if (info.fresh && Number.isFinite(info.expires_in_seconds) && info.expires_in_seconds > 0) {
+    setTimeout(() => {
+      if (cpuEl.isConnected && cpuEl._usageGeneration === generation)
+        _setPlaneWidget(prefix, {...info, state:'stale', fresh:false, age_seconds:null});
+    }, info.expires_in_seconds * 1000);
   }
 }
 
+let _dashboardRefreshSequence = 0;
 async function refreshDashboard() {
   const marker = document.getElementById('dash-time');
   if (!marker) return;
+  const sequence = ++_dashboardRefreshSequence;
   const overview = currentSubPage === 'dash-overview';
   const [tp, threats, sessions, status, resources, planes] = await Promise.all([
     api('/api/dashboard/throughput'),
@@ -1790,7 +1822,12 @@ async function refreshDashboard() {
     overview ? api('/api/system/resources') : null,
     overview ? api('/api/system/plane-usage') : null,
   ]);
-  if (!marker.isConnected) return;
+  if (!marker.isConnected || sequence !== _dashboardRefreshSequence) return;
+  if (overview) {
+    _setPlaneWidget('cp', planes?.control_plane);
+    _setPlaneWidget('mp', planes?.management_plane);
+    _setPlaneWidget('dp', planes?.data_plane);
+  }
   if (!tp || !Array.isArray(tp.ports)) { marker.textContent = 'Throughput unavailable'; return; }
 
   document.getElementById('dash-time').textContent = 'Updated: '+timeStr();
@@ -1865,17 +1902,6 @@ async function refreshDashboard() {
       barEl.style.background = pct > 90 ? 'var(--red)' : (pct > 70 ? 'var(--orange)' : 'var(--green)');
     }
     document.getElementById('dash-hit-ratio').textContent = `Hit ratio: ${sessions.hit_ratio}% | Hits: ${fmt(sessions.hits)} | Misses: ${fmt(sessions.misses)}`;
-  }
-
-  // Control / Management / Data plane usage meters
-  if (planes) {
-    _setPlaneWidget('cp', planes.control_plane);
-    _setPlaneWidget('mp', planes.management_plane);
-    _setPlaneWidget('dp', planes.data_plane);
-    const iso = document.getElementById('dash-dp-isolcpus');
-    if (iso) iso.textContent = planes.data_plane?.isolcpus_detected
-      ? `isolcpus: ${(planes.data_plane.cores || []).join(',')||'(none)'}`
-      : 'CPU allocation: see Hardware Inventory';
   }
 
   // Resources
