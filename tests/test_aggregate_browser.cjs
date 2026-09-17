@@ -31,7 +31,25 @@ const {chromium}=require('playwright'),fs=require('node:fs'),path=require('node:
     assert.match(vpc,/Priority 32768 · Key 100 · Port 101/);
     assert.match(vpc,/Peer state synchronization, collecting/);
     assert.match(vpc,/ethernet1\/24: Administratively down/);
-    assert(!vpc.includes('20000 Mb/s'));assert.match(vpc,/Passive observations do not verify forwarding/);
+    assert(!vpc.includes('20000 Mb/s'));assert.match(vpc,/Partner identity alone does not verify forwarding/);
+    await page.evaluate(()=>{
+      const live=_ifaceState.aeStatus[0];live.activation_supported=true;live.running_revision='committed-hash';live.activation_revision=7;
+      if(!crypto.randomUUID)crypto.randomUUID=()=> '00000000-0000-4000-8000-000000000001';
+      window.calls=[];window.consoleRequest=async(path,opts)=>{calls.push({path,body:JSON.parse(opts.body)});return {ok:true,result:{state:'negotiating'}};};
+      window.loadInterfacesFull=async()=>{};
+      _renderConfiguredAE();
+    });
+    await page.getByRole('button',{name:'Qualify LACP',exact:true}).click();
+    const calls=await page.evaluate(()=>calls);
+    assert.equal(calls.length,1);assert.equal(calls[0].path,'/api/system/planes');
+    assert.deepEqual(calls[0].body.payload,{group:'ae1',operation:'negotiate',running_revision:'committed-hash',revision:7});
+    assert.equal(await page.getByRole('button',{name:'Hardware Egress',exact:true}).isDisabled(),true);
+    await page.evaluate(()=>{_ifaceState.aeStatus[0].offload_ready=true;_renderConfiguredAE();});
+    await page.getByRole('button',{name:'Hardware Egress',exact:true}).click();
+    assert.equal((await page.evaluate(()=>calls))[1].body.payload.operation,'offload');
+    assert.equal(calls[0].body.resource,'aggregates');assert.equal(calls[0].body.action,'apply');
+    await page.evaluate(()=>{_ifaceState.aeStatus[0].committed=false;_renderConfiguredAE();});
+    assert.equal(await page.getByRole('button',{name:'Activate',exact:true}).isDisabled(),true);
     await page.evaluate(()=>{_ifaceState.aeStatus=[{ae_name:'ae1',bond:'bond1',kernel_exists:false}];_renderConfiguredAE();});
     assert.match(await page.locator('table').innerText(),/NO KERNEL BOND/);
     console.log('Aggregate hardware status, physical members, escaped blockers and generic Linux fallback passed.');

@@ -3967,6 +3967,8 @@ function _linkStateDot(state) {
    and log line uses. Neither is derivable from the PAN name. Elsewhere it
    keeps showing the Linux NIC, which is the equivalent fact there. */
 function _ifaceSubtitle(r) {
+  const aggregate=(_ifaceState.aeStatus||[]).find(a=>a.ae_name===r.name&&a.backend==='pa5200-bcm');
+  if (aggregate) return '<div class="text-dim" style="font-size:10px;margin-top:2px">BCM / OCTEON aggregate</div>';
   const f = (_ifaceState.faceplate||{})[r.name];
   if (f) {
     const position = String(f.faceplate || '');
@@ -3981,6 +3983,8 @@ function _ifaceSubtitle(r) {
 }
 
 function _ifaceRowHTML(r, isSub) {
+  const aggregate=(_ifaceState.aeStatus||[]).find(a=>a.ae_name===r.name&&a.backend==='pa5200-bcm');
+  if (aggregate) r={...r,link_state:aggregate.activation?.fresh?!!aggregate.activation.dataplane?.attachment_ready:aggregate.state==='inactive'?false:null};
   const nameCell = isSub
     ? `<td style="padding-left:24px" class="text-dim">└ <span class="mono"><strong>${r.name}</strong></span></td>`
     : `<td>
@@ -4074,7 +4078,12 @@ function _renderConfiguredAE() {
         if (live.partner_consistency) {
           const peer=live.partner_consistency;
           statusDetail+=' · Partner identity: '+_escSP(peer.state)+' ('+_escSP(String(peer.observed_members))+
-            '/'+_escSP(String(peer.expected_members))+' members observed). Passive observations do not verify forwarding.';
+            '/'+_escSP(String(peer.expected_members))+' members observed). Partner identity alone does not verify forwarding.';
+        }
+        if (live.activation?.fresh) {
+          statusDetail+=' · Egress: '+(live.hardware_offload?'BCM hardware member selection':'OCTEON software member selection');
+          statusDetail+=' · Distributing: '+_escSP((live.distributing||[]).map(p=>'ethernet1/'+p).join(', ')||'none');
+          if (live.hardware_offload) statusDetail+=' · Hardware TX: '+_escSP(String(live.offload_tx||0));
         }
       } else if (!live.kernel_exists) {
         statusBadge = '<span class="badge badge-down">NO KERNEL BOND</span>';
@@ -4115,18 +4124,38 @@ function _renderConfiguredAE() {
       <td class="mono" style="font-size:10px;white-space:normal;min-width:170px">${cfgMemStr}</td>
       <td class="mono" style="font-size:10px;white-space:normal;min-width:230px">${liveMemStr}</td>
       <td class="mono">${(ae.ip_addresses||[]).join(', ')||'--'}</td>
-      <td>${ae.mtu||_ifaceState.jumbo.mtu}</td>
+      <td>${hardware?(live.activation?.dataplane?.network?.mtu||ae.mtu||1500):(ae.mtu||_ifaceState.jumbo.mtu)}</td>
       <td>
         ${statusBadge}
         <div class="text-dim" style="font-size:10px;margin-top:2px;white-space:normal;min-width:230px;max-width:360px">${statusDetail}</div>
       </td>
-      <td>
+      <td style="white-space:normal;min-width:180px">
+        ${hardware&&live.activation_supported?`<button class="btn btn-xs" ${live.committed?'':'disabled'} onclick="aggregateOperation('${ae.name}','activate')">Activate</button>
+        <button class="btn btn-xs" ${live.committed&&live.offload_ready?'':'disabled'} title="${_escSP(live.offload_blocker||'BCM egress member selection')}" onclick="aggregateOperation('${ae.name}','offload')">Hardware Egress</button>
+        <button class="btn btn-xs" ${live.committed?'':'disabled'} onclick="aggregateOperation('${ae.name}','negotiate')">Qualify LACP</button>
+        <button class="btn btn-xs" onclick="aggregateOperation('${ae.name}','deactivate')">Stop</button>
+        <button class="btn btn-xs" onclick="aggregateOperation('${ae.name}','recover')">Recover</button>`:''}
         <button class="btn btn-xs" onclick="openIfaceModal('${ae.name}')">Edit</button>
         <button class="btn btn-xs" onclick="openSubinterfaceModal('${ae.name}')">+ Sub</button>
         <button class="btn btn-xs btn-danger" onclick="deleteIface('${ae.name}')">Del</button>
       </td>
     </tr>`;
   }).join('');
+}
+
+async function aggregateOperation(name, operation) {
+  const live=(_ifaceState.aeStatus||[]).find(row=>row.ae_name===name);
+  const notice=document.getElementById('iface-notice');
+  if (!live?.running_revision) { if(notice)notice.textContent='Refresh aggregate status first.'; return; }
+  if(notice)notice.textContent='Requesting '+operation+' for '+name+' through the control daemon…';
+  try {
+    const result=await consoleRequest('/api/system/planes',{method:'POST',body:JSON.stringify({
+      v:1,id:crypto.randomUUID(),resource:'aggregates',action:'apply',
+      payload:{group:name,operation,running_revision:live.running_revision,revision:live.activation_revision}})});
+    if(!result.ok)throw new Error(result.error||'Aggregate operation failed; inspect controller status.');
+    if(notice)notice.textContent=name+': '+(result.result.state||(result.result.stopped?'stopped':'request accepted'))+'.';
+  } catch(error) { if(notice)notice.textContent=error.message; }
+  await loadInterfacesFull();
 }
 
 function switchIfaceEditorTab(name) {
