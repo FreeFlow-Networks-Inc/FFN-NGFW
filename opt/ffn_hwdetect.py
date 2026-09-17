@@ -44,6 +44,51 @@ BDF = re.compile(r"^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]$", re.I)
 TOOLS = ("lspci", "ethtool", "dmidecode", "lsblk", "mlxfwmanager")
 
 
+def fe1xx_identity(device):
+    """Identify front-end silicon without guessing a model from a PCI prefix.
+
+    feed:fe1c is verified by the PA-5200 CP inventory. Other FE1xx models
+    require an explicit model in vendor PCI or FPGA Manager metadata. A
+    vendor ID, installed tool or firmware filename alone is not evidence.
+    """
+    vendor = str(device.get("vendor_id", device.get("vendor", ""))).lower().removeprefix("0x")
+    ident = str(device.get("device_id", device.get("device", ""))).lower().removeprefix("0x")
+    if vendor == V_PAN and ident == "fe1c":
+        return {"family": "FE1xx", "model": "FE100", "identity_source": "pci-id:feed:fe1c"}
+    if vendor == V_PAN or device.get("source") == "fpga_manager":
+        description = " ".join(str(device.get(k) or "") for k in ("model", "description", "name"))
+        match = re.search(r"(?<![a-z0-9])FE1[0-9]{2}(?![a-z0-9])", description, re.I)
+        if match:
+            return {"family": "FE1xx", "model": match[0].upper(), "identity_source": "device-model"}
+    for manager in device.get("managers") or []:
+        identity = fe1xx_identity({"source": "fpga_manager", "name": manager.get("name")})
+        if identity:
+            return identity
+    return {}
+
+
+def inventory_applicability(inv, profile=None):
+    """Presentation metadata; never convert expected hardware into detected hardware."""
+    profile = profile or {}
+    features = profile.get("features") or {}
+    specialized = inv.get("specialized") or {}
+    rows = inv.get("accelerators") or []
+    family = profile.get("platform") or (profile.get("chassis") or {}).get("family") or "unknown"
+    def expected(name):
+        return (features.get(name) or {}).get("applicable") is True
+    fe = bool((specialized.get("fe1xx") or {}).get("present"))
+    return {"family": family,
+            "dpu": bool((inv.get("dpu") or {}).get("present")) or expected("dpu"),
+            "accelerators": bool(rows) or expected("front_end_asic") or expected("offload_complex") or expected("fpga_card"),
+            "fe1xx": fe or family == "pa5200",
+            "octeon": bool((specialized.get("octeon") or {}).get("present")) or family == "pa5200",
+            "hugepages": expected("hugepages") if profile else
+                         bool((inv.get("hugepages") or {}).get("pools")) or
+                         (inv.get("cpu_role") or {}).get("role") == "shared",
+            "aes_ni": str((inv.get("system") or {}).get("arch", "")).lower() in
+                      ("x86_64", "amd64", "i386", "i686")}
+
+
 def _basename(path):
     return path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
 
@@ -282,7 +327,8 @@ def detect_nics(probe=None, pci=None):
     seen = set()
     for path in p.entries("/sys/class/net"):
         name = _basename(path)
-        if name == "lo":
+        # bonding_masters is a sysfs control file, not a network device.
+        if name in ("lo", "bonding_masters"):
             continue
         backing = p.link(path + "/device")
         address = _basename(backing).lower()
@@ -411,6 +457,7 @@ def detect_accelerators(probe=None, pci=None):
             result.append({"role": role, "kind": kind, "bus": "host", "pci": device["description"],
                            "address": device["address"], "vendor_id": vendor,
                            "device_id": device["device_id"], "class_id": cls,
+                           "description": device["description"],
                            "model": _octeon(device),
                            "driver": device["driver"], "numa_node": device["numa_node"],
                            "source": device["source"], "evidence": "PCI identity/class and bound driver"})
@@ -421,7 +468,7 @@ def detect_accelerators(probe=None, pci=None):
         state = p.read(path + "/state")
         backing = p.link(path + "/device")
         addresses = [part.lower() for part in backing.split("/") if BDF.fullmatch(part)]
-        match = next((row for row in result if row["kind"] == "fpga" and row["address"] in addresses), None)
+        match = next((row for row in result if row["kind"] in ("fpga", "asic") and row["address"] in addresses), None)
         manager = {"path": path, "name": name, "state": state}
         if match is not None:
             match.setdefault("managers", []).append(manager)
@@ -432,6 +479,11 @@ def detect_accelerators(probe=None, pci=None):
                            "numa_node": p.number(path + "/device/numa_node", -1),
                            "source": "fpga_manager", "evidence": path,
                            "managers": [manager]})
+    for device in result:
+        identity = fe1xx_identity(device)
+        if identity:
+            device.update(identity)
+            device["role"] = "FE1xx front-end " + ("FPGA" if device["kind"] == "fpga" else "ASIC")
     return result
 
 
@@ -450,6 +502,8 @@ def detect_specialized(system, cpu, pci, accelerators):
                        "pci_slots": sorted({d["address"].rsplit(".", 1)[0] for d in functions})},
             "fpga": {"present": any(a["kind"] == "fpga" for a in accelerators),
                      "devices": [a for a in accelerators if a["kind"] == "fpga"]},
+            "fe1xx": {"present": any(a.get("family") == "FE1xx" for a in accelerators),
+                      "devices": [a for a in accelerators if a.get("family") == "FE1xx"]},
             "offload_ready": None,
             "note": "Presence does not establish loaded firmware, platform compatibility, remote-bus inventory, or forwarding readiness."}
 
@@ -571,6 +625,7 @@ def detect(refresh=True, probe=None):
         inventory["status"] = "unsupported"
     inventory["cpu_role"] = classify_cpu_role(inventory)
     inventory["cpu"]["role"] = inventory["cpu_role"]["role"]
+    inventory["applicability"] = inventory_applicability(inventory)
     return inventory
 
 

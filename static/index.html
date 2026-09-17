@@ -43,6 +43,10 @@ input,select,textarea{font-family:inherit;font-size:13px}
 .diff-new{color:var(--green);font-family:monospace}
 .diff-path{color:var(--text-dim);font-family:monospace;font-size:10px}
 .commit-modal-body{max-height:60vh;overflow-y:auto}
+#modal-commit .diff-table{table-layout:fixed}
+#modal-commit .diff-table td{overflow-wrap:anywhere}
+#modal-commit .diff-table th:first-child{width:65px}
+#commit-validation{max-height:20vh;overflow:auto;overflow-wrap:anywhere}
 .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:var(--radius);border:1px solid var(--border);background:var(--card);color:var(--text);font-size:12px;font-weight:500;transition:all .15s;white-space:nowrap}
 .btn:hover{background:var(--card-hover);border-color:var(--text-muted)}
 .btn-primary{background:var(--accent);border-color:var(--accent);color:#fff}
@@ -265,6 +269,7 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
 <script src="/static/config-objects.js"></script>
 <link rel="stylesheet" href="/static/config-objects.css">
 <script src="/static/config-policies.js"></script>
+<script src="/static/policy-profiles.js"></script>
 <link rel="stylesheet" href="/static/theme.css">
 </head>
 <body>
@@ -527,23 +532,28 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
         <option value="config.device.setup.wildfire">Partial: Setup &gt; Crucible only</option>
         <option value="config.device.setup.session">Partial: Setup &gt; Session only</option>
         <option value="config.device.setup.services">Partial: Setup &gt; Services only</option>
-        <option value="config.network">Partial: Network only</option>
-        <option value="config.policy">Partial: Policy only</option>
-        <option value="config.objects">Partial: Objects only</option>
+        <option value="devices.entry[@name=localhost.localdomain].network">Partial: Network only</option>
+        <option value="devices.entry[@name=localhost.localdomain].vsys.entry[@name=vsys1].rulebase">Partial: vsys1 policy rulebase</option>
+        <option value="shared">Partial: Shared objects</option>
         <option value="custom">Partial: Custom xpath...</option>
       </select>
     </div>
     <div class="form-group" id="commit-custom-xpath-group" style="display:none">
-      <label>Custom xpath (dot-notation)</label><input type="text" id="commit-custom-xpath" placeholder="config.device.setup.management.hostname">
+      <label>Custom xpath (dot-notation)</label><input type="text" id="commit-custom-xpath" oninput="invalidateCommitReview()" placeholder="config.device.setup.management.hostname">
     </div>
-    <div class="section"><h4 style="font-size:12px;margin-bottom:8px">Pending Changes</h4>
+    <div id="commit-validation" role="status" aria-live="polite" style="font-size:12px;margin:12px 0"></div>
+    <div class="section"><h4 style="font-size:12px;margin-bottom:8px">Preview of Selected Scope</h4>
+      <p class="text-dim" style="font-size:11px">Includes settings staged through XML and legacy resource editors. Credential values are redacted.</p>
       <div id="commit-diff" class="commit-modal-body"><p class="text-dim">Loading...</p></div>
     </div>
-    <div class="form-actions" style="margin-top:16px;display:flex;gap:8px">
-      <button class="btn btn-primary" id="btn-do-commit" onclick="doCommit()">Commit</button>
-      <button class="btn btn-danger" onclick="if(confirm('Revert candidate to running? All pending changes will be lost.'))doRevert()">Revert to Running</button>
+    <div class="form-actions" style="margin-top:16px;display:flex;flex-wrap:wrap;gap:8px">
+      <button class="btn" id="btn-preview-commit" onclick="loadCommitDiff()">Preview</button>
+      <button class="btn" id="btn-validate-commit" onclick="loadCommitDiff(true)">Validate</button>
+      <button class="btn btn-primary" id="btn-do-commit" onclick="doCommit()" disabled>Commit</button>
+      <button class="btn btn-danger" id="btn-revert-commit" onclick="if(confirm('Discard XML candidate changes? Changes in legacy resource editors are kept.'))doRevert()">Revert Candidate</button>
       <button class="btn" onclick="closeModal('modal-commit')">Close</button>
-      <div style="margin-left:auto;font-size:11px;color:var(--text-dim);align-self:center" id="commit-msg"></div>
+      <button class="btn" onclick="openTasksModal()">Tasks</button>
+      <div id="commit-msg" role="status" aria-live="polite" style="flex-basis:100%;font-size:12px;overflow-wrap:anywhere"></div>
     </div>
   </div>
 </div>
@@ -671,6 +681,7 @@ const TAB_MENUS = {
     {id:'url-categories',label:'URL Categories'},
     {id:'databases',label:'Databases'},
     {id:'security-profiles',label:'Security Profiles'},
+    {id:'decryption-profiles',label:'Decryption Profiles'},
   ],
   network: [
     {id:'interfaces',label:'Interfaces'},
@@ -929,7 +940,7 @@ async function refreshCommitIndicator() {
   const dot = document.getElementById('commit-dot');
   const btn = document.getElementById('commit-btn');
   const ind = document.getElementById('commit-indicator');
-  if (diff) {
+  if (diff && typeof diff.has_changes === 'boolean') {
     if (diff.has_changes) {
       if (dot) dot.style.background = 'var(--orange)';
       if (btn) btn.classList.add('btn-primary');
@@ -943,11 +954,14 @@ async function refreshCommitIndicator() {
       if (btn) btn.classList.remove('btn-primary');
       if (ind) ind.style.display = 'none';
     }
+  } else {
+    if (dot) dot.style.background = 'var(--orange)';
+    if (ind) { ind.style.display = 'inline-block'; ind.className = 'commit-indicator pending'; ind.textContent = 'Changes unknown'; }
   }
   const lockIcon = document.getElementById('lock-icon');
   const lockLabel = document.getElementById('lock-status-label');
   const lockBtn = document.getElementById('lock-btn');
-  if (lock) {
+  if (lock && typeof lock.locked === 'boolean') {
     if (lock.locked) {
       if (lockIcon) lockIcon.textContent = '🔒';
       if (lockLabel) lockLabel.textContent = lock.holder || 'Locked';
@@ -968,129 +982,150 @@ function startCommitPolling() {
   commitPollTimer = setInterval(refreshCommitIndicator, 5000);
 }
 
+let commitReview = null, commitReviewSequence = 0, commitReviewLoading = false, commitPosting = false;
+
+function commitScope() {
+  const selected = document.getElementById('commit-scope').value;
+  if (selected !== 'custom') return selected || null;
+  const path = document.getElementById('commit-custom-xpath').value.trim();
+  if (!path) throw new Error('Enter a subtree path for a custom partial commit.');
+  return path;
+}
+
+function updateCommitButtons() {
+  const busy = commitReviewLoading || commitPosting;
+  for (const id of ['btn-preview-commit','btn-validate-commit','commit-scope','commit-custom-xpath'])
+    document.getElementById(id).disabled = busy;
+  document.getElementById('btn-revert-commit').disabled = busy || !consoleCanWrite() || !commitReview?.can_commit;
+  document.getElementById('btn-do-commit').disabled = busy || !commitReview?.validated ||
+    !commitReview?.can_commit || !commitReview?.validation?.valid || !commitReview?.diff?.has_changes;
+}
+
+function invalidateCommitReview() {
+  ++commitReviewSequence;
+  commitReview = null;
+  commitReviewLoading = false;
+  document.getElementById('commit-validation').textContent = 'Preview and validate the selected scope before committing.';
+  document.getElementById('commit-diff').textContent = 'Preview is out of date.';
+  document.getElementById('commit-lock-banner').textContent = '';
+  updateCommitButtons();
+}
+
 async function openCommitModal() {
   document.getElementById('modal-commit').classList.add('show');
+  if (commitPosting) return;
   document.getElementById('commit-description').value = '';
   document.getElementById('commit-scope').value = '';
   document.getElementById('commit-custom-xpath-group').style.display = 'none';
   document.getElementById('commit-msg').textContent = '';
   await loadCommitDiff();
-  await loadCommitLockBanner();
 }
 
-async function loadCommitLockBanner() {
-  const lock = await api('/api/config/lock');
-  const banner = document.getElementById('commit-lock-banner');
-  if (!banner || !lock) return;
-  const me = document.getElementById('user-display').textContent;
-  if (lock.locked && lock.holder !== me) {
-    banner.innerHTML = `<div style="padding:10px;background:rgba(248,81,73,.15);border:1px solid var(--red);border-radius:4px;color:var(--red);font-size:12px">
-      <strong>🔒 Config locked by ${lock.holder}</strong> (${lock.reason||'commit'}) — acquired ${lock.age_seconds}s ago, expires in ${lock.expires_in}s.
-      You cannot commit until the lock is released.
-    </div>`;
-    document.getElementById('btn-do-commit').disabled = true;
-  } else if (lock.locked) {
-    banner.innerHTML = `<div style="padding:10px;background:rgba(63,185,80,.15);border:1px solid var(--green);border-radius:4px;color:var(--green);font-size:12px">
-      <strong>🔒 You hold the config lock</strong> (${lock.reason||'editing'}) — expires in ${lock.expires_in}s.
-    </div>`;
-    document.getElementById('btn-do-commit').disabled = false;
-  } else {
-    banner.innerHTML = `<div style="padding:10px;background:rgba(47,129,247,.08);border:1px solid var(--border);border-radius:4px;font-size:12px">
-      <strong>🔓 Config unlocked</strong> — committing will briefly acquire the lock.
-    </div>`;
-    document.getElementById('btn-do-commit').disabled = false;
-  }
-}
-
-async function loadCommitDiff() {
-  const diff = await api('/api/config/diff');
-  const el = document.getElementById('commit-diff');
-  if (!el) return;
-  if (!diff || !diff.has_changes) {
-    el.innerHTML = '<p class="text-dim" style="padding:12px">No pending changes.</p>';
+function renderCommitReview(review) {
+  const lock = review.lock;
+  document.getElementById('commit-lock-banner').textContent = lock.locked
+    ? `Config locked by ${lock.holder} (${lock.reason || 'editing'}).` : 'Config unlocked.';
+  const validation = review.validation;
+  const heading = !validation.valid ? 'Validation blocked' : review.validated ? 'Policy validation passed' : 'Preview ready — validate before committing';
+  document.getElementById('commit-validation').innerHTML =
+    `<strong style="color:var(--${validation.valid ? 'blue' : 'red'})">${heading}</strong>` +
+    `<p class="text-dim">${_netEscape(review.validation_scope)} No settings have been applied.</p>` +
+    (validation.blockers.length ? '<ul>' + validation.blockers.map(b => `<li>${_netEscape([b.scope,b.kind,b.name].filter(Boolean).join(' / '))}: ${_netEscape(b.reason)}</li>`).join('') + '</ul>' : '');
+  const diff = review.diff;
+  if (!diff.has_changes) {
+    document.getElementById('commit-diff').textContent = 'No pending changes in the selected scope.';
     return;
   }
-  let html = `<p class="text-dim" style="font-size:11px;margin-bottom:8px">Total changes: ${diff.total_changes} (${diff.added.length} added, ${diff.modified.length} modified, ${diff.removed.length} removed)</p>`;
-  html += '<table class="diff-table"><thead><tr><th>Type</th><th>Path</th><th>Value</th></tr></thead><tbody>';
-  diff.modified.forEach(m=>{
-    html += `<tr><td><span class="badge" style="background:var(--orange);color:#000">MOD</span></td>
-      <td class="diff-path">${m.path}</td>
-      <td><span class="diff-old">${m.old||'(empty)'}</span> → <span class="diff-new">${m.new||'(empty)'}</span></td></tr>`;
-  });
-  diff.added.forEach(a=>{
-    html += `<tr><td><span class="badge" style="background:var(--green);color:#000">ADD</span></td>
-      <td class="diff-path">${a.path}</td>
-      <td><span class="diff-new">${a.new||'(empty)'}</span></td></tr>`;
-  });
-  diff.removed.forEach(r=>{
-    html += `<tr><td><span class="badge" style="background:var(--red);color:#fff">DEL</span></td>
-      <td class="diff-path">${r.path}</td>
-      <td><span class="diff-old">${r.old||'(empty)'}</span></td></tr>`;
-  });
-  html += '</tbody></table>';
-  el.innerHTML = html;
+  const rows = ['modified','added','removed'].flatMap(kind => diff[kind].map(row => ({...row,kind})));
+  document.getElementById('commit-diff').innerHTML =
+    `<p>${diff.total_changes} changes: ${diff.added.length} added, ${diff.modified.length} modified, ${diff.removed.length} removed.</p>` +
+    '<table class="diff-table"><thead><tr><th>Change</th><th>Path</th><th>Running</th><th>After Commit</th></tr></thead><tbody>' +
+    rows.slice(0,500).map(row => `<tr><td>${row.kind}</td><td class="diff-path">${_netEscape(row.path)}</td>` +
+      `<td class="diff-old">${_netEscape(row.old ?? '—')}</td><td class="diff-new">${_netEscape(row.new ?? '—')}</td></tr>`).join('') +
+    '</tbody></table>' + (rows.length > 500 ? '<p>Showing the first 500 changes. Narrow the scope or use the review API / CLI for the complete list.</p>' : '');
+}
+
+async function loadCommitDiff(validate = false) {
+  if (commitPosting) return;
+  invalidateCommitReview();
+  const sequence = commitReviewSequence;
+  commitReviewLoading = true;
+  updateCommitButtons();
+  document.getElementById('commit-validation').textContent = validate ? 'Validating policies and commissioned providers…' : 'Building preview…';
+  try {
+    const scope = commitScope();
+    const query = '?validate=' + (validate ? 'true' : 'false') + (scope ? '&partial_xpath=' + encodeURIComponent(scope) : '');
+    const review = await consoleRequest('/api/config/review' + query);
+    if (sequence !== commitReviewSequence) return;
+    if (!review.revision || !review.diff || !review.validation || !Array.isArray(review.validation.blockers) || !review.lock)
+      throw new Error('The server returned an incomplete review.');
+    commitReview = review;
+    renderCommitReview(review);
+  } catch (error) {
+    if (sequence !== commitReviewSequence) return;
+    document.getElementById('commit-validation').textContent = 'Review failed: ' + error.message;
+    document.getElementById('commit-diff').textContent = 'Pending changes could not be loaded.';
+  } finally {
+    if (sequence === commitReviewSequence) { commitReviewLoading = false; updateCommitButtons(); }
+  }
 }
 
 function onCommitScopeChange() {
-  const v = document.getElementById('commit-scope').value;
-  document.getElementById('commit-custom-xpath-group').style.display = (v === 'custom') ? 'block' : 'none';
+  const custom = document.getElementById('commit-scope').value === 'custom';
+  document.getElementById('commit-custom-xpath-group').style.display = custom ? 'block' : 'none';
+  invalidateCommitReview();
+  if (!custom) loadCommitDiff();
 }
 
 async function doCommit() {
-  const description = document.getElementById('commit-description').value;
-  let xpath = document.getElementById('commit-scope').value;
-  if (xpath === 'custom') xpath = document.getElementById('commit-custom-xpath').value.trim();
-  if (xpath === '') xpath = null;
+  if (commitPosting || document.getElementById('btn-do-commit').disabled) return;
+  const review = commitReview;
+  if (!review || review.scope !== commitScope()) { invalidateCommitReview(); return; }
+  commitPosting = true;
+  updateCommitButtons();
   const msg = document.getElementById('commit-msg');
-  msg.textContent = 'Committing...';
+  msg.textContent = 'Committing reviewed configuration…';
   msg.style.color = 'var(--orange)';
   try {
-    const res = await fetch(API+'/api/config/commit',{
-      method:'POST',
-      headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-      body:JSON.stringify({description:description, partial_xpath:xpath}),
-    });
-    const data = await res.json();
-    if (res.status === 423) {
-      msg.textContent = data.detail || 'Locked';
-      msg.style.color = 'var(--red)';
-      return;
-    }
+    const data = await consoleRequest('/api/config/commit', {method:'POST', body:JSON.stringify({
+      description:document.getElementById('commit-description').value,
+      partial_xpath:review.scope, expected_revision:review.revision})});
     if (data.status === 'committed') {
       const apply = data.apply_status;
       const skipped = apply && (apply.skipped || []).length || 0;
-      const applied = apply && apply.overall === 'applied' && !(apply.errors || []).length && !(apply.validation_errors || []).length && !skipped;
-      msg.textContent = `Configuration saved (${data.type}) — snapshot: ${data.snapshot}. ` +
-        (applied ? 'Applied successfully.' : `Apply status: ${apply && apply.overall || 'not reported'}${skipped ? '; '+skipped+' settings skipped' : ''}. Open Tasks for details.`);
-      msg.style.color = applied ? 'var(--green)' : 'var(--orange)';
-      await loadCommitDiff();
+      const applied = apply?.overall === 'applied' && !(apply.errors || []).length && !(apply.validation_errors || []).length && !skipped;
+      const planes = data.planes;
+      msg.textContent = `Configuration saved (version ${data.version ?? 'unknown'}). ` +
+        (applied ? 'Local apply completed. ' : `Apply status: ${apply?.overall || 'not reported'}${skipped ? '; '+skipped+' settings skipped' : ''}. `) +
+        (planes?.published ? 'Published to plane agents; check Tasks and agent status for convergence.' : 'Plane distribution is unconfirmed. Check Tasks before retrying.');
+      msg.style.color = applied && planes?.published ? 'var(--green)' : 'var(--orange)';
+      if (data.warnings?.length) { msg.textContent += ' ' + data.warnings.join(' '); msg.style.color = 'var(--orange)'; }
       await refreshCommitIndicator();
-      if (applied) setTimeout(()=>closeModal('modal-commit'), 1500);
     } else if (data.status === 'no-changes') {
-      msg.textContent = 'No changes to commit';
-      msg.style.color = 'var(--text-dim)';
-    } else {
-      msg.textContent = data.message || 'Commit failed';
-      msg.style.color = 'var(--red)';
-    }
-  } catch (e) {
-    msg.textContent = 'Commit error: ' + e.message;
+      msg.textContent = 'No changes in the selected scope.';
+    } else { throw new Error(data.message || 'Commit result was not confirmed.'); }
+  } catch (error) {
+    msg.textContent = error.message + ' Check Tasks and running configuration before retrying; then preview and validate again.';
     msg.style.color = 'var(--red)';
+  } finally {
+    commitPosting = false;
+    invalidateCommitReview();
   }
 }
 
 async function doRevert() {
+  if (commitPosting || document.getElementById('btn-revert-commit').disabled) return;
+  commitPosting = true;
+  updateCommitButtons();
   const msg = document.getElementById('commit-msg');
-  const res = await api('/api/config/revert',{method:'POST'});
-  if (res && res.status === 'reverted') {
-    msg.textContent = '✓ Candidate reverted to running';
+  try {
+    const result = await consoleRequest('/api/config/revert', {method:'POST'});
+    if (result.status !== 'reverted') throw new Error(result.message || 'Revert not confirmed');
+    msg.textContent = 'Candidate XML reverted to running. Preview again to inspect any legacy resource changes.';
     msg.style.color = 'var(--green)';
-    await loadCommitDiff();
     await refreshCommitIndicator();
-  } else {
-    msg.textContent = 'Revert failed';
-    msg.style.color = 'var(--red)';
-  }
+  } catch (error) { msg.textContent = error.message; msg.style.color = 'var(--red)'; }
+  finally { commitPosting = false; invalidateCommitReview(); }
 }
 
 // ========================================================================
@@ -1269,14 +1304,13 @@ async function overrideLock() {
 /* ---- Navigation ---- */
 const PAGE_ALIASES = {software:'device-updates', qos:'network-qos', 'log-settings':'sp-syslog'};
 const UNAVAILABLE_PAGES = {
-  nat:'NAT policy editor', decryption:'Decryption policy', sdwan:'SD-WAN policy',
-  'policy-qos':'Per-application QoS policy', 'access-domain':'Access domains',
+  sdwan:'SD-WAN policy', 'access-domain':'Access domains',
   'ssl-tls-profile':'SSL/TLS service profiles', 'master-key':'Master key management',
   'rec-iot':'IoT recommendations', 'rec-saas':'SaaS recommendations'
 };
 const lastTabPages = {};
-function renderPolicyNAT(c) { renderUnavailable(c, 'Workflow unavailable'); }
-function renderPolicyDecryption(c) { renderUnavailable(c, 'Workflow unavailable'); }
+function renderPolicyNAT(c) { renderPolicyWorkspace(c, 'nat'); }
+function renderPolicyDecryption(c) { renderPolicyWorkspace(c, 'decryption'); }
 function renderPolicySDWAN(c) { renderUnavailable(c, 'Workflow unavailable'); }
 function renderDeviceSSLProfile(c) { renderUnavailable(c, 'Workflow unavailable'); }
 function renderDeviceMasterKey(c) { renderUnavailable(c, 'Workflow unavailable'); }
@@ -1573,6 +1607,7 @@ function renderPage(pageId) {
     'url-categories': renderObjectsURLCategories,
     'databases': renderObjectsDatabases,
     'security-profiles': renderObjectsSecurityProfiles,
+    'decryption-profiles': c => renderPolicyProfiles(c, 'decryption'),
     // Network tab
     'interfaces': renderNetworkInterfaces,
     'zones': renderNetworkZones,
@@ -1728,7 +1763,7 @@ function renderDashOverview(c) {
         <div class="bar-track" style="margin-top:6px;height:6px"><div id="dash-dp-bar" class="bar-fill" style="width:0%;background:var(--red);height:6px"></div></div>
         <div class="sub" style="margin-top:6px;font-size:10px"><span id="dash-dp-isolcpus">CPU allocation: --</span></div>
       </div>
-      <div class="card"><h3>FPGA Resources</h3><div id="fpga-resources"></div></div>
+      <div class="card"><h3 id="resource-title">System Resources</h3><div id="fpga-resources"></div></div>
       <div class="card"><h3>System</h3><div id="system-info" style="font-size:12px;line-height:2"></div></div>
     </div></div>
     <div class="workflow-actions"><button class="btn" onclick="switchSubPage('dash-ddos')">DDoS Detail</button>
@@ -1905,6 +1940,8 @@ async function refreshDashboard() {
   // Resources
   if (resources) {
     const resEl = document.getElementById('fpga-resources');
+    const title = document.getElementById('resource-title');
+    if (title) title.textContent = resources.fpga?.detected ? 'FPGA Resources' : 'System Resources';
     if (resEl) {
       if (resources.fpga && resources.fpga.detected) {
         const f = resources.fpga;
@@ -1922,7 +1959,7 @@ async function refreshDashboard() {
   // System info
   if (status) {
     const fpgaLine = status.fpga_detected?`FPGA: v${status.fpga_version}`:
-      '<span class="text-dim">FPGA: Not detected</span>';
+      '';
     document.getElementById('system-info').innerHTML = `
       <div>Host: ${status.hostname}</div>
       <div>Uptime: ${status.uptime_human}</div>
@@ -2352,10 +2389,21 @@ async function loadHardware(refresh) {
   const dimmRows = (mem.dimms || []).map(x => `<tr><td>${_escSP(x.locator || '')}</td><td>${_escSP(x.size || '')}</td><td>${_escSP(x.speed || '')}</td><td>${_escSP(x.manufacturer || '')}</td></tr>`).join('');
   const diskRows = (d.storage || []).map(x => `<tr><td class="mono">${_escSP(x.name)}</td><td>${hwNumber(x.size_gb, ' GB')}</td><td>${_escSP(x.model || 'Unknown')}</td><td>${x.rotational === true ? 'HDD' : x.rotational === false ? 'Non-rotational' : 'Unknown'}</td></tr>`).join('');
   const accel = (d.accelerators || []);
+  const app = d.applicability || {};
+  const applies = (name, fallback) => typeof app[name] === 'boolean' ? app[name] || fallback : fallback;
+  const showDpu = applies('dpu', !!dpu.present);
+  const showHugepages = typeof app.hugepages === 'boolean' ? app.hugepages : (hp.pools || []).length > 0 || role === 'shared';
+  const showAccel = applies('accelerators', accel.length > 0);
+  const showFE = applies('fe1xx', !!d.specialized?.fe1xx?.present);
+  const feMissing = showFE && !accel.some(a => a.family === 'FE1xx');
+  const showAES = applies('aes_ni', /^(x86_64|amd64|i[3-6]86)$/i.test(sys.arch || ''));
+  const showManager = accel.some(a => a.kind === 'fpga' || (a.managers || []).length);
+
   const accelRows = accel.map(a => `<tr><td><strong>${_escSP(a.role || a.kind || 'Unknown')}</strong><div class="text-dim">${_escSP(a.model || '')}</div></td>
       <td>${a.bus === 'control-plane' ? 'Behind control plane' : a.bus === 'platform' ? 'Platform / SoC' : 'Host PCI'}<div class="mono">${_escSP(a.address || a.pci || '')}</div></td>
       <td>${_escSP(a.driver || 'Unknown')}</td><td>${Number.isInteger(a.numa_node) && a.numa_node >= 0 ? a.numa_node : 'Unknown'}</td>
-      <td>${(a.managers || []).length ? a.managers.map(m => `<div>${_escSP(m.name || 'FPGA Manager')}: ${_escSP(m.state || 'Unknown')}</div>`).join('') : 'Not reported'}</td></tr>`).join('');
+      <td>Detected${a.family === 'FE1xx' ? '<div class="text-dim">Forwarding readiness not reported by this inventory</div>' : ''}</td>
+      ${showManager ? `<td>${(a.managers || []).length ? a.managers.map(m => `<div>${_escSP(m.name || 'FPGA Manager')}: ${_escSP(m.state || 'Unknown')}</div>`).join('') : a.kind === 'fpga' ? 'Unavailable' : '&mdash;'}</td>` : ''}</tr>`).join('');
   const pciRows = ((d.pci || {}).devices || []).map(p => `<tr><td class="mono">${_escSP(p.address)}</td><td class="mono">${_escSP(p.vendor_id || '????')}:${_escSP(p.device_id || '????')}</td><td>${_escSP(p.class_id || 'Unknown')}</td><td>${_escSP(p.driver || 'Unbound / unknown')}</td><td>${p.identity_complete === false ? 'Incomplete identity' : _escSP(p.source || 'Unknown')}</td></tr>`).join('');
   const dpuCard = dpu.present ? (dpu.devices || []).map(dv => `
       <div>${badge(true, 'present')} ${_escSP(dv.type || '')}</div>
@@ -2365,12 +2413,12 @@ async function loadHardware(refresh) {
     `).join('') : '<div class="text-dim">No DPU / SmartNIC detected</div>';
 
   const hostChannels = dpu.control_channels ? ['rshim', 'mst', 'tmfifo_ifaces'].flatMap(k => dpu.control_channels[k] || []) : [];
-  const octeonCard = octeon.present ? `<div class="card"><div class="section-title">OCTEON hardware</div>
-      <div>${octeon.host_cpu ? 'OCTEON host CPU / SoC' : 'OCTEON PCI functions observed'}</div>
+  const octeonCard = applies('octeon', !!octeon.present) ? `<div class="card"><div class="section-title">OCTEON hardware</div>
+      <div>${octeon.host_cpu ? 'OCTEON host CPU / SoC' : octeon.present ? 'OCTEON PCI functions observed' : 'Expected on this hardware family; detection unavailable'}</div>
       ${(octeon.evidence || []).map(e => `<div>${_escSP(e.value)} <span class="text-dim">${_escSP(e.source)}</span></div>`).join('')}
       ${(octeon.pci_functions || []).map(f => `<div>${_escSP(f.model)} <span class="mono">${_escSP(f.address)}</span></div>`).join('')}
       <div class="text-dim">Hardware presence does not establish firmware or forwarding readiness.</div></div>` : '';
-  el.innerHTML = `<div class="text-dim" style="margin-bottom:12px">Last collected: ${_escSP(updated)} &middot; PCI source: ${_escSP((d.pci || {}).source || 'Unknown')}</div>${probeNotice}${roleSummary}${octeonCard}
+  el.innerHTML = `<div class="text-dim" style="margin-bottom:12px">Last collected: ${_escSP(updated)} &middot; PCI source: ${_escSP((d.pci || {}).source || 'Unknown')}</div>${app.family && app.family !== 'unknown' ? '<div class="text-dim">Hardware family: '+_escSP(app.family)+'</div>' : ''}${d.platform_status === 'unavailable' ? '<div role="status">Hardware family information unavailable; showing detected components.</div>' : ''}${probeNotice}${roleSummary}${octeonCard}
   <div class="grid grid-3">
     <div class="card"><div class="section-title">System</div><div style="font-size:12px;line-height:1.9">
       <div><strong>${_escSP(sys.vendor)}</strong> ${_escSP(sys.product)}</div>
@@ -2385,7 +2433,8 @@ async function loadHardware(refresh) {
       <div>${hwNumber(cpu.sockets)} sockets &middot; ${hwNumber(cpu.cores_physical)} cores &middot; ${hwNumber(cpu.cores_logical)} threads</div>
       ${cpu.topology_complete === false ? '<div class="text-dim">Physical core topology is incomplete; core count is estimated.</div>' : ''}
       <div>NUMA nodes: ${hwNumber(cpu.numa_nodes)} ${cpu.max_freq ? ('&middot; ' + _escSP(cpu.max_freq)) : ''}</div>
-      <div>AES-NI ${badge(cpu.aes_ni, cpu.aes_ni ? 'yes' : 'no')} ${cpu.virtualization ? ('&middot; ' + _escSP(cpu.virtualization)) : ''}</div>
+      ${showAES ? `<div>AES-NI ${typeof cpu.aes_ni === 'boolean' ? badge(cpu.aes_ni, cpu.aes_ni ? 'yes' : 'no') : 'Unknown'}</div>` : ''}
+      ${cpu.virtualization ? '<div>'+_escSP(cpu.virtualization)+'</div>' : ''}
       <div class="text-dim" style="font-size:10px">crypto: ${_escSP((cpu.crypto_ext || []).join(', ')) || '&mdash;'}</div>
       ${cpu.isolated_cpus ? ('<div style="font-size:10px">isolated cpus: <span class="mono">' + _escSP(cpu.isolated_cpus) + '</span></div>') : ''}
     </div></div>
@@ -2396,17 +2445,18 @@ async function loadHardware(refresh) {
   </div>
   <div class="card"><div class="section-title">Network Interfaces (${(d.nics || []).length})</div>
     <div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>State</th><th>Speed</th><th>Driver</th><th>PCI</th><th>NUMA</th><th>IOMMU</th><th>Binding / SR-IOV</th><th>MAC</th></tr></thead><tbody>${nicRows || '<tr><td colspan="10" class="text-dim">No network interfaces reported</td></tr>'}</tbody></table></div></div>
-  <div class="grid grid-2">
-    <div class="card"><div class="section-title">DPU / SmartNIC</div><div style="font-size:12px;line-height:1.9">${dpuCard}</div>
-      ${hostChannels.length ? `<div class="text-dim">Host control interfaces (not mapped to individual cards): ${hostChannels.map(_escSP).join(', ')}</div>` : ''}</div>
-    <div class="card">
-      <div class="section-title">Detected accelerators / co-processors</div>
-      <div class="table-wrap"><table><thead><tr><th>Hardware</th><th>Location</th><th>Driver</th><th>NUMA</th><th>Manager state</th></tr></thead><tbody>${accelRows || '<tr><td colspan="5" class="text-dim">None detected in this inventory</td></tr>'}</tbody></table></div>
-      <div class="text-dim" style="font-size:11px;margin-top:8px">Device presence and FPGA Manager state do not confirm forwarding readiness.</div>
-      <div class="section-title" style="margin-top:10px">Hugepages</div>
-      <div style="font-size:12px;line-height:1.9">${(hp.pools || []).length ? (hp.pools.map(p => `<div>${p.nr} &times; ${p.size_mb} MB = ${p.total_gb} GB <span class="text-dim">(free ${p.free})</span></div>`).join('') + (hp.mounted ? '<div class="text-dim" style="font-size:10px">hugetlbfs mounted</div>' : '')) : '<div class="text-dim">None</div>'}</div>
-    </div>
-  </div>
+  ${showDpu || showAccel || showHugepages || feMissing ? `<div class="grid grid-${[showDpu, showAccel || feMissing, showHugepages].filter(Boolean).length === 1 ? 1 : 2}">
+    ${showDpu ? `<div class="card"><div class="section-title">DPU / SmartNIC</div><div style="font-size:12px;line-height:1.9">${dpu.present ? dpuCard : 'Expected on this hardware family; detection unavailable'}</div>
+      ${hostChannels.length ? `<div class="text-dim">Host control interfaces (not mapped to individual cards): ${hostChannels.map(_escSP).join(', ')}</div>` : ''}</div>` : ''}
+    ${showAccel || feMissing ? `<div class="card">
+      <div class="section-title">Detected accelerators / co-processors (FPGA / ASIC / NPU)</div>
+      <div class="table-wrap"><table><thead><tr><th>Hardware</th><th>Location</th><th>Driver</th><th>NUMA</th><th>Detection</th>${showManager ? '<th>FPGA Manager state</th>' : ''}</tr></thead><tbody>${accelRows || `<tr><td colspan="${showManager ? 6 : 5}" class="text-dim">Expected on this hardware family; detection unavailable</td></tr>`}</tbody></table></div>
+      ${feMissing ? '<div role="status">FE1xx front-end FPGA / ASIC: expected on this hardware family; detection unavailable. Check control-plane inventory.</div>' : ''}
+      <div class="text-dim" style="font-size:11px;margin-top:8px">Device presence and driver binding do not confirm forwarding readiness.</div>
+    </div>` : ''}
+    ${showHugepages ? `<div class="card"><div class="section-title">Hugepages</div>
+      <div style="font-size:12px;line-height:1.9">${(hp.pools || []).length ? (hp.pools.map(p => `<div>${hwNumber(p.nr)} &times; ${hwNumber(p.size_mb)} MB = ${hwNumber(p.total_gb)} GB <span class="text-dim">(free ${hwNumber(p.free)})</span></div>`).join('') + (hp.mounted ? '<div class="text-dim" style="font-size:10px">hugetlbfs mounted</div>' : '')) : '<div class="text-dim">No allocated pools reported</div>'}</div></div>` : ''}
+  </div>` : ''}
   <div class="card"><div class="section-title">Storage</div>
     <div class="table-wrap"><table><thead><tr><th>Device</th><th>Size</th><th>Model</th><th>Type</th></tr></thead><tbody>${diskRows || '<tr><td colspan="4" class="text-dim">No storage devices reported</td></tr>'}</tbody></table></div></div>
     <details class="card"><summary>All PCI functions (${hwNumber((d.pci || {}).device_count)})</summary><div class="table-wrap"><table><thead><tr><th>Address</th><th>Vendor:device</th><th>Class</th><th>Driver</th><th>Source / status</th></tr></thead><tbody>${pciRows || '<tr><td colspan="5" class="text-dim">No PCI functions reported</td></tr>'}</tbody></table></div></details>`;
@@ -5908,20 +5958,7 @@ const _CTX_QOS = netRegister({
     {key:'dscp_map',         label:'DSCP → Class (JSON)',  type:'textarea', placeholder:'{"EF":1,"AF41":2,"CS0":5}'},
   ],
 });
-function renderNetworkQoS(c) {
-  c.innerHTML = netPageHTML(_CTX_QOS) + `
-    <div class="section"><div class="section-title">Built-in QoS Classes</div>
-    <div class="card"><div class="table-wrap"><table>
-      <thead><tr><th>Class</th><th>Name</th><th>Priority</th><th>Typical Bandwidth</th></tr></thead>
-      <tbody>
-        <tr><td>1</td><td>voice</td><td>real-time</td><td>50 Mbps</td></tr>
-        <tr><td>2</td><td>video</td><td>high</td><td>200 Mbps</td></tr>
-        <tr><td>3</td><td>business</td><td>medium</td><td>500 Mbps</td></tr>
-        <tr><td>4</td><td>bulk</td><td>low</td><td>100 Mbps</td></tr>
-        <tr><td>5</td><td>default</td><td>best-effort</td><td>remainder</td></tr>
-      </tbody></table></div></div></div>`;
-  netRenderList(_CTX_QOS);
-}
+function renderNetworkQoS(c) { renderQoSInterfaces(c); }
 
 /* ---- Network > LLDP (live neighbors, not a CRUD page) ---- */
 function renderNetworkLLDP(c) {
@@ -6381,7 +6418,7 @@ const _CTX_NP_QOS = netRegister({
     {key:'classes', label:'Per-Class Bandwidth (JSON)', type:'textarea', placeholder:'{"1":{"priority":"real-time","max":50},"2":{"priority":"high","max":200}}'},
   ],
 });
-function renderNPQoSProfile(c){c.innerHTML=netPageHTML(_CTX_NP_QOS);netRenderList(_CTX_NP_QOS);}
+function renderNPQoSProfile(c){renderPolicyProfiles(c,'qos');}
 
 const _CTX_NP_LLDP = netRegister({
   kind:'lldp-profiles',
@@ -7764,7 +7801,7 @@ function renderDeviceSupport(c) {
       <div><strong>Platform:</strong> ${_escSP(s.platform)} ${_escSP(s.kernel||'')}</div>
       <div><strong>CPU:</strong> ${_escSP(s.cpu||'--')}</div>
       <div><strong>Memory:</strong> ${_escSP(s.memory_total_gb)} GB</div>
-      <div><strong>FPGA:</strong> ${s.fpga_detected?'v'+_escSP(s.fpga_version):'Not detected'}</div>
+      ${s.fpga_detected ? '<div><strong>FPGA:</strong> v'+_escSP(s.fpga_version)+'</div>' : ''}
       <div><strong>Uptime:</strong> ${_escSP(s.uptime_human)}</div>`;
   });
 }

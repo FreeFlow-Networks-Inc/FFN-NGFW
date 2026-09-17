@@ -33,7 +33,10 @@ async function render(data) {
   assert.ok(modern.includes('not mapped to individual cards'));
   assert.ok(modern.includes('/dev/rshim0'));
   const empty = await render({});
-  assert.ok(empty.includes('None detected'));
+  assert.ok(!empty.includes('DPU / SmartNIC'));
+  assert.ok(!empty.includes('Hugepages'));
+  assert.ok(!empty.includes('Detected accelerators'));
+  assert.ok(!empty.includes('AES-NI'));
   assert.ok(!empty.includes('undefined'));
   const management = await render({cpu_role: {role: 'management', reason: 'FPGA detected'},
     cpu: {cores_logical: 8, isolated_cpus: '2-7'}, accelerators: [{kind: 'fpga', bus: 'platform',
@@ -41,6 +44,22 @@ async function render(data) {
   assert.ok(management.includes('No host dataplane cores reserved'));
   assert.ok(management.includes('Isolation mismatch'));
   assert.ok(management.includes('fpga0: operating'));
+
+  const appliance = await render({applicability: {family:'pa5200', dpu:false, hugepages:false, fe1xx:true, accelerators:true, octeon:true},
+    cpu_role:{role:'management'}, hugepages:{pools:[{nr:1024,size_mb:2}]},
+    accelerators:[{family:'FE1xx',model:'FE100',kind:'asic',role:'FE1xx front-end ASIC',bus:'control-plane'}]});
+  assert.ok(appliance.includes('FE100') && appliance.includes('Behind control plane'));
+  assert.ok(!appliance.includes('DPU / SmartNIC') && !appliance.includes('Hugepages'));
+  assert.ok(!appliance.includes('FPGA Manager state'));
+  assert.ok(appliance.includes('Forwarding readiness not reported'));
+  const unavailable = await render({applicability:{family:'pa5200',fe1xx:true,accelerators:true,octeon:true}});
+  assert.ok(unavailable.includes('FE1xx front-end FPGA / ASIC: expected'));
+  assert.ok(unavailable.includes('detection unavailable'));
+  const hybrid = await render({applicability:{dpu:false,accelerators:false,hugepages:false},
+    dpu:{present:true,devices:[{type:'BlueField'}]},accelerators:[{kind:'fpga',model:'FE150',family:'FE1xx'}]});
+  assert.ok(hybrid.includes('BlueField') && hybrid.includes('FE150'));
+  const arm = await render({system:{arch:'aarch64'},cpu:{aes_ni:false},cpu_role:{role:'shared'}});
+  assert.ok(!arm.includes('AES-NI') && arm.includes('Hugepages'));
 
   const body = {innerHTML: ''};
   const context = vm.createContext({document: {getElementById: () => body}, _escSP: escape});

@@ -19,6 +19,7 @@ which are the ones that actually bite users:
 """
 import re
 import sys
+from pathlib import Path
 
 # Product names that must not appear in FFN's own interface. FFN reimplements
 # behaviour and documents the originals elsewhere; presenting their names to a
@@ -127,16 +128,26 @@ def audit(path):
     js = "\n".join(s for _o, s in scripts)
     problems = []
 
+    # Renderers can live in local script bundles. Resolve only siblings within
+    # this static tree; auditing a page must never fetch or execute scripts.
+    definitions = js
+    base = Path(path).resolve().parent
+    for src in re.findall(r'<script[^>]+src=[\"\'](/static/[^\"\']+)[\"\']', html):
+        asset = (base / src[len('/static/'):].split('?')[0]).resolve()
+        if asset.is_relative_to(base) and asset.is_file():
+            definitions += '\n' + asset.read_text(encoding='utf-8')
+
     # ---- what functions exist? -------------------------------------------
-    defined = set(re.findall(r"(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(", js))
+    defined = set(re.findall(r"(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(", definitions))
     defined |= set(re.findall(r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*"
-                              r"(?:async\s*)?(?:function|\()", js))
+                              r"(?:async\s*)?(?:function|\()", definitions))
     # window.foo = ... assignments
-    defined |= set(re.findall(r"window\.([A-Za-z_$][\w$]*)\s*=", js))
+    defined |= set(re.findall(r"window\.([A-Za-z_$][\w$]*)\s*=", definitions))
 
     # ---- nav entries and dispatch targets --------------------------------
     nav_ids = set(re.findall(r"\{\s*id:\s*'([^']+)'\s*,\s*label:", js))
     dispatch = dict(re.findall(r"'([^']+)'\s*:\s*([A-Za-z_$][\w$]*)\s*,", js))
+    dispatch.update(re.findall(r"'([^']+)'\s*:\s*(?:[A-Za-z_$][\w$]*|\([^)]*\))\s*=>\s*([A-Za-z_$][\w$]*)\s*\(", js))
 
     for nid in sorted(nav_ids):
         if nid not in dispatch:
@@ -274,6 +285,14 @@ def selftest():
     pr, _ = audit(miss)
     chk(any(k == "missing-render" for k, _l, _m in pr),
         "a dispatch to an undefined function is caught")
+
+    Path(d, 'render.js').write_text('function renderExternal(c){}', encoding='utf-8')
+    arrow = write("const NAV={x:[{id:'a',label:'A'}]}; const R={'a': c => renderExternal(c, 'a'),};",
+                  '<script src="/static/render.js"></script>')
+    chk(not audit(arrow)[0], 'arrow dispatch resolves a local script renderer')
+    Path(d, 'render.js').write_text('', encoding='utf-8')
+    chk(any(k == 'missing-render' for k, _l, _m in audit(arrow)[0]),
+        'arrow dispatch still detects a missing bundled renderer')
 
     hand = write("function renderA(c){}", '<button onclick="doesNotExist()">x</button>')
     pr, _ = audit(hand)

@@ -61,12 +61,12 @@ function fastPathRow(row, index, editable) {
     <td>${locked?'Read only':`<button class="btn btn-sm" data-fast-view="${index}">${editable?'Edit':'View'}</button>`+
       (editable?` <button class="btn btn-sm" data-fast-clone="${index}">Clone</button> <button class="btn btn-sm" data-fast-delete="${index}">Delete</button>`:'')}</td></tr>`;
 }
-function renderPolicyWorkspace(c,kind){
+function renderPolicyWorkspace(c,kind,initialScope='vsys1'){
   if(typeof refreshTimer!=='undefined'&&refreshTimer){clearInterval(refreshTimer);refreshTimer=null;}
   ++policyWorkspaceGeneration;
   c.innerHTML=`<div class="page-header"><h2>${policyKinds[kind]}</h2></div>
     <div class="filters-bar"><input id="pw-search" type="search" aria-label="Search policy rules" placeholder="Search rules, matches or actions">
-    <label>Virtual System <select id="pw-scope"><option>vsys1</option></select></label>
+    <label>Virtual System <select id="pw-scope"><option>${_escSP(initialScope)}</option></select></label>
     <label>Configuration <select id="pw-source"><option value="candidate">Candidate</option><option value="running">Running</option></select></label>
     <button class="btn" id="pw-refresh">Refresh</button><span id="pw-count"></span></div>
     <p id="pw-status" role="status">Loading rulebase from control daemon…</p><div id="pw-list" class="card"></div>
@@ -74,6 +74,7 @@ function renderPolicyWorkspace(c,kind){
     <button class="btn" id="pw-validate">Validate activation</button>
     ${['nat','qos','pbf','decryption'].includes(kind)?'<button class="btn" id="pw-plan" disabled>Preview policy plan</button><button class="btn" id="pw-test" disabled>Test policy match</button>':''}
     ${kind==='nat'?'<button class="btn" id="pw-nat-preview">NAT translation preview</button>':''}
+    ${['qos','decryption'].includes(kind)?'<button class="btn" id="pw-profiles">Manage profiles</button>':''}
     ${kind==='dos'?'<button class="btn" id="pw-dos">DoS engine controls</button>':''}
     <span class="text-dim">Candidate changes require Commit. New rules start disabled.</span></div>
     <div class="modal-overlay" id="pw-editor" role="dialog" aria-modal="true" aria-labelledby="object-title"></div>`;
@@ -83,6 +84,10 @@ function renderPolicyWorkspace(c,kind){
   };
   if(kind==='dos')document.getElementById('pw-dos').onclick=()=>legacy(renderPolicyDDoS);
   if(kind==='nat')document.getElementById('pw-nat-preview').onclick=()=>previewNatWorkspace();
+  if(['qos','decryption'].includes(kind))document.getElementById('pw-profiles').onclick=()=>{
+    const scope=document.getElementById('pw-scope').value;
+    renderPolicyProfiles(c,kind,scope,()=>renderPolicyWorkspace(c,kind,scope));
+  };
   loadPolicyWorkspace(c,kind);
 }
 async function loadPolicyWorkspace(c,kind){
@@ -175,6 +180,10 @@ function policyFieldHTML(f,value,choices){
     return `<label>${text(f.label)}<textarea name="${id}" placeholder="One value per line">${text((value||[]).join('\n'))}</textarea>${refs.length?`<select data-add-to="${id}" aria-label="Add ${text(f.label)}"><option value="">Add configured value…</option>${refs.map(v=>`<option>${text(v)}</option>`).join('')}</select>`:''}</label>`;
   }
   if(options.length)return `<label>${text(f.label)}<select name="${id}">${options.map(v=>`<option value="${text(v)}" ${v===value?'selected':''}>${text(policyOptionLabels[v]||v)}</option>`).join('')}</select></label>`;
+  if(['layer3-interface','certificate','profiles/decryption'].includes(f.ref)){
+    const allowed=[...new Set([...(f.key==='to-interface'?['any']:['']),...(choices||[]),...(value?[value]:[])])];
+    return `<label>${text(f.label)}<select name="${id}">${allowed.map(v=>`<option value="${text(v)}" ${v===value?'selected':''}>${text(v||'None')}</option>`).join('')}</select></label>`;
+  }
   if(f.mode==='member-text'||f.key==='log-setting')return `<label>${text(f.label)}<select name="${id}"><option value="">None</option>${[...new Set([...(choices||[]),...(value?[value]:[])])].map(v=>`<option value="${text(v)}" ${v===value?'selected':''}>${text(v)}</option>`).join('')}</select></label>`;
   return `<label>${text(f.label)}<input name="${id}" value="${text(value)}" maxlength="1024" ${choices?.length?`list="${id}-choices"`:''}>${choices?.length?`<datalist id="${id}-choices">${choices.map(v=>`<option value="${text(v)}">`).join('')}</datalist>`:''}</label>`;
 }
@@ -267,6 +276,21 @@ function editPolicyWorkspace(snapshot,url,existing,reload,clone=false){
     <p id="pw-message" role="alert"></p><div class="modal-footer"><button type="submit" class="btn btn-primary" ${editable?'':'disabled'}>OK</button><button type="button" class="btn" id="pw-cancel">${editable?'Cancel':'Close'}</button></div></form>`;
   objectDialog(box,(clone?'Clone ':existing?(editable?'Edit ':'View '):'Add ')+snapshot.label+' Rule',body);
   const form=document.getElementById('pw-form');
+  const show=(key,visible)=>{form.elements['pf-'+key].closest('label').hidden=!visible;};
+  if(snapshot.kind==='nat'){
+    const mode=form.elements['pf-source-type'],iface=form.elements['pf-source-interface'];
+    const method=document.createElement('label');method.innerHTML='Source Address Method<select id="pw-nat-method"><option value="pool">Translated address</option><option value="interface">Interface address</option></select>';
+    mode.closest('label').after(method);const choice=method.querySelector('select');choice.value=iface.value?'interface':'pool';
+    const sync=()=>{method.hidden=mode.value!=='dynamic-ip-and-port';show('source-interface',mode.value==='dynamic-ip-and-port'&&choice.value==='interface');show('translated-source',mode.value!=='none'&&(mode.value!=='dynamic-ip-and-port'||choice.value==='pool'));};
+    mode.onchange=choice.onchange=sync;sync();
+  }
+  if(snapshot.kind==='pbf'){
+    const action=form.elements['pf-action'],sync=()=>{show('egress-interface',action.value==='forward');show('next-hop',action.value==='forward');};action.onchange=sync;sync();
+  }
+  if(snapshot.kind==='decryption'){
+    const action=form.elements['pf-action'],type=form.elements['pf-type'];
+    const sync=()=>{show('type',action.value==='decrypt');show('certificate',action.value==='decrypt'&&type.value==='ssl-inbound-inspection');};action.onchange=type.onchange=sync;sync();
+  }
   if(security){
     const mode=form.elements['pf-profile-mode'];
     const syncProfiles=()=>{
@@ -291,6 +315,14 @@ function editPolicyWorkspace(snapshot,url,existing,reload,clone=false){
     event.preventDefault();if(!editable)return;const data=new FormData(form),button=form.querySelector('[type=submit]');
     const rule={name:data.get('rule-name'),description:data.get('rule-description'),enabled:data.get('rule-enabled')==='true',settings:{}};
     for(const f of snapshot.schema.fields){const value=data.get('pf-'+f.key)||'';rule.settings[f.key]=f.mode==='list'?value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean):value;}
+    const settings=rule.settings;
+    if(snapshot.kind==='nat'){
+      if(settings['source-type']==='none'){settings['translated-source']=[];settings['source-interface']='';}
+      else if(settings['source-type']==='dynamic-ip-and-port'&&document.getElementById('pw-nat-method').value==='interface')settings['translated-source']=[];
+      else settings['source-interface']='';
+    }
+    if(snapshot.kind==='pbf'&&settings.action!=='forward'){settings['egress-interface']='';settings['next-hop']='';}
+    if(snapshot.kind==='decryption'&&(settings.action!=='decrypt'||settings.type!=='ssl-inbound-inspection'))settings.certificate='';
     if(security){
       const s=rule.settings;
       if(s['profile-mode']!=='group')s['profile-group']='';

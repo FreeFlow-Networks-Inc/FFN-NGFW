@@ -17,6 +17,7 @@ const context = vm.createContext({console, window:{}, localStorage:{getItem(){re
 // Must evaluate the whole bundle: sliced function tests miss declaration-order failures.
 vm.runInContext(fs.readFileSync(__dirname+'/../static/config-objects.js','utf8'),context);
 vm.runInContext(fs.readFileSync(__dirname+'/../static/config-policies.js','utf8'),context);
+vm.runInContext(fs.readFileSync(__dirname+'/../static/policy-profiles.js','utf8'),context);
 vm.runInContext(script,context);
 const run = code => vm.runInContext(code,context);
 (async()=>{
@@ -31,6 +32,11 @@ const run = code => vm.runInContext(code,context);
   context.switchSetupTab('management');
   assert.equal(element('setup-hostname').value,'unsaved-name','Setup tab switches preserve edits');
   const menus=run('TAB_MENUS');
+  const renderPolicyWorkspace=context.renderPolicyWorkspace, visited=[];
+  context.renderPolicyWorkspace=(_container,kind)=>visited.push(kind);
+  for(const page of ['nat','policy-qos','pbf','decryption'])context.switchSubPage(page);
+  assert.deepEqual(visited,['nat','qos','pbf','decryption'],'Policy navigation must reach the editors instead of legacy unavailable pages');
+  context.renderPolicyWorkspace=renderPolicyWorkspace;
   assert.deepEqual(Array.from(menus.policy,x=>x.label),['Security','NAT','QoS','Policy Based Forwarding','Decryption','Tunnel Inspection','Application Override','Authentication','DoS Protection','SD-WAN']);
   assert.deepEqual(Array.from(menus.objects.slice(0,12),x=>x.label),[
     'Addresses','Address Groups','Regions','Dynamic User Groups','Applications',
@@ -141,13 +147,17 @@ const run = code => vm.runInContext(code,context);
   assert.match(element('tasks-body').innerHTML,/unknown/);
   assert(!element('tasks-body').innerHTML.includes('Disabled'),'Failed refresh clears stale successes');
   context.loadCommitDiff=async()=>{};
+  const readyCommit=()=>run("commitReview={scope:null,revision:'r1',validated:true,can_commit:true,validation:{valid:true},diff:{has_changes:true}}; updateCommitButtons()");
+  element('commit-scope').value='';
   for (const overall of ['partial-failure','applied']) {
-    context.fetch=async()=>({ok:true,status:200,json:async()=>({status:'committed',type:'full',snapshot:'v8',apply_status:{overall}})});
+    readyCommit();
+    context.fetch=async()=>({ok:true,status:200,json:async()=>({status:'committed',type:'full',snapshot:'v8',apply_status:{overall},planes:{published:true}})});
     await context.doCommit();
     assert.equal(element('commit-msg').style.color,overall==='applied'?'var(--green)':'var(--orange)');
-    assert.equal(element('commit-msg').textContent.includes('Applied successfully'),overall==='applied');
+    assert.equal(element('commit-msg').textContent.includes('Local apply completed'),overall==='applied');
   }
   context.loadInterfacesFull=()=>{};
+  readyCommit();
   context.fetch=async()=>({ok:true,status:200,json:async()=>({status:'committed',type:'full',snapshot:'v8',apply_status:{overall:'applied',skipped:[{xpath:'zone-reconcile'}]}})});
   await context.doCommit();
   assert.match(element('commit-msg').textContent,/1 settings skipped/);
