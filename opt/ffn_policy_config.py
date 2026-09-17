@@ -303,6 +303,8 @@ def validate(kind,spec,root,scope):
 def runtime_report(xml,check_runtime=False):
     """Fail closed until each policy compiler and acknowledged apply are connected."""
     root=parse(xml);blockers=[];disabled=0;nat_enabled=[];plans={}
+    from ffn_qos_config import activation_blockers
+    blockers.extend(activation_blockers(root))
     for scope,node in owners(root).items():
         for kind in SCHEMAS:
             for rule in node.findall('rulebase/'+kind+'/rules/entry'):
@@ -381,6 +383,9 @@ class PolicyController:
         except PolicyError as error:return dict(ok=False,error=str(error),code=error.code)
 
     def execute(self,args):
+        if args.get('action','').startswith('qos-interface-'):
+            from ffn_qos_config import request
+            return request(self,args)
         if args.get('action','').startswith('profile-'):
             from ffn_policy_profiles import request
             return request(self,args)

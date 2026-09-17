@@ -230,6 +230,7 @@ jobs:
           python tests/test_partial_commit.py
           python tests/test_policy_barrier.py
           python tests/test_commit_review.py
+          python tests/test_qos_interfaces.py
           python tests/test_extensions.py
 
       - name: Objects browser workflows against disposable candidate configuration

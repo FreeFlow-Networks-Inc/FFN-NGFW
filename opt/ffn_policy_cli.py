@@ -5,7 +5,10 @@ import copy
 from urllib.parse import urlencode
 
 
-HELP='''show policies commit-preview [partial-xpath]
+HELP='''show policies qos-interfaces [candidate|running]
+request policies qos-interface add|edit <interface> profile=<name> max-mbps=<rate> default-class=4 enabled=no
+request policies qos-interface remove <interface>
+show policies commit-preview [partial-xpath]
 request policies commit-validate [partial-xpath]
 Review the effective configuration, including SQL-backed resource edits. Validation does not apply it.
 show policies <kind> [vsys] [candidate|running]
@@ -43,6 +46,13 @@ authentication dos sdwan. The same runtime blockers apply in CLI and WebUI.'''
 def handle(tokens,api,token):
     if len(tokens)<2 or tokens[0] not in ('show','request') or tokens[1]!='policies':return False
     if len(tokens)<3:print(HELP);return True
+    if tokens[:3]==['show','policies','qos-interfaces']:
+        if len(tokens)>4 or len(tokens)==4 and tokens[3] not in ('candidate','running'):print(HELP);return True
+        print(json.dumps(api('/api/config/qos/interfaces?source='+(tokens[3] if len(tokens)==4 else 'candidate'),token=token),indent=2));return True
+    if tokens[:3]==['request','policies','qos-interface']:
+        try:qos_interface_command(tokens,api,token)
+        except ValueError as error:print(str(error))
+        return True
     if tokens[:3] in (['show','policies','commit-preview'], ['request','policies','commit-validate']):
         if len(tokens)>4:print(HELP);return True
         query={'validate':'true' if tokens[0]=='request' else 'false'}
@@ -103,6 +113,26 @@ def arguments(tokens):
 def yesno(value):
     if value not in ('yes','no'):raise ValueError('enabled must be yes or no')
     return value=='yes'
+
+
+def qos_interface_command(tokens,api,token):
+    if len(tokens)<5 or tokens[3] not in ('add','edit','remove'):raise ValueError('Specify add, edit or remove and an interface')
+    operation=tokens[3];names,fields,scope=arguments(tokens[4:])
+    if len(names)!=1 or scope!='vsys1':raise ValueError('QoS interfaces are device-wide; specify one interface')
+    if set(fields)-{'profile','max-mbps','default-class','enabled'}:raise ValueError('Unknown QoS interface field')
+    url='/api/config/qos/interfaces';snapshot=api(url,token=token)
+    if 'entries' not in snapshot or 'defaults' not in snapshot:raise ValueError('QoS interface configuration is unavailable')
+    old=next((e for e in snapshot['entries'] if e['interface']==names[0]),None)
+    if operation!='add' and old is None:raise ValueError('QoS interface not found')
+    payload=dict(action={'add':'create','edit':'update','remove':'delete'}[operation],name=names[0],revision=snapshot['revision'])
+    if operation=='remove':
+        if fields:raise ValueError('Remove takes no fields')
+    else:
+        spec={k:v for k,v in (old or dict(snapshot['defaults'],interface=names[0])).items() if k!='editable'}
+        for key,value in fields.items():
+            spec[key]=yesno(value) if key=='enabled' else float(value) if key=='max-mbps' else int(value) if key=='default-class' else value
+        payload['attachment']=spec
+    print(json.dumps(api(url,method='POST',body=payload,token=token),indent=2))
 
 
 def friendly_rule(tokens,api,token):

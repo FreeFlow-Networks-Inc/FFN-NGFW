@@ -5943,20 +5943,7 @@ const _CTX_QOS = netRegister({
     {key:'dscp_map',         label:'DSCP → Class (JSON)',  type:'textarea', placeholder:'{"EF":1,"AF41":2,"CS0":5}'},
   ],
 });
-function renderNetworkQoS(c) {
-  c.innerHTML = netPageHTML(_CTX_QOS) + `
-    <div class="section"><div class="section-title">Built-in QoS Classes</div>
-    <div class="card"><div class="table-wrap"><table>
-      <thead><tr><th>Class</th><th>Name</th><th>Priority</th><th>Typical Bandwidth</th></tr></thead>
-      <tbody>
-        <tr><td>1</td><td>voice</td><td>real-time</td><td>50 Mbps</td></tr>
-        <tr><td>2</td><td>video</td><td>high</td><td>200 Mbps</td></tr>
-        <tr><td>3</td><td>business</td><td>medium</td><td>500 Mbps</td></tr>
-        <tr><td>4</td><td>bulk</td><td>low</td><td>100 Mbps</td></tr>
-        <tr><td>5</td><td>default</td><td>best-effort</td><td>remainder</td></tr>
-      </tbody></table></div></div></div>`;
-  netRenderList(_CTX_QOS);
-}
+function renderNetworkQoS(c) { renderQoSInterfaces(c); }
 
 /* ---- Network > LLDP (live neighbors, not a CRUD page) ---- */
 function renderNetworkLLDP(c) {

@@ -35,6 +35,23 @@ async function main(){
       await page.waitForFunction(()=>document.getElementById('pp-list')?.textContent.includes('No profiles configured'));
       assert(await page.locator('#pp-add').isDisabled());
     }
+    await page.evaluate(()=>renderQoSInterfaces(document.getElementById('content-area')));
+    await page.locator('#qi-add:enabled').waitFor();await page.locator('#qi-add').click();
+    await page.locator('#qi-form [name=interface]').selectOption('ethernet1/1');
+    await page.locator('#qi-form [name=profile]').selectOption('browser-qos');
+    await page.locator('#qi-cancel').click();
+    assert.equal((await (await fetch(url+'/api/config/qos/interfaces')).json()).entries.length,0);
+    await page.locator('#qi-add').click();await page.locator('#qi-form [name=interface]').selectOption('ethernet1/1');await page.locator('#qi-form [name=profile]').selectOption('browser-qos');
+    await page.locator('#qi-form [name=max-mbps]').fill('10');await page.locator('#qi-form [type=submit]').click();
+    await page.waitForFunction(()=>document.getElementById('qi-message')?.textContent.includes('exceeds'));
+    await page.locator('#qi-form [name=max-mbps]').fill('100');await page.locator('#qi-form [type=submit]').click();await page.locator('#qi-editor').waitFor({state:'hidden'});
+    await page.locator('#qi-list [data-budget]').click();assert.equal(await page.locator('#qi-classes tbody tr').count(),8);await page.locator('#object-close').click();
+    await page.locator('#qi-profiles').click();await page.locator('#pp-add:enabled').waitFor();await page.getByRole('button',{name:'Back to QoS Interfaces',exact:true}).click();await page.locator('#qi-add:enabled').waitFor();
+    await page.locator('#qi-source').selectOption('running');await page.waitForFunction(()=>document.getElementById('qi-list')?.textContent.includes('No QoS interfaces'));
+    assert(await page.locator('#qi-add').isDisabled());await page.locator('#qi-source').selectOption('candidate');await page.locator('#qi-add:enabled').waitFor();
+    await page.locator('#qi-list [data-edit]').click();assert.equal(await page.locator('#qi-form [name=max-mbps]').inputValue(),'100');
+    assert(await page.locator('#qi-form [name=interface]').isDisabled());await page.locator('#qi-cancel').click();
+    const q=await (await fetch(url+'/api/config/qos/interfaces')).json();await fetch(url+'/api/config/qos/interfaces',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'delete',name:'ethernet1/1',revision:q.revision})});
     const fields={
       nat:{'Source Translation':'dynamic-ip-and-port','Source Interface Address':'ethernet1/1','Translated Destination Address':'192.0.2.10','Translated Destination Port':'443'},
       pbf:{Action:'forward','Egress Interface':'ethernet1/1','Next Hop':'192.0.2.1'},

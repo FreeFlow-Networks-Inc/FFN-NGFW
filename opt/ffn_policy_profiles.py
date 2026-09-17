@@ -138,4 +138,7 @@ def request(controller,args):
             parent=node_at(root.find("./devices/entry[@name='localhost.localdomain']"),'network/profiles/qos-profile') if kind=='qos' else node_at(local,'profiles/decryption')
         if entry is not None:parent.remove(entry)
         parent.append(serialize(kind,profile))
+        if kind=='qos':
+            from ffn_qos_config import validate_profile_references
+            validate_profile_references(root,profile['name'])
     return save_candidate(path,xml,root)

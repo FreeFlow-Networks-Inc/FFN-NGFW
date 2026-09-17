@@ -31,6 +31,14 @@ class ProfileRequest(BaseModel):
     class Config: extra='forbid'
 
 
+class QosInterfaceRequest(BaseModel):
+    action: Literal['create','update','delete']
+    revision: str = Field(min_length=64,max_length=64)
+    name: str | None = Field(default=None,max_length=63)
+    attachment: dict | None = None
+    class Config: extra='forbid'
+
+
 def install(app,current_user,require_admin,audit,manager,client=None):
     client=client or ControldClient(timeout=15)
 
@@ -39,6 +47,28 @@ def install(app,current_user,require_admin,audit,manager,client=None):
         except Exception as error:raise HTTPException(503,'Policy controller unavailable; no local fallback was used') from error
         if not result.get('ok'):raise HTTPException(result.get('code',422),result.get('error','Policy request failed'))
         return result['data']
+
+    @app.get('/api/config/qos/interfaces')
+    async def qos_interfaces(source:Literal['candidate','running']='candidate',user=Depends(current_user)):
+        result=await call(dict(action='qos-interface-list',source=source))
+        result['can_edit']=source=='candidate' and user.get('role') in ('admin','superuser')
+        return result
+
+    @app.post('/api/config/qos/interfaces')
+    async def qos_interface_mutate(request:QosInterfaceRequest,source:Literal['candidate','running']='candidate',user=Depends(current_user)):
+        require_admin(user)
+        if source!='candidate':raise HTTPException(403,'Running configuration is read only')
+        state=manager.lock_status()
+        if state['locked'] and state.get('holder')!=user['username']:raise HTTPException(423,'Configuration is locked by another administrator')
+        if not state['locked'] and not manager.acquire_lock(user['username'],'editing QoS interfaces'):raise HTTPException(423,'Could not acquire configuration lock')
+        try:
+            payload=request.model_dump(exclude_none=True);payload['action']='qos-interface-'+request.action
+            result=await call(dict(payload,source=source,user=user['username']))
+        except HTTPException:
+            if not state['locked']:manager.release_lock(user['username'])
+            raise
+        await audit(user['username'],'qos_interface_'+request.action,request.name or (request.attachment or {}).get('interface',''))
+        return result
 
     @app.get('/api/config/policies/status')
     async def policy_status(source:Literal['candidate','running']='candidate',user=Depends(current_user)):
