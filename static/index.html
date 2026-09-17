@@ -3787,13 +3787,13 @@ function renderNetworkInterfaces(c) {
     <details class="console-details"><summary>Detected hardware and port inventory</summary>
       <div id="iface-detected" class="card"><div class="text-dim">Detecting ports and interfaces&hellip;</div></div>
     </details>
-    <details class="console-details"><summary>Aggregate Ethernet Kernel State</summary>
+    <details class="console-details"><summary>Aggregate Ethernet Status</summary>
       <div class="card"><div class="table-wrap">
         <table>
           <thead><tr>
-            <th>AE Group</th><th>Kernel Bond</th><th>Mode</th>
-            <th>Configured Members</th><th>Kernel Slaves</th>
-            <th>IP</th><th>MTU</th><th>Status</th>
+            <th>AE Group</th><th>Backend</th><th>Mode</th>
+            <th>Configured Members</th><th>Live Members</th>
+            <th>IP</th><th>MTU</th><th>Status</th><th>Actions</th>
           </tr></thead>
           <tbody id="iface-ae-body"></tbody>
         </table>
@@ -4071,6 +4071,11 @@ function _renderConfiguredAE() {
         statusBadge='<span class="badge badge-down">'+_escSP(live.state.toUpperCase())+'</span>';
         statusDetail=(live.committed?'Committed configuration. ':'Pending candidate changes. ')+
           (live.blockers||[]).map(b=>_escSP(b.message)).join(' · ');
+        if (live.partner_consistency) {
+          const peer=live.partner_consistency;
+          statusDetail+=' · Partner identity: '+_escSP(peer.state)+' ('+_escSP(String(peer.observed_members))+
+            '/'+_escSP(String(peer.expected_members))+' members observed). Passive observations do not verify forwarding.';
+        }
       } else if (!live.kernel_exists) {
         statusBadge = '<span class="badge badge-down">NO KERNEL BOND</span>';
         statusDetail = 'Commit to create bond interface.';
@@ -4093,8 +4098,13 @@ function _renderConfiguredAE() {
       ? cfgMembers.map(m=>`${m.pan}${m.linux?` <span class="text-dim">(${m.linux})</span>`:''}`).join(', ')
       : '<span class="text-dim">(no members)</span>';
     const liveMemStr = hardware ? (live.members||[]).map(m=>_escSP(m.name)+': '+
-      (m.link===true?_escSP(String(m.speed_mbps))+' Mb/s':m.link===false?'Link down':'Unknown')+
-      (m.partner_observation?' · Partner '+_escSP(m.partner_observation.actor.system):' · No LACP observation')).join('<br>') : (live && live.kernel_slaves && live.kernel_slaves.length)
+      (m.admin_enabled===false?'Administratively down':m.link===true?(m.speed_mbps?_escSP(String(m.speed_mbps))+' Mb/s':'Link up · Speed unknown'):m.link===false?'Link down':'Link unknown')+
+      (m.partner_observation?' · Partner '+_escSP(m.partner_observation.actor.system)+
+        ' · Priority '+_escSP(String(m.partner_observation.actor.system_priority??'unknown'))+
+        ' · Key '+_escSP(String(m.partner_observation.actor.key??'unknown'))+
+        ' · Port '+_escSP(String(m.partner_observation.actor.port??'unknown'))+
+        ' · Peer state '+_escSP(Object.entries(m.partner_observation.actor.flags||{}).filter(([,set])=>set===true).map(([name])=>name.replaceAll('_',' ')).join(', ')||'none'):
+        ' · No LACP frame observed in sample')).join('<br>') : (live && live.kernel_slaves && live.kernel_slaves.length)
       ? live.kernel_slaves.join(', ')
       : '<span class="text-dim">(none)</span>';
 
@@ -4102,13 +4112,13 @@ function _renderConfiguredAE() {
       <td><strong>${ae.name}</strong></td>
       <td class="mono" style="font-size:11px">${bondName}${hardware||live&&live.kernel_exists?'':' <span class="text-red" style="font-size:9px">(not created)</span>'}</td>
       <td><span class="badge" style="background:#1a4f9e;color:#fff">${ae.mode}</span></td>
-      <td class="mono" style="font-size:10px">${cfgMemStr}</td>
-      <td class="mono" style="font-size:10px">${liveMemStr}</td>
+      <td class="mono" style="font-size:10px;white-space:normal;min-width:170px">${cfgMemStr}</td>
+      <td class="mono" style="font-size:10px;white-space:normal;min-width:230px">${liveMemStr}</td>
       <td class="mono">${(ae.ip_addresses||[]).join(', ')||'--'}</td>
       <td>${ae.mtu||_ifaceState.jumbo.mtu}</td>
       <td>
         ${statusBadge}
-        <div class="text-dim" style="font-size:10px;margin-top:2px">${statusDetail}</div>
+        <div class="text-dim" style="font-size:10px;margin-top:2px;white-space:normal;min-width:230px;max-width:360px">${statusDetail}</div>
       </td>
       <td>
         <button class="btn btn-xs" onclick="openIfaceModal('${ae.name}')">Edit</button>
