@@ -78,4 +78,51 @@ class SubinterfaceTests(unittest.TestCase):
         self.assertLess(source.index('@app.delete("/api/interfaces/subinterface")'),source.index('@app.delete("/api/interfaces/{name:path}")'))
         self.create()
         self.assertEqual(self.client.delete('/api/interfaces/subinterface',params={'parent':'ethernet1/1','unit':1,'revision':digest(self.manager.xml)}).status_code,200)
+    def add_choices(self):
+        root=ET.fromstring(self.manager.xml);dev=root.find('devices/entry')
+        dev.find('vsys/entry').append(ET.fromstring('<zone><entry name="trust"><network><layer3/></network></entry><entry name="switch"><network><layer2/></network></entry></zone>'))
+        dev.find('network').extend([ET.fromstring('<virtual-router><entry name="default"><interface/><protocol><keep/></protocol></entry><entry name="other"/></virtual-router>'),
+            ET.fromstring('<vlan><entry name="users"/></vlan>'),
+            ET.fromstring('<profiles><interface-management-profile><entry name="ping"/></interface-management-profile></profiles>')])
+        self.manager.xml=ET.tostring(root,encoding='unicode')
+    def test_choices_and_atomic_membership_candidate_save(self):
+        self.add_choices();running=self.manager.running
+        choices=self.listing()
+        self.assertEqual(choices['zone_choices'],['trust'])
+        self.assertEqual(choices['management_profile_choices'],['ping'])
+        self.assertEqual(self.create(zone='trust',virtual_router='default',interface_management_profile='ping').status_code,200)
+        row=self.listing()['entries'][0]
+        self.assertEqual((row['zone'],row['virtual_router']),('trust','default'))
+        self.assertEqual(self.manager.running,running)
+        self.assertEqual(self.client.put(self.url,json=self.payload(zone='',virtual_router='other')).status_code,200)
+        row=self.listing()['entries'][0]
+        self.assertEqual((row['zone'],row['virtual_router']),('','other'))
+        root=ET.fromstring(self.manager.xml)
+        self.assertIsNotNone(root.find('.//virtual-router/entry/protocol/keep'))
+        self.assertIsNone(root.find('.//virtual-router/entry[@name="default"]/interface/member'))
+        self.assertEqual(self.client.put(self.url,json=self.payload()).status_code,200)
+        self.assertEqual(self.listing()['entries'][0]['virtual_router'],'other')
+    def test_bad_references_are_atomic_and_layer_specific(self):
+        self.add_choices();before=self.manager.xml
+        for changes in [dict(zone='switch'),dict(zone='missing'),dict(zone='trust',virtual_router='missing'),
+                        dict(interface_management_profile='missing'),dict(vlan='users'),dict(ip_addresses=['192.0.2.1'])]:
+            self.assertEqual(self.create(**changes).status_code,422,changes)
+            self.assertEqual(self.manager.xml,before)
+        self.assertEqual(self.create(parent='ethernet1/2',mode='layer2',ip_addresses=[],zone='switch',vlan='users').status_code,200)
+        data=self.client.get(self.url,params={'parent':'ethernet1/2'}).json()
+        self.assertEqual(data['zone_choices'],['switch'])
+        self.assertEqual(data['entries'][0]['vlan'],'users')
+        self.assertEqual(self.client.put(self.url,json=self.payload(parent='ethernet1/2',mode='layer2',ip_addresses=[],virtual_router='default')).status_code,422)
+    def test_unresolved_profile_is_preserved_but_cannot_be_newly_assigned(self):
+        self.create()
+        self.manager.xml=self.manager.xml.replace('<tag>100</tag>','<tag>100</tag><interface-management-profile>retired</interface-management-profile>')
+        self.assertEqual(self.client.put(self.url,json=self.payload(interface_management_profile='retired')).status_code,200)
+        self.assertEqual(self.create(unit=2,tag=200,interface_management_profile='retired').status_code,422)
+    def test_conflicting_memberships_rejected_without_losing_configuration(self):
+        self.add_choices();self.create(virtual_router='default')
+        self.manager.xml=self.manager.xml.replace('<entry name="other" />','<entry name="other"><interface><member>ethernet1/1.1</member></interface></entry>')
+        self.assertFalse(self.listing()['entries'][0]['editable'])
+        before=self.manager.xml
+        self.assertEqual(self.client.put(self.url,json=self.payload(virtual_router='default')).status_code,409)
+        self.assertEqual(self.manager.xml,before)
 if __name__=='__main__':unittest.main()
