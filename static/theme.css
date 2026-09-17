@@ -1,0 +1,34 @@
+:root {--panel:#f0f1f2;--stripe:#f5f6f7;--selected:#d5e8f5;--heading:#343c42;--chart-grid:#d9dfe3}
+:root[data-theme=dark] {
+  color-scheme:dark;--bg:#10151d;--surface:#171f2b;--card:#1b2533;--card-hover:#24354a;
+  --border:#3a485b;--accent:#70baff;--accent-dim:#3588d1;--green:#61d695;
+  --red:#ff8b88;--orange:#ecc16c;--yellow:#ebce77;--text:#e5edf7;--text-dim:#b1c0d1;--text-muted:#95a8bd;
+  --panel:#222e3e;--stripe:#1e2a3a;--selected:#244462;--heading:#e5edf7;--chart-grid:#3a485b;
+}
+.theme-picker {font:inherit;border:1px solid var(--border);border-radius:3px;padding:4px 6px;background:var(--surface);color:var(--text)}
+.header-icon {width:26px;height:26px;flex:none}
+.login-theme {position:fixed;top:18px;right:18px;display:flex;align-items:center;gap:8px}
+:root[data-theme=dark] .content,:root[data-theme=dark] .modal,:root[data-theme=dark] .log-stream {background:var(--surface);color:var(--text)}
+:root[data-theme=dark] .sidebar,:root[data-theme=dark] .login-screen {background:var(--bg)}
+:root[data-theme=dark] .topnav .main-tabs,:root[data-theme=dark] .nav-search,:root[data-theme=dark] .sidebar .sb-section,
+:root[data-theme=dark] .page-header,:root[data-theme=dark] .card h3,:root[data-theme=dark] .filters-bar,
+:root[data-theme=dark] .setup-tabs,:root[data-theme=dark] .modal h3,:root[data-theme=dark] .form-actions,
+:root[data-theme=dark] .console-footer,:root[data-theme=dark] thead th {background:var(--panel);color:var(--text);border-color:var(--border)}
+:root[data-theme=dark] #sidebar .sb-item,:root[data-theme=dark] .topnav .main-tabs button,
+:root[data-theme=dark] .setup-tabs button,:root[data-theme=dark] .form-group label,:root[data-theme=dark] .section-title,
+:root[data-theme=dark] details summary {color:var(--text)}
+:root[data-theme=dark] #sidebar .sb-item.active,:root[data-theme=dark] .setup-tabs button.active {background:var(--selected);color:var(--text);border-color:var(--border)}
+:root[data-theme=dark] .nav-search input,:root[data-theme=dark] .form-group input,:root[data-theme=dark] .form-group select,
+:root[data-theme=dark] .form-group textarea,:root[data-theme=dark] .filters-bar input,:root[data-theme=dark] .filters-bar select,
+:root[data-theme=dark] .workflow-actions input,:root[data-theme=dark] .workflow-actions select,
+:root[data-theme=dark] .object-form input,:root[data-theme=dark] .object-form textarea,:root[data-theme=dark] .object-form select {background:var(--surface);color:var(--text);border-color:var(--border)}
+:root[data-theme=dark] tbody td,:root[data-theme=dark] .log-entry {border-color:var(--border)}
+:root[data-theme=dark] tbody tr:nth-child(even) {background:var(--stripe)}
+:root[data-theme=dark] tbody tr:hover,:root[data-theme=dark] #sidebar .sb-item:hover {background:var(--card-hover)}
+:root[data-theme=dark] .btn {background:var(--panel);color:var(--text);border-color:var(--border)}
+:root[data-theme=dark] .btn-primary {background:#1f6394;color:white}
+:root[data-theme=dark] .btn-danger {background:#943734;color:white}
+:root[data-theme=dark] .btn:hover {filter:brightness(1.2)}
+:root[data-theme=dark] .console-footer button {color:var(--accent)}
+:root[data-theme=dark] .modal-overlay {background:#0009}
+@media(max-width:850px) {.topnav .user-area {gap:5px}.theme-picker {max-width:70px}}

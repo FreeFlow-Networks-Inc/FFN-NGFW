@@ -3916,70 +3916,53 @@ async def system_resources(user: dict = Depends(get_current_user)):
 # ==========================================================================
 
 
-# Throughput tracking state (for delta-based rate calculation)
-_prev_counters = {}
-_prev_counter_time = 0
+# A shared sample prevents multiple dashboard clients from shortening deltas.
+from ffn_port_traffic import PortTraffic
+_traffic_sampler = PortTraffic()
+_traffic_lock = asyncio.Lock()
+_traffic_cached = None
+_traffic_sampled = 0.0
 
 
 @app.get("/api/dashboard/throughput")
 async def dashboard_throughput(user: dict = Depends(get_current_user)):
-    global _prev_counters, _prev_counter_time
-
-    now = time.time()
-    ports = []
-
-    if not fpga.sim_mode:
-        # FPGA present — read FPGA port throughput
-        for p in range(NUM_PORTS):
-            tp = fpga.get_throughput_gbps(p)
-            ports.append({
-                "port": p,
-                "name": f"qsfp{p}",
-                "type": "fpga",
-                "rx_gbps": tp["rx_gbps"],
-                "tx_gbps": tp["tx_gbps"],
-            })
-
-    # Always include real CPU interfaces
-    counters = psutil.net_io_counters(pernic=True)
-    stats = psutil.net_if_stats()
-    dt = now - _prev_counter_time if _prev_counter_time > 0 else 1.0
-
-    for iface_name in sorted(counters.keys()):
-        if iface_name == "lo":
-            continue
-        if iface_name not in stats or not stats[iface_name].isup:
-            continue
-
-        cur = counters[iface_name]
-        prev = _prev_counters.get(iface_name)
-
-        if prev and dt > 0.1:
-            rx_bps = (cur.bytes_recv - prev.bytes_recv) * 8 / dt
-            tx_bps = (cur.bytes_sent - prev.bytes_sent) * 8 / dt
+    global _traffic_cached, _traffic_sampled
+    async with _traffic_lock:
+        if _traffic_cached is not None and time.monotonic()-_traffic_sampled < 2:
+            return _traffic_cached
+        provider = getattr(app.state, 'platform_data_port_stats', None)
+        if provider is not None:
+            try:
+                observation = await asyncio.to_thread(provider)
+                result = _traffic_sampler.sample(observation)
+            except Exception:
+                _traffic_sampler.previous = None
+                raise HTTPException(503, 'Front data-port telemetry unavailable')
+        elif _this_is_a_faceplate_chassis():
+            raise HTTPException(503, 'Platform data-port telemetry is not installed')
+        elif not fpga.sim_mode:
+            ports = [dict(name=f'qsfp{p}', type='fpga', link=None,
+                     **fpga.get_throughput_gbps(p)) for p in range(NUM_PORTS)]
+            result = dict(timestamp=time.time(), ports=ports, unit='Gbps', available=True)
         else:
-            rx_bps = 0
-            tx_bps = 0
-
-        # Convert to Gbps (cap at link speed)
-        link_speed = stats[iface_name].speed  # Mbps
-        max_bps = link_speed * 1e6 if link_speed else 100e9
-
-        ports.append({
-            "name": iface_name,
-            "type": "cpu",
-            "rx_gbps": round(min(rx_bps / 1e9, max_bps / 1e9), 4),
-            "tx_gbps": round(min(tx_bps / 1e9, max_bps / 1e9), 4),
-            "rx_bytes_total": cur.bytes_recv,
-            "tx_bytes_total": cur.bytes_sent,
-            "rx_pps": int((cur.packets_recv - (prev.packets_recv if prev else cur.packets_recv)) / dt) if prev and dt > 0.1 else 0,
-            "tx_pps": int((cur.packets_sent - (prev.packets_sent if prev else cur.packets_sent)) / dt) if prev and dt > 0.1 else 0,
-        })
-
-    _prev_counters = counters
-    _prev_counter_time = now
-
-    return {"timestamp": now, "ports": ports}
+            # Only configured data-port aliases, never every PCI/host adapter.
+            counters = psutil.net_io_counters(pernic=True)
+            stats = psutil.net_if_stats()
+            eligible = set(_list_linux_nics()) - {_mgmt_iface()}
+            ports = []
+            for name, netdev in _load_aliases().items():
+                if not re.fullmatch(r'ethernet[0-9]+/[0-9]+', name) or netdev not in eligible or netdev not in counters:
+                    continue
+                cur = counters[netdev]; link = stats.get(netdev)
+                ports.append(dict(name=name, type='data', link=link.isup if link else None,
+                    speed_gbps=max(0,link.speed)/1000 if link else None,
+                    rx_bytes_total=cur.bytes_recv, tx_bytes_total=cur.bytes_sent,
+                    rx_packets_total=cur.packets_recv, tx_packets_total=cur.packets_sent))
+            result = _traffic_sampler.sample(dict(ports=ports, sample_monotonic=time.monotonic(),
+                boot_id='host', unit='Gbps', source='Configured data ports'))
+        _traffic_cached = result
+        _traffic_sampled = time.monotonic()
+        return result
 
 
 @app.get("/api/dashboard/threats")
@@ -8236,6 +8219,54 @@ async def system_setup(cfg: SetupConfig, user: dict = Depends(get_current_user))
         "applied": result.get("applied", []),
         "requires_commit": True,
     }
+
+
+MP_INTERFACE_XPATH = "devices.entry[@name=localhost.localdomain].deviceconfig.system.mp-interfaces"
+
+
+def _mp_revision(node):
+    return hashlib.sha256(ET.tostring(node) if node is not None else b'').hexdigest()
+
+
+async def _mp_inventory():
+    provider = getattr(app.state, 'platform_mp_interfaces', None)
+    if provider is None: return []
+    try: return (await asyncio.to_thread(provider))['ports']
+    except Exception: raise HTTPException(503, 'External management interface controller unavailable')
+
+
+@app.get('/api/system/mp-interfaces')
+async def mp_interfaces_get(user: dict = Depends(get_current_user)):
+    from ffn_mp_interfaces import decode
+    ports = await _mp_inventory()
+    for port in ports:
+        node = config_mgr.get_xpath(MP_INTERFACE_XPATH+'.entry[@name='+port['name']+']',source='candidate')
+        port['candidate'] = decode(node)
+        port['revision'] = _mp_revision(node)
+    return dict(ports=ports, source='candidate', requires_commit=True)
+
+
+@app.put('/api/system/mp-interfaces/{name}')
+async def mp_interfaces_set(name: str, request: Request, user: dict = Depends(get_current_user)):
+    from ffn_mp_interfaces import encode
+    _require_admin(user)
+    ports = await _mp_inventory()
+    if name not in {port['name'] for port in ports}: raise HTTPException(404, 'External MP interface is not detected')
+    data = await request.json()
+    if not isinstance(data,dict) or set(data)!={'revision','config'}: raise HTTPException(422, 'Expected revision and config')
+    try: settings=encode(data['config'])
+    except (ValueError,TypeError,KeyError): raise HTTPException(422, 'Invalid management interface settings')
+    xpath = MP_INTERFACE_XPATH+'.entry[@name='+name+']'
+    node = config_mgr.get_xpath(xpath, source='candidate')
+    if data['revision'] != _mp_revision(node): raise HTTPException(409, 'Candidate changed; reopen the interface editor')
+    lock = config_mgr.lock_status()
+    if lock['locked'] and lock.get('holder') != user['username']: raise HTTPException(423, 'Candidate is locked by another administrator')
+    if not lock['locked']: config_mgr.acquire_lock(user['username'], 'editing')
+    result=config_mgr.update_candidate(xpath, settings, user['username'])
+    if result.get('status')!='ok': raise HTTPException(500, 'Candidate update failed')
+    async with aiosqlite.connect(DB_PATH) as db:
+        await audit(db,user['username'],'mp_interface_candidate_update',name)
+    return dict(status='candidate-updated',requires_commit=True)
 
 
 class RetrainRequest(BaseModel):

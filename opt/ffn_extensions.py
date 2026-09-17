@@ -28,6 +28,18 @@ def install(app, current_user, require_admin, record_audit, selected=None):
                 raise ValueError('extension directory must be absolute')
             root = root.resolve(strict=True)
             manifest = json.loads((root / 'extension.json').read_text())
+            if manifest.get('mp_interfaces_version') is not None:
+                def unavailable_mp_interfaces():
+                    raise RuntimeError('Selected platform management interfaces unavailable')
+                app.state.platform_mp_interfaces = unavailable_mp_interfaces
+                if type(manifest['mp_interfaces_version']) is not int or manifest['mp_interfaces_version'] != 1:
+                    raise ValueError('unsupported management interface version')
+            if manifest.get('data_port_stats_version') is not None:
+                def unavailable_traffic():
+                    raise RuntimeError('Selected platform data-port telemetry unavailable')
+                app.state.platform_data_port_stats = unavailable_traffic
+                if type(manifest['data_port_stats_version']) is not int or manifest['data_port_stats_version'] != 1:
+                    raise ValueError('unsupported data-port telemetry version')
             if manifest.get('aggregate_status_version') is not None:
                 def unavailable_aggregates():
                     raise RuntimeError('Selected platform aggregate controller unavailable')
@@ -72,6 +84,10 @@ def install(app, current_user, require_admin, record_audit, selected=None):
             if manifest.get('policy_barrier_version') == 1:
                 if not callable(getattr(mod,'before_policy_commit',None)):
                     raise ValueError('selected platform lacks its policy barrier')
+            if manifest.get('data_port_stats_version') == 1 and not callable(getattr(mod,'data_port_stats',None)):
+                raise ValueError('selected platform lacks data-port telemetry')
+            if manifest.get('mp_interfaces_version') == 1 and not callable(getattr(mod,'mp_interfaces_status',None)):
+                raise ValueError('selected platform lacks management interface provider')
             routes = mod.router(current_user, require_admin, record_audit)
             legacy_routes = (mod.legacy_router(current_user, require_admin, record_audit)
                              if hasattr(mod, 'legacy_router') else None)
@@ -108,6 +124,10 @@ def install(app, current_user, require_admin, record_audit, selected=None):
             descriptors.append({'id': ident, 'label': label,
                                 'script': '/static/extensions/' + ident + '/ui.js', 'pages': pages})
             state = 'enabled'
+            if manifest.get('mp_interfaces_version') == 1:
+                app.state.platform_mp_interfaces = mod.mp_interfaces_status
+            if manifest.get('data_port_stats_version') == 1:
+                app.state.platform_data_port_stats = mod.data_port_stats
             if manifest.get('aggregate_status_version') == 1:
                 app.state.platform_aggregate_status = mod.aggregate_status
             if manifest.get('policy_barrier_version') == 1:
