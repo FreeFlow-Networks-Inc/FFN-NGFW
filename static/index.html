@@ -3646,6 +3646,7 @@ async function changePassword() {
    config (/api/interfaces/configured) into one management view.            */
 
 const IFACE_MODES = [
+  {value:'none',            label:'None (disabled)'},
   {value:'layer3',          label:'Layer 3'},
   {value:'layer2',          label:'Layer 2'},
   {value:'virtual-wire',    label:'Virtual Wire'},
@@ -3862,7 +3863,7 @@ function _unconfiguredRow(name) {
   const observed = ((_ifaceState.hardware || {}).nics || []).find(n => n.name === linux);
   return {
     name, parent:null, tag:null, kind:'ethernet',
-    type:'', management_profile:'',
+    type:'None', management_profile:'',
     link_state: f ? (f.live && typeof f.link === 'boolean' ? f.link : null) : observed ? (observed.state === 'up' ? true : observed.state === 'down' ? false : null) : null,
     linux_name:linux,
     ip_address:[], mtu:'', virtual_router:'', vlan_tag:'', vlan_or_vwire:'',
@@ -4070,7 +4071,7 @@ async function openIfaceModal(name) {
   const speedOpts = speedOptions.map(s=>`<option value="${s}">${s==='auto'?'Auto-negotiate':s+' Mb/s'}</option>`).join('');
   const modeOpts = IFACE_MODES.map(m=>`<option value="${m.value}">${m.label}</option>`).join('');
 
-  const cur = existing || {name, mode:'layer3', ip_addresses:[], link_speed:'auto', link_duplex:'auto', link_state:'auto', mtu:'', aggregate_group:'', interface_management_profile:'', comment:'', lldp_enabled:false, lldp_profile:''};
+  const cur = existing || {name, mode:'none', ip_addresses:[], link_speed:'auto', link_duplex:'auto', link_state:'auto', mtu:'', aggregate_group:'', interface_management_profile:'', comment:'', lldp_enabled:false, lldp_profile:''};
   // Interface Management Profiles available for the dropdown
   let _mgmtProfileNames = [];
   try {
@@ -4097,6 +4098,7 @@ async function openIfaceModal(name) {
     <input type="hidden" id="ifm-name" value="${_escSP(name)}">
     <div class="form-group"><label>Mode</label>
       <select id="ifm-mode" onchange="_ifmToggle()" style="width:100%">${modeOpts}</select>
+      <div class="text-dim">Front-panel ports default to None, which physically disables the link. Select an interface mode before enabling the port.</div>
     </div>
     <div class="form-group"><label>Comment</label><input id="ifm-comment" type="text" style="width:100%" placeholder="Description of this interface"></div>
 
@@ -4187,7 +4189,7 @@ async function openIfaceModal(name) {
     </div>`;
 
   // Populate
-  document.getElementById('ifm-mode').value = cur.mode;
+  document.getElementById('ifm-mode').value = ['off','disabled','unconfigured'].includes(cur.mode) ? 'none' : (cur.mode || 'none');
   document.getElementById('ifm-comment').value = cur.comment || '';
   document.getElementById('ifm-ip').value = (cur.ip_addresses||[]).join(', ');
   document.getElementById('ifm-mtu').value = cur.mtu || '';
@@ -4219,7 +4221,7 @@ async function openIfaceModal(name) {
   document.getElementById('ifm-speed').value = cur.link_speed || 'auto';
   document.getElementById('ifm-speed').disabled = cap.configurable===false;
   document.getElementById('ifm-duplex').value = cur.link_duplex || 'auto';
-  document.getElementById('ifm-state').value = cur.link_state || 'auto';
+  document.getElementById('ifm-state').value = ['none','off','disabled','unconfigured'].includes(cur.mode) ? 'auto' : (cur.link_state || 'auto');
   document.getElementById('ifm-lldp').value = cur.lldp_enabled ? 'yes' : 'no';
   document.getElementById('ifm-lldp-profile').value = cur.lldp_profile || '';
   // Bond settings (only used when editing an aeN)
@@ -4235,6 +4237,13 @@ function _ifmToggle() {
   const mode = document.getElementById('ifm-mode').value;
   const name = document.getElementById('ifm-name').value;
   const isAE = name.startsWith('ae') && !name.includes('.');
+  const state = document.getElementById('ifm-state');
+  if(mode==='none'){
+    if(state.dataset.noneForced!=='true')state.dataset.previousState=state.value;
+    state.value='down';state.disabled=true;state.dataset.noneForced='true';
+  } else if(state.dataset.noneForced==='true'){
+    state.value=state.dataset.previousState||'auto';state.disabled=false;delete state.dataset.noneForced;
+  }
   document.getElementById('ifm-l3-block').style.display = mode==='layer3'?'block':'none';
   document.getElementById('ifm-ae-block').style.display = mode==='aggregate-group'?'block':'none';
   // Bonding block appears when editing an aeN interface in layer3 mode
@@ -4266,6 +4275,11 @@ async function saveIface() {
     bond_miimon_ms: parseInt((document.getElementById('ifm-bondmiimon')||{}).value || '100'),
   };
   if(body.dhcp_client)body.ip_addresses=[];
+  if(body.mode==='none'){
+    body.ip_addresses=[];body.interface_management_profile='';body.mtu=null;body.aggregate_group='';
+    body.lldp_enabled=false;body.lldp_profile='';
+    body.link_state='down';
+  }
   const msg = document.getElementById('ifm-msg');
   if (msg) { msg.textContent = 'Saving...'; msg.style.color = 'var(--orange)'; }
   const vr = document.getElementById('ifm-vr');

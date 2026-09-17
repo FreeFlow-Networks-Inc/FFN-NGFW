@@ -10449,7 +10449,7 @@ async def zone_delete(vsys: str, name: str, revision: str, user: dict = Depends(
 class InterfaceEntry(BaseModel):
     name: str                                # ethernet1/1 | ae1
     kind: str = "ethernet"                   # ethernet | aggregate-ethernet
-    mode: str = "layer3"                     # layer3 | layer2 | virtual-wire | tap | aggregate-group | decrypt-mirror | ha
+    mode: str = "none"                       # none | layer3 | layer2 | virtual-wire | tap | aggregate-group | decrypt-mirror | ha
     ip_addresses: list = []                  # strings ("192.168.1.1/24") or address-object names
     dhcp_client: bool = False
     dhcp_default_route: bool = True
@@ -10470,7 +10470,7 @@ class InterfaceEntry(BaseModel):
     comment: str = ""
 
 
-MODES = {"layer3", "layer2", "virtual-wire", "tap", "aggregate-group",
+MODES = {"none", "layer3", "layer2", "virtual-wire", "tap", "aggregate-group",
          "decrypt-mirror", "ha"}
 
 
@@ -10864,6 +10864,8 @@ def _ae_to_bond(ae_name: str) -> str:
 
 def _build_iface_payload(i: InterfaceEntry) -> dict:
     """Render an InterfaceEntry to the PAN-OS XML-dict form."""
+    if i.mode in ("default", "off", "disabled", "unconfigured"):
+        i.mode = "none"
     if i.mode not in MODES:
         raise HTTPException(status_code=400, detail=f"mode must be one of {sorted(MODES)}")
 
@@ -10874,6 +10876,12 @@ def _build_iface_payload(i: InterfaceEntry) -> dict:
     if i.dhcp_client and (i.mode != "layer3" or i.ip_addresses):
         raise HTTPException(422, "DHCP requires Layer 3 with no static interface addresses")
     payload: dict = {"comment": i.comment}
+
+    if i.mode == "none":
+        # Unconfigured front ports are physically disabled, including callers
+        # that omit mode or try to combine None with an explicit link-up.
+        payload["link-state"] = "down"
+        return payload
 
     # Link settings (only on ethernet / aggregate-ethernet, not aggregate-group members)
     if i.mode != "aggregate-group":
@@ -11024,7 +11032,7 @@ async def interfaces_list(user: dict = Depends(get_current_user)):
 
     def shape(entry, kind):
         # Detect mode
-        mode = "layer3"
+        mode = "none" if kind in ("ethernet", "aggregate-ethernet") else "layer3"
         for m in ("layer3", "layer2", "virtual-wire", "tap", "ha", "decrypt-mirror"):
             if entry.find(m) is not None:
                 mode = m
@@ -11050,7 +11058,7 @@ async def interfaces_list(user: dict = Depends(get_current_user)):
             "dhcp_default_route": entry.findtext("./layer3/dhcp-client/create-default-route", "yes") == "yes",
             "link_speed": entry.findtext("link-speed", "auto"),
             "link_duplex": entry.findtext("link-duplex", "auto"),
-            "link_state": entry.findtext("link-state", "auto"),
+            "link_state": "down" if mode == "none" else entry.findtext("link-state", "auto"),
             "aggregate_group": entry.findtext("aggregate-group", ""),
             "interface_management_profile": entry.findtext("./layer3/interface-management-profile", ""),
             "lldp_enabled": entry.findtext("./lldp/enable", "no") == "yes",
@@ -11391,7 +11399,7 @@ async def interfaces_enriched(user: dict = Depends(get_current_user)):
             return "tap", "TAP", None
         if entry.find("ha") is not None:
             return "ha", "HA", None
-        return "unconfigured", "", None
+        return "none", "None", None
 
     def _shape_row(entry: ET.Element, parent_name=None, tag=None, kind="ethernet"):
         if parent_name and tag:
