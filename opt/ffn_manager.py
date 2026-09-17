@@ -4391,10 +4391,10 @@ async def system_hardware(refresh: int = 0, user: dict = Depends(get_current_use
     distinguishable rather than merging into one misleading list."""
     inv = dict(await asyncio.to_thread(_hw_inventory, refresh=bool(refresh)))
     try:
-        far = await _detect_offload_dp()
+        far = await _detect_offload_dp(max_age=0 if refresh else 15.0)
     except Exception:
         far = {}
-    rows = list(inv.get("accelerators") or [])
+    rows = [dict(row) for row in inv.get("accelerators") or []]
     if inv.get("error") and "accelerators" not in inv:
         # The host probe failed. Appending the control-plane rows to an empty
         # list would produce a shorter list that looks complete -- which is how
@@ -4418,12 +4418,32 @@ async def system_hardware(refresh: int = 0, user: dict = Depends(get_current_use
                                       dev.get("vendor"), dev.get("device")),
             "driver": dev.get("driver"),
             "description": dev.get("description"),
+            "model": dev.get("description"),
+            "address": dev.get("pci"), "vendor_id": dev.get("vendor"),
+            "device_id": dev.get("device"),
         })
+    from ffn_hwdetect import fe1xx_identity, inventory_applicability
+    for row in rows:
+        # CP metadata uses vendor/device; preserve identity independently of
+        # whether a kernel driver is bound or the forwarding agent is ready.
+        identity = fe1xx_identity(row)
+        if identity:
+            row.update(identity)
+            row["role"] = "FE1xx front-end " + ("FPGA" if row.get("kind") == "fpga" else "ASIC")
     inv["accelerators"] = rows
+    inv["specialized"] = dict(inv.get("specialized") or {})
+    fe_rows = [row for row in rows if row.get("family") == "FE1xx"]
+    inv["specialized"]["fe1xx"] = {"present": bool(fe_rows), "devices": fe_rows}
     inv["offload"] = far
     from ffn_hwdetect import classify_cpu_role
-    inv["cpu_role"] = classify_cpu_role(inv)
+    try:
+        inv["platform"] = await _platform_profile()
+    except Exception:
+        inv["platform"] = {}
+        inv["platform_status"] = "unavailable"
+    inv["cpu_role"] = classify_cpu_role(inv, inv["platform"])
     inv["cpu"] = dict(inv.get("cpu") or {}, role=inv["cpu_role"]["role"])
+    inv["applicability"] = inventory_applicability(inv, inv["platform"])
     return inv
 
 
@@ -5008,6 +5028,7 @@ async def _detect_offload_dp(max_age: float = 15.0) -> dict:
         return ent["data"]
 
     info = await asyncio.to_thread(_probe_host_octeon)
+    from ffn_hwdetect import fe1xx_identity
 
     if info["cp"]["reachable"]:
         try:
@@ -5052,7 +5073,7 @@ async def _detect_offload_dp(max_age: float = 15.0) -> dict:
                         "present": True, "pci": dev["pci"],
                         "driver": dev["driver"], "model": dev["description"],
                     })
-                elif dev["kind"] == "asic":
+                elif fe1xx_identity(dev).get("model") == "FE100":
                     info["fe100"].update({
                         "present": True, "pci": dev["pci"],
                         "driver": dev["driver"], "model": dev["description"],
@@ -9238,7 +9259,9 @@ def _platform_decl() -> dict:
         import ffn_cpuisol
         decl, _path = ffn_cpuisol.find_platform_decl(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        return decl or {}
+        # The reader also returns a generic build-time default without a path.
+        # That is not a selected platform and must not override live detection.
+        return (decl or {}) if _path else {}
     except Exception:
         return {}
 
@@ -9307,6 +9330,7 @@ async def _platform_profile() -> dict:
 
     has_fpga_card = not fpga.sim_mode
     has_offload = bool(offload.get("present"))
+    pa5200 = decl.get("platform") == "pa5200" or chassis.get("platform") in ("pa5200", "gryphon")
     dpdk_unit = _detect_dpdk_service()
     # A unit FILE existing is not a datapath. The image ships ffn-dpdk-fwd on
     # every platform, so keying "present" off the unit reported DPDK as present
@@ -9317,7 +9341,7 @@ async def _platform_profile() -> dict:
     # the platform stating its own design. Otherwise infer from what is here.
     datapath = decl.get("datapath")
     if not datapath:
-        datapath = ("offload" if has_offload
+        datapath = ("offload" if has_offload or pa5200
                     else "fpga" if has_fpga_card
                     else "dpdk")
 
@@ -9339,7 +9363,7 @@ async def _platform_profile() -> dict:
         "dpdk": feat(datapath == "dpdk", dpdk_running,
                      off_reason if datapath != "dpdk" else "",
                      unit=dpdk_unit),
-        "fpga_card": feat(datapath in ("dpdk", "fpga"), has_fpga_card,
+        "fpga_card": feat(has_fpga_card or decl.get("platform") == "vu9p", has_fpga_card,
                           off_reason if datapath == "offload" else ""),
         "hugepages": feat(datapath == "dpdk", datapath == "dpdk",
                           "hugepages back the DPDK mempools; nothing here uses "
@@ -9356,11 +9380,12 @@ async def _platform_profile() -> dict:
             decl.get("reason") or (off_reason if datapath == "offload" else "")),
 
         # The offload chassis's own silicon.
-        "offload_complex": feat(has_offload, has_offload,
+        "offload_complex": feat(has_offload or pa5200, has_offload,
                                 detail=offload.get("boot_state") or ""),
         "switch_faceplate": feat(faceplate is not None, bool(faceplate),
                                  ports=len(faceplate or {})),
-        "front_end_asic": feat(has_offload,
+        "front_end_asic": feat(pa5200 or
+                               bool((offload.get("fe100") or {}).get("present")),
                                bool((offload.get("fe100") or {}).get("present")),
                                model=(offload.get("fe100") or {}).get("model") or ""),
 
@@ -9374,7 +9399,7 @@ async def _platform_profile() -> dict:
 
     return {
         "platform": decl.get("platform") or (
-            "pa5200" if faceplate is not None else
+            "pa5200" if pa5200 or faceplate is not None else
             "vu9p" if has_fpga_card else "generic"),
         # Falls back to the chassis fingerprint, because the declaration is the
         # thing that is missing on a deployed box.

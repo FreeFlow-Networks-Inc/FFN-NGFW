@@ -1763,7 +1763,7 @@ function renderDashOverview(c) {
         <div class="bar-track" style="margin-top:6px;height:6px"><div id="dash-dp-bar" class="bar-fill" style="width:0%;background:var(--red);height:6px"></div></div>
         <div class="sub" style="margin-top:6px;font-size:10px"><span id="dash-dp-isolcpus">CPU allocation: --</span></div>
       </div>
-      <div class="card"><h3>FPGA Resources</h3><div id="fpga-resources"></div></div>
+      <div class="card"><h3 id="resource-title">System Resources</h3><div id="fpga-resources"></div></div>
       <div class="card"><h3>System</h3><div id="system-info" style="font-size:12px;line-height:2"></div></div>
     </div></div>
     <div class="workflow-actions"><button class="btn" onclick="switchSubPage('dash-ddos')">DDoS Detail</button>
@@ -1940,6 +1940,8 @@ async function refreshDashboard() {
   // Resources
   if (resources) {
     const resEl = document.getElementById('fpga-resources');
+    const title = document.getElementById('resource-title');
+    if (title) title.textContent = resources.fpga?.detected ? 'FPGA Resources' : 'System Resources';
     if (resEl) {
       if (resources.fpga && resources.fpga.detected) {
         const f = resources.fpga;
@@ -1957,7 +1959,7 @@ async function refreshDashboard() {
   // System info
   if (status) {
     const fpgaLine = status.fpga_detected?`FPGA: v${status.fpga_version}`:
-      '<span class="text-dim">FPGA: Not detected</span>';
+      '';
     document.getElementById('system-info').innerHTML = `
       <div>Host: ${status.hostname}</div>
       <div>Uptime: ${status.uptime_human}</div>
@@ -2387,10 +2389,21 @@ async function loadHardware(refresh) {
   const dimmRows = (mem.dimms || []).map(x => `<tr><td>${_escSP(x.locator || '')}</td><td>${_escSP(x.size || '')}</td><td>${_escSP(x.speed || '')}</td><td>${_escSP(x.manufacturer || '')}</td></tr>`).join('');
   const diskRows = (d.storage || []).map(x => `<tr><td class="mono">${_escSP(x.name)}</td><td>${hwNumber(x.size_gb, ' GB')}</td><td>${_escSP(x.model || 'Unknown')}</td><td>${x.rotational === true ? 'HDD' : x.rotational === false ? 'Non-rotational' : 'Unknown'}</td></tr>`).join('');
   const accel = (d.accelerators || []);
+  const app = d.applicability || {};
+  const applies = (name, fallback) => typeof app[name] === 'boolean' ? app[name] || fallback : fallback;
+  const showDpu = applies('dpu', !!dpu.present);
+  const showHugepages = typeof app.hugepages === 'boolean' ? app.hugepages : (hp.pools || []).length > 0 || role === 'shared';
+  const showAccel = applies('accelerators', accel.length > 0);
+  const showFE = applies('fe1xx', !!d.specialized?.fe1xx?.present);
+  const feMissing = showFE && !accel.some(a => a.family === 'FE1xx');
+  const showAES = applies('aes_ni', /^(x86_64|amd64|i[3-6]86)$/i.test(sys.arch || ''));
+  const showManager = accel.some(a => a.kind === 'fpga' || (a.managers || []).length);
+
   const accelRows = accel.map(a => `<tr><td><strong>${_escSP(a.role || a.kind || 'Unknown')}</strong><div class="text-dim">${_escSP(a.model || '')}</div></td>
       <td>${a.bus === 'control-plane' ? 'Behind control plane' : a.bus === 'platform' ? 'Platform / SoC' : 'Host PCI'}<div class="mono">${_escSP(a.address || a.pci || '')}</div></td>
       <td>${_escSP(a.driver || 'Unknown')}</td><td>${Number.isInteger(a.numa_node) && a.numa_node >= 0 ? a.numa_node : 'Unknown'}</td>
-      <td>${(a.managers || []).length ? a.managers.map(m => `<div>${_escSP(m.name || 'FPGA Manager')}: ${_escSP(m.state || 'Unknown')}</div>`).join('') : 'Not reported'}</td></tr>`).join('');
+      <td>Detected${a.family === 'FE1xx' ? '<div class="text-dim">Forwarding readiness not reported by this inventory</div>' : ''}</td>
+      ${showManager ? `<td>${(a.managers || []).length ? a.managers.map(m => `<div>${_escSP(m.name || 'FPGA Manager')}: ${_escSP(m.state || 'Unknown')}</div>`).join('') : a.kind === 'fpga' ? 'Unavailable' : '&mdash;'}</td>` : ''}</tr>`).join('');
   const pciRows = ((d.pci || {}).devices || []).map(p => `<tr><td class="mono">${_escSP(p.address)}</td><td class="mono">${_escSP(p.vendor_id || '????')}:${_escSP(p.device_id || '????')}</td><td>${_escSP(p.class_id || 'Unknown')}</td><td>${_escSP(p.driver || 'Unbound / unknown')}</td><td>${p.identity_complete === false ? 'Incomplete identity' : _escSP(p.source || 'Unknown')}</td></tr>`).join('');
   const dpuCard = dpu.present ? (dpu.devices || []).map(dv => `
       <div>${badge(true, 'present')} ${_escSP(dv.type || '')}</div>
@@ -2400,12 +2413,12 @@ async function loadHardware(refresh) {
     `).join('') : '<div class="text-dim">No DPU / SmartNIC detected</div>';
 
   const hostChannels = dpu.control_channels ? ['rshim', 'mst', 'tmfifo_ifaces'].flatMap(k => dpu.control_channels[k] || []) : [];
-  const octeonCard = octeon.present ? `<div class="card"><div class="section-title">OCTEON hardware</div>
-      <div>${octeon.host_cpu ? 'OCTEON host CPU / SoC' : 'OCTEON PCI functions observed'}</div>
+  const octeonCard = applies('octeon', !!octeon.present) ? `<div class="card"><div class="section-title">OCTEON hardware</div>
+      <div>${octeon.host_cpu ? 'OCTEON host CPU / SoC' : octeon.present ? 'OCTEON PCI functions observed' : 'Expected on this hardware family; detection unavailable'}</div>
       ${(octeon.evidence || []).map(e => `<div>${_escSP(e.value)} <span class="text-dim">${_escSP(e.source)}</span></div>`).join('')}
       ${(octeon.pci_functions || []).map(f => `<div>${_escSP(f.model)} <span class="mono">${_escSP(f.address)}</span></div>`).join('')}
       <div class="text-dim">Hardware presence does not establish firmware or forwarding readiness.</div></div>` : '';
-  el.innerHTML = `<div class="text-dim" style="margin-bottom:12px">Last collected: ${_escSP(updated)} &middot; PCI source: ${_escSP((d.pci || {}).source || 'Unknown')}</div>${probeNotice}${roleSummary}${octeonCard}
+  el.innerHTML = `<div class="text-dim" style="margin-bottom:12px">Last collected: ${_escSP(updated)} &middot; PCI source: ${_escSP((d.pci || {}).source || 'Unknown')}</div>${app.family && app.family !== 'unknown' ? '<div class="text-dim">Hardware family: '+_escSP(app.family)+'</div>' : ''}${d.platform_status === 'unavailable' ? '<div role="status">Hardware family information unavailable; showing detected components.</div>' : ''}${probeNotice}${roleSummary}${octeonCard}
   <div class="grid grid-3">
     <div class="card"><div class="section-title">System</div><div style="font-size:12px;line-height:1.9">
       <div><strong>${_escSP(sys.vendor)}</strong> ${_escSP(sys.product)}</div>
@@ -2420,7 +2433,8 @@ async function loadHardware(refresh) {
       <div>${hwNumber(cpu.sockets)} sockets &middot; ${hwNumber(cpu.cores_physical)} cores &middot; ${hwNumber(cpu.cores_logical)} threads</div>
       ${cpu.topology_complete === false ? '<div class="text-dim">Physical core topology is incomplete; core count is estimated.</div>' : ''}
       <div>NUMA nodes: ${hwNumber(cpu.numa_nodes)} ${cpu.max_freq ? ('&middot; ' + _escSP(cpu.max_freq)) : ''}</div>
-      <div>AES-NI ${badge(cpu.aes_ni, cpu.aes_ni ? 'yes' : 'no')} ${cpu.virtualization ? ('&middot; ' + _escSP(cpu.virtualization)) : ''}</div>
+      ${showAES ? `<div>AES-NI ${typeof cpu.aes_ni === 'boolean' ? badge(cpu.aes_ni, cpu.aes_ni ? 'yes' : 'no') : 'Unknown'}</div>` : ''}
+      ${cpu.virtualization ? '<div>'+_escSP(cpu.virtualization)+'</div>' : ''}
       <div class="text-dim" style="font-size:10px">crypto: ${_escSP((cpu.crypto_ext || []).join(', ')) || '&mdash;'}</div>
       ${cpu.isolated_cpus ? ('<div style="font-size:10px">isolated cpus: <span class="mono">' + _escSP(cpu.isolated_cpus) + '</span></div>') : ''}
     </div></div>
@@ -2431,17 +2445,18 @@ async function loadHardware(refresh) {
   </div>
   <div class="card"><div class="section-title">Network Interfaces (${(d.nics || []).length})</div>
     <div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>State</th><th>Speed</th><th>Driver</th><th>PCI</th><th>NUMA</th><th>IOMMU</th><th>Binding / SR-IOV</th><th>MAC</th></tr></thead><tbody>${nicRows || '<tr><td colspan="10" class="text-dim">No network interfaces reported</td></tr>'}</tbody></table></div></div>
-  <div class="grid grid-2">
-    <div class="card"><div class="section-title">DPU / SmartNIC</div><div style="font-size:12px;line-height:1.9">${dpuCard}</div>
-      ${hostChannels.length ? `<div class="text-dim">Host control interfaces (not mapped to individual cards): ${hostChannels.map(_escSP).join(', ')}</div>` : ''}</div>
-    <div class="card">
-      <div class="section-title">Detected accelerators / co-processors</div>
-      <div class="table-wrap"><table><thead><tr><th>Hardware</th><th>Location</th><th>Driver</th><th>NUMA</th><th>Manager state</th></tr></thead><tbody>${accelRows || '<tr><td colspan="5" class="text-dim">None detected in this inventory</td></tr>'}</tbody></table></div>
-      <div class="text-dim" style="font-size:11px;margin-top:8px">Device presence and FPGA Manager state do not confirm forwarding readiness.</div>
-      <div class="section-title" style="margin-top:10px">Hugepages</div>
-      <div style="font-size:12px;line-height:1.9">${(hp.pools || []).length ? (hp.pools.map(p => `<div>${p.nr} &times; ${p.size_mb} MB = ${p.total_gb} GB <span class="text-dim">(free ${p.free})</span></div>`).join('') + (hp.mounted ? '<div class="text-dim" style="font-size:10px">hugetlbfs mounted</div>' : '')) : '<div class="text-dim">None</div>'}</div>
-    </div>
-  </div>
+  ${showDpu || showAccel || showHugepages || feMissing ? `<div class="grid grid-${[showDpu, showAccel || feMissing, showHugepages].filter(Boolean).length === 1 ? 1 : 2}">
+    ${showDpu ? `<div class="card"><div class="section-title">DPU / SmartNIC</div><div style="font-size:12px;line-height:1.9">${dpu.present ? dpuCard : 'Expected on this hardware family; detection unavailable'}</div>
+      ${hostChannels.length ? `<div class="text-dim">Host control interfaces (not mapped to individual cards): ${hostChannels.map(_escSP).join(', ')}</div>` : ''}</div>` : ''}
+    ${showAccel || feMissing ? `<div class="card">
+      <div class="section-title">Detected accelerators / co-processors (FPGA / ASIC / NPU)</div>
+      <div class="table-wrap"><table><thead><tr><th>Hardware</th><th>Location</th><th>Driver</th><th>NUMA</th><th>Detection</th>${showManager ? '<th>FPGA Manager state</th>' : ''}</tr></thead><tbody>${accelRows || `<tr><td colspan="${showManager ? 6 : 5}" class="text-dim">Expected on this hardware family; detection unavailable</td></tr>`}</tbody></table></div>
+      ${feMissing ? '<div role="status">FE1xx front-end FPGA / ASIC: expected on this hardware family; detection unavailable. Check control-plane inventory.</div>' : ''}
+      <div class="text-dim" style="font-size:11px;margin-top:8px">Device presence and driver binding do not confirm forwarding readiness.</div>
+    </div>` : ''}
+    ${showHugepages ? `<div class="card"><div class="section-title">Hugepages</div>
+      <div style="font-size:12px;line-height:1.9">${(hp.pools || []).length ? (hp.pools.map(p => `<div>${hwNumber(p.nr)} &times; ${hwNumber(p.size_mb)} MB = ${hwNumber(p.total_gb)} GB <span class="text-dim">(free ${hwNumber(p.free)})</span></div>`).join('') + (hp.mounted ? '<div class="text-dim" style="font-size:10px">hugetlbfs mounted</div>' : '')) : '<div class="text-dim">No allocated pools reported</div>'}</div></div>` : ''}
+  </div>` : ''}
   <div class="card"><div class="section-title">Storage</div>
     <div class="table-wrap"><table><thead><tr><th>Device</th><th>Size</th><th>Model</th><th>Type</th></tr></thead><tbody>${diskRows || '<tr><td colspan="4" class="text-dim">No storage devices reported</td></tr>'}</tbody></table></div></div>
     <details class="card"><summary>All PCI functions (${hwNumber((d.pci || {}).device_count)})</summary><div class="table-wrap"><table><thead><tr><th>Address</th><th>Vendor:device</th><th>Class</th><th>Driver</th><th>Source / status</th></tr></thead><tbody>${pciRows || '<tr><td colspan="5" class="text-dim">No PCI functions reported</td></tr>'}</tbody></table></div></details>`;
@@ -7786,7 +7801,7 @@ function renderDeviceSupport(c) {
       <div><strong>Platform:</strong> ${_escSP(s.platform)} ${_escSP(s.kernel||'')}</div>
       <div><strong>CPU:</strong> ${_escSP(s.cpu||'--')}</div>
       <div><strong>Memory:</strong> ${_escSP(s.memory_total_gb)} GB</div>
-      <div><strong>FPGA:</strong> ${s.fpga_detected?'v'+_escSP(s.fpga_version):'Not detected'}</div>
+      ${s.fpga_detected ? '<div><strong>FPGA:</strong> v'+_escSP(s.fpga_version)+'</div>' : ''}
       <div><strong>Uptime:</strong> ${_escSP(s.uptime_human)}</div>`;
   });
 }

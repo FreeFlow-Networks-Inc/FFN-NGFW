@@ -6,7 +6,7 @@ import os
 import tempfile
 import threading
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from test_hwdetect import Fixture, hw
 
@@ -32,7 +32,8 @@ class HardwareAPITests(unittest.IsolatedAsyncioTestCase):
         far = {"cp_devices": [{"kind": "switch", "pci": "0000:03:00.0",
                                 "description": "Fixture fabric", "vendor": "14e4", "device": "8375"}]}
         with patch.object(manager, "_hw_inventory", side_effect=cached_inventory), \
-             patch.object(manager, "_detect_offload_dp", new=AsyncMock(return_value=far)):
+             patch.object(manager, "_detect_offload_dp", new=AsyncMock(return_value=far)), \
+             patch.object(manager, "_platform_profile", new=AsyncMock(return_value={})):
             first = await manager.system_hardware(refresh=1, user={"username": "fixture"})
             second = await manager.system_hardware(refresh=0, user={"username": "fixture"})
         self.assertTrue(all(t != threading.get_ident() for t in threads))
@@ -41,6 +42,51 @@ class HardwareAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(second["accelerators"]), 2)
         self.assertEqual(second["accelerators"][1]["bus"], "control-plane")
         self.assertEqual(second["cpu_role"]["role"], "management")
+
+    async def test_remote_fe100_and_expected_but_unavailable_inventory(self):
+        inventory = hw.detect(probe=Fixture())
+        original = copy.deepcopy(inventory)
+        far = {"cp_devices": [{"kind": "asic", "pci": "0000:04:00.0", "vendor": "feed",
+                               "device": "fe1c", "description": "Front-end", "driver": None}]}
+        profile = {"platform": "pa5200", "features": {"front_end_asic": {"applicable": True}}}
+        with patch.object(manager, "_hw_inventory", return_value=inventory), \
+             patch.object(manager, "_detect_offload_dp", new=AsyncMock(return_value=far)), \
+             patch.object(manager, "_platform_profile", new=AsyncMock(return_value=profile)):
+            result = await manager.system_hardware(user={})
+            self.assertTrue(result["specialized"]["fe1xx"]["present"])
+            self.assertEqual(result["specialized"]["fe1xx"]["devices"][0]["model"], "FE100")
+            self.assertEqual(result["specialized"]["fe1xx"]["devices"][0]["kind"], "asic")
+            self.assertFalse(result["specialized"]["fpga"]["present"])
+            self.assertFalse(result["applicability"]["hugepages"])
+            self.assertFalse(result["applicability"]["dpu"])
+            far["cp_devices"] = []
+            missing = await manager.system_hardware(user={})
+            self.assertTrue(missing["applicability"]["fe1xx"])
+            self.assertFalse(missing["specialized"]["fe1xx"]["present"])
+        self.assertEqual(inventory, original)
+
+    async def test_generic_fallback_is_not_a_selected_platform(self):
+        import ffn_cpuisol
+        with patch.object(ffn_cpuisol, "find_platform_decl", return_value=({"platform":"generic", "datapath":"dpdk"}, None)):
+            self.assertEqual(manager._platform_decl(), {})
+        with patch.object(ffn_cpuisol, "find_platform_decl", return_value=({"platform":"vu9p"}, "/fixture/platform.json")):
+            self.assertEqual(manager._platform_decl()["platform"], "vu9p")
+
+    async def test_chassis_family_survives_cp_outage(self):
+        with patch.object(manager, "_platform_decl", return_value={}), \
+             patch.object(manager, "_chassis_fingerprint", return_value={"platform":"gryphon"}), \
+             patch.object(manager, "_detect_offload_dp", new=AsyncMock(return_value={})), \
+             patch.object(manager, "_faceplate_map", new=AsyncMock(return_value=None)), \
+             patch.object(manager, "_detect_dpdk_service", return_value="fixture"), \
+             patch.object(manager, "_detect_dpdk_process", return_value=False), \
+             patch.object(manager, "fpga", Mock(sim_mode=True)):
+            profile = await manager._platform_profile()
+        self.assertEqual(profile["platform"], "pa5200")
+        self.assertEqual(profile["datapath"], "offload")
+        for key in ("dpdk", "fpga_card", "hugepages", "cpu_isolation"):
+            self.assertFalse(profile["features"][key]["applicable"])
+        self.assertTrue(profile["features"]["front_end_asic"]["applicable"])
+        self.assertFalse(profile["features"]["front_end_asic"]["present"])
 
     async def test_host_octeon_is_discovered_without_lspci_and_bridges_are_not_counted(self):
         fixture = Fixture()

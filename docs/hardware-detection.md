@@ -151,3 +151,33 @@ integration; physical FPGA/OCTEON/BlueField validation still requires the device
 
 References checked on 2026-09-10. Classification rules are local and do not
 download identifiers during detection.
+
+
+## Family-aware inventory and FE1xx front-end devices
+
+`/api/system/hardware` exposes `platform` and `applicability` alongside the raw
+inventory. The WebUI hides irrelevant DPU, accelerator, hugepage and CPU-specific
+sections. Detected add-on hardware remains visible, including on offload
+appliances. Expected PA-5200 components remain visible with detection unavailable
+when their control-plane inventory cannot be read. Presence is never inferred
+from a family expectation. FPGA Manager state appears only for devices with that
+interface; it is not an ASIC readiness check.
+
+A missing platform declaration is distinct from the CPU tuner's generic default.
+On an installed PA-5200 the detected Gryphon chassis selects the offload family,
+including while the CP is unavailable. This prevents host DPDK, hugepage and
+isolation statuses from masquerading as required appliance components.
+
+FE1xx detection runs on host PCI and on CP-provided PCI metadata. The verified
+`feed:fe1c` identity maps to FE100, based on the PA-5200 submodule's
+`octeon/bcmagent/ffn_bcmd.py` `KNOWN_PCI` table and live CP inventory. Other FE1xx
+models require an explicit FE1xx model token in vendor PCI descriptions or FPGA
+Manager metadata; device-ID prefixes are not treated as model numbers. Firmware
+files, installed utilities and a vendor ID alone do not establish FE1xx presence.
+`specialized.fe1xx` contains the detected devices and their identity sources.
+ASIC devices retain their ASIC classification; FPGA Manager devices retain their
+FPGA classification. The legacy `fpga_detected` status remains the FFN host FPGA
+controller's availability flag, not a claim that FE100 uses that controller.
+
+This inventory does not load bitstreams, program registers or claim forwarding
+readiness. Missing drivers and unavailable telemetry do not erase detected chips.
