@@ -5,6 +5,8 @@ from urllib.parse import urlencode
 
 
 HELP='''show policies <kind> [vsys] [candidate|running]
+show policies preview <nat|qos|pbf|decryption> [vsys] [candidate|running]
+request policies <nat|qos|pbf|decryption> test <packet-JSON> [vsys] [candidate|running]
 show policies nat-preview [candidate|running]
 show policies nat-tools
 show policies status [candidate|running]
@@ -25,6 +27,19 @@ def handle(tokens,api,token):
     if len(tokens)<2 or tokens[0] not in ('show','request') or tokens[1]!='policies':return False
     if len(tokens)<3:print(HELP);return True
     kind=tokens[2]
+    if tokens[0]=='show' and kind=='preview':
+        if len(tokens)<4 or len(tokens)>6:print(HELP);return True
+        source=next((x for x in tokens[4:] if x in ('candidate','running')),'candidate')
+        scope=next((x for x in tokens[4:] if x not in ('candidate','running')),'vsys1')
+        print(json.dumps(api('/api/config/policies/'+tokens[3]+'/preview?'+urlencode(dict(scope=scope,source=source)),token=token),indent=2));return True
+    if tokens[0]=='request' and len(tokens)>3 and tokens[3]=='test':
+        if not 5<=len(tokens)<=7:print(HELP);return True
+        try:packet=json.loads(tokens[4])
+        except ValueError:print('Invalid JSON packet');return True
+        if not isinstance(packet,dict):print('Packet must be a JSON object');return True
+        source=next((x for x in tokens[5:] if x in ('candidate','running')),'candidate')
+        scope=next((x for x in tokens[5:] if x not in ('candidate','running')),'vsys1')
+        print(json.dumps(api('/api/config/policies/'+kind+'/test?'+urlencode(dict(scope=scope,source=source)),method='POST',body={'packet':packet},token=token),indent=2));return True
     if tokens[0]=='show' and kind=='nat-tools':
         print(json.dumps(api('/api/system/dataplane-tools',token=token),indent=2));return True
     if tokens[0]=='show' and kind=='nat-preview':

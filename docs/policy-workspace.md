@@ -35,10 +35,12 @@ Use the existing CLI `commit` or WebUI Commit after reviewing changes.
 
 ## Activation is deliberately separate from storage
 
-These editors do not implement new NAT, TLS decryption, authentication,
-inspection, QoS, SD-WAN or OCTEON enforcement engines. No XML policy runtime
-provider has been commissioned yet. Therefore enabled XML rules are **blocked
-at commit**, including rules imported by generic CLI/API config operations.
+NAT has a compiler and an opt-in, commissioned nftables runtime provider.
+QoS, PBF and Decryption have resolved policy previews and packet-match tests;
+their enforcement engines are not yet connected. See [policy planning](policy-planning.md)
+for their capabilities, CLI commands and runtime requirements. Enabled XML rules
+without a commissioned provider are **blocked at commit**, including rules
+imported by generic CLI/API config operations.
 ConfigManager validates the effective full or partial commit before replacing
 running XML. Configd validates again before any local or platform side effect;
 its dry-run mode uses the same guard. The UI and CLI display the same blockers

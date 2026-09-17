@@ -289,13 +289,22 @@ def validate(kind,spec,root,scope):
 
 def runtime_report(xml,check_runtime=False):
     """Fail closed until each policy compiler and acknowledged apply are connected."""
-    root=parse(xml);blockers=[];disabled=0;nat_enabled=[]
+    root=parse(xml);blockers=[];disabled=0;nat_enabled=[];plans={}
     for scope,node in owners(root).items():
         for kind in SCHEMAS:
             for rule in node.findall('rulebase/'+kind+'/rules/entry'):
                 if rule.findtext('disabled')=='yes':disabled+=1
                 elif kind=='nat':nat_enabled.append(dict(scope=scope,kind=kind,name=rule.get('name','')))
-                else:blockers.append(dict(scope=scope,kind=kind,name=rule.get('name',''),reason='No commissioned runtime provider for this XML rulebase'))
+                else:
+                    reason='No commissioned runtime provider for this XML rulebase'
+                    if kind in ('qos','pbf','decryption'):
+                        from ffn_policy_plan import compile_policy as compile_plan
+                        key=(scope,kind)
+                        if key not in plans:plans[key]=compile_plan(xml,kind,scope)
+                        plan=plans[key]
+                        errors=[b['reason'] for b in plan['blockers'] if b['name']==rule.get('name','')]
+                        reason+='; '+('; '.join(errors) if errors else '; '.join(plan['runtime_requirements']))
+                    blockers.append(dict(scope=scope,kind=kind,name=rule.get('name',''),reason=reason))
     if nat_enabled:
         from ffn_nat_policy import compile_policy
         compiled=compile_policy(xml)
@@ -350,13 +359,17 @@ class PolicyController:
     def execute(self,args):
         action=args.get('action','list');source=args.get('source','candidate')
         if source not in ('candidate','running'):raise PolicyError('Invalid configuration source')
-        if action not in ('list','report','create','update','delete','move','toggle'):raise PolicyError('Unknown policy operation')
+        if action not in ('list','report','preview','test','create','update','delete','move','toggle'):raise PolicyError('Unknown policy operation')
         path=self.directory/(source+'-config.xml');xml=path.read_bytes();root=parse(xml);rev=revision(xml)
         if action=='report':return runtime_report(xml)
         kind=args.get('kind');scope=args.get('scope','vsys1')
         if kind not in SCHEMAS:raise PolicyError('Unknown policy kind',404)
         scopes=owners(root)
         if scope not in scopes:raise PolicyError('Virtual system not found',404)
+        if action in ('preview','test'):
+            from ffn_policy_plan import compile_policy, test_policy
+            return (compile_policy(xml,kind,scope) if action=='preview' else
+                    test_policy(xml,kind,scope,args.get('packet')))
         rules=scopes[scope].find('rulebase/'+kind+'/rules');rows=list(rules) if rules is not None else []
         names=[e.get('name') for e in rows]
         if len(names)!=len(set(names)):raise PolicyError('Duplicate rule names must be repaired',409)

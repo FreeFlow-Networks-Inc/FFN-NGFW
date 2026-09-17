@@ -72,6 +72,7 @@ function renderPolicyWorkspace(c,kind){
     <p id="pw-status" role="status">Loading rulebase from control daemon…</p><div id="pw-list" class="card"></div>
     <div class="workflow-actions"><button class="btn btn-primary" id="pw-add" disabled>Add</button>
     <button class="btn" id="pw-validate">Validate activation</button>
+    ${['nat','qos','pbf','decryption'].includes(kind)?'<button class="btn" id="pw-plan" disabled>Preview policy plan</button><button class="btn" id="pw-test" disabled>Test policy match</button>':''}
     ${kind==='nat'?'<button class="btn" id="pw-nat-preview">NAT translation preview</button>':''}
     ${kind==='dos'?'<button class="btn" id="pw-dos">DoS engine controls</button>':''}
     <span class="text-dim">Candidate changes require Commit. New rules start disabled.</span></div>
@@ -89,6 +90,7 @@ async function loadPolicyWorkspace(c,kind){
   const source=document.getElementById('pw-source').value,scope=document.getElementById('pw-scope').value;
   const add=document.getElementById('pw-add'),status=document.getElementById('pw-status');
   editor.classList.remove('show');table.textContent='Loading…';add.disabled=true;document.getElementById('pw-validate').disabled=true;
+  for(const id of ['pw-plan','pw-test']){const button=document.getElementById(id);if(button)button.disabled=true;}
   try{
     const url='/api/config/policies/'+kind+'?scope='+encodeURIComponent(scope);
     const results=await Promise.allSettled([consoleRequest(url+'&source='+source),
@@ -106,6 +108,10 @@ async function loadPolicyWorkspace(c,kind){
       (kind==='security'?(fastError?' · Fast-path and implicit rules unavailable: '+fastError:' · Implicit rules are always shown and read only. Fast-path rows show stored policy in both views.'):'')+
       ' Dataplane application is not confirmed.';
     add.disabled=!data.can_edit;add.onclick=()=>editPolicyWorkspace(data,url,null,()=>loadPolicyWorkspace(c,kind));
+    for(const [id,test] of [['pw-plan',false],['pw-test',true]]){
+      const button=document.getElementById(id);
+      if(button){button.disabled=false;button.onclick=()=>inspectPolicyWorkspace(data,kind,source,scope,test);}
+    }
     document.getElementById('pw-validate').disabled=!!xmlError;
     document.getElementById('pw-validate').onclick=async()=>{
       objectDialog(editor,'Policy Activation Validation','<pre id="pw-validation">Checking control daemon…</pre>');const target=document.getElementById('pw-validation');
@@ -172,6 +178,56 @@ function policyFieldHTML(f,value,choices){
   if(f.mode==='member-text'||f.key==='log-setting')return `<label>${text(f.label)}<select name="${id}"><option value="">None</option>${[...new Set([...(choices||[]),...(value?[value]:[])])].map(v=>`<option value="${text(v)}" ${v===value?'selected':''}>${text(v)}</option>`).join('')}</select></label>`;
   return `<label>${text(f.label)}<input name="${id}" value="${text(value)}" maxlength="1024" ${choices?.length?`list="${id}-choices"`:''}>${choices?.length?`<datalist id="${id}-choices">${choices.map(v=>`<option value="${text(v)}">`).join('')}</datalist>`:''}</label>`;
 }
+function policyPlanAction(kind,action){
+  if(!action)return 'Unavailable';
+  if(kind==='qos')return 'Assign class '+action.class;
+  if(kind==='pbf')return action.type==='forward'?'Forward via '+action.interface+' · Next hop '+(action.next_hop||'directly connected'):action.type==='discard'?'Discard':'Use normal routing';
+  if(kind==='decryption')return action.type==='no-decrypt'?'Do not decrypt':'Decrypt · '+action.inspection+(action.certificate?' · Certificate '+action.certificate:'')+(action.profile?' · Profile '+action.profile:'');
+  const s=action.source_translation,d=action.destination_translation;
+  return 'Source: '+(s.interface?'Interface '+s.interface:s.address?s.type+' '+s.address:'unchanged')+'; Destination: '+(d?d.address+(d.port?':'+d.port:''):'unchanged');
+}
+async function inspectPolicyWorkspace(snapshot,kind,source,scope,test){
+  const box=document.getElementById('pw-editor'),text=v=>_escSP(v??''),base='/api/config/policies/'+kind;
+  const query='?'+new URLSearchParams({source,scope}),title=policyKinds[kind]+(test?' Match Test':' Policy Plan');
+  const choices=(key)=>['<option value="">Select…</option>',...(snapshot.choices[key]||[]).map(v=>'<option>'+text(v)+'</option>')].join('');
+  const form=test?`<form id="pw-test-form" class="object-form">
+    <p>Enter packet addresses and zones at this policy's lookup stage.${kind==='nat'?' Use the original packet and the destination zone from the original route lookup.':''} Identity and application are supplied test values.</p>
+    <label>Source Zone<select name="from_zone" required>${choices('from')}</select></label><label>Destination Zone<select name="to_zone" required>${choices('to')}</select></label>
+    <label>Source IPv4<input name="source" required placeholder="192.0.2.10"></label><label>Destination IPv4<input name="destination" required placeholder="198.51.100.20"></label>
+    <label>Protocol<select name="protocol"><option>tcp</option><option>udp</option><option>icmp</option><option>other</option></select></label>
+    <label>Source Port<input name="source_port" type="number" min="1" max="65535"></label><label>Destination Port<input name="destination_port" type="number" min="1" max="65535"></label>
+    <label>Application (optional)<input name="application"></label><label>Source User (optional)<input name="source_user"></label>
+    <label>Egress Interface (optional)<input name="egress_interface"></label>
+    <div class="modal-footer"><button type="submit" class="btn btn-primary">Test Match</button><button type="button" class="btn" id="pw-test-close">Close</button></div></form>`:'';
+  objectDialog(box,title,form+'<div id="pw-plan-result" role="status">'+(test?'No traffic is sent and no configuration is changed.':'Compiling policy…')+'</div>');
+  const target=document.getElementById('pw-plan-result');
+  const requirements=report=>'<p>'+text(report.enforcement)+'</p><ul>'+report.runtime_requirements.map(r=>'<li>'+text(r)+'</li>').join('')+'</ul><p class="text-dim">'+text(report.semantics)+'</p>';
+  if(test){
+    const f=document.getElementById('pw-test-form');
+    document.getElementById('pw-test-close').onclick=()=>document.getElementById('object-close').click();
+    f.elements.protocol.onchange=()=>{for(const key of ['source_port','destination_port'])f.elements[key].disabled=!['tcp','udp'].includes(f.elements.protocol.value);};
+    f.onsubmit=async event=>{
+      event.preventDefault();const packet=Object.fromEntries([...new FormData(f)].filter(([k,v])=>v!==''));
+      for(const key of ['source_port','destination_port'])if(packet[key])packet[key]=Number(packet[key]);
+      const button=f.querySelector('[type=submit]');button.disabled=true;target.textContent='Testing rule order…';
+      try{
+        const report=await consoleRequest(base+'/test'+query,{method:'POST',body:JSON.stringify({packet})});
+        if(!target.isConnected)return;
+        target.innerHTML='<p><strong>'+text(report.status==='matched'?'Matched: '+report.selected.name:report.status==='indeterminate'?'Cannot determine a match':'No matching enabled rule')+'</strong></p>'+
+          (report.selected?'<p>'+text(policyPlanAction(kind,report.selected.action))+'</p>':'')+
+          '<ol>'+report.trace.map(r=>'<li>'+text(r.name+': '+r.result+(r.reason?' — '+r.reason:''))+'</li>').join('')+'</ol>'+requirements(report);
+      }catch(e){if(target.isConnected)target.textContent=e.message;}finally{button.disabled=false;}
+    };
+    return;
+  }
+  try{
+    const report=await consoleRequest(base+'/preview'+query);if(!target.isConnected)return;
+    target.innerHTML='<p><strong>'+text(report.valid?'Compilation passed':'Compilation blocked')+'</strong> · '+text(source)+' · '+text(scope)+'</p>'+requirements(report)+
+      '<div class="table-wrap"><table><thead><tr><th>#</th><th>Rule</th><th>Resolved match</th><th>Intended action</th></tr></thead><tbody>'+report.plan.rules.map(r=>{
+        const m=r.match;return '<tr><td>'+r.position+'</td><td>'+text(r.name)+'</td><td>'+text(m?m.from.join(', ')+' / '+m.source.join(', ')+' → '+m.to.join(', ')+' / '+m.destination.join(', '):r.error)+'</td><td>'+text(policyPlanAction(kind,r.action))+'</td></tr>';
+      }).join('')+'</tbody></table></div><p>'+report.disabled_rules+' disabled rule(s) excluded.</p>';
+  }catch(e){if(target.isConnected)target.textContent=e.message;}
+}
 async function previewNatWorkspace(){
   const editor=document.getElementById('pw-editor'),source=document.getElementById('pw-source').value;
   objectDialog(editor,'NAT translation preview','<div id="nat-preview" role="status">Reading NAT compilation and dataplane status…</div>');
@@ -180,12 +236,17 @@ async function previewNatWorkspace(){
     const report=await consoleRequest('/api/config/nat/preview?source='+source);
     if(!target.isConnected)return;
     const state=report.runtime,active=state.applied&&state.digest===report.digest;
+    const usage=new Map((state.usage||[]).map(u=>[JSON.stringify([u.scope,u.name]),u]));
     target.innerHTML=`<p><strong>${active?'This rule plan is applied':report.valid?'Compilation passed':'Compilation blocked'}</strong> · ${text(source)} configuration</p>
       <p>${state.available?'Dataplane: '+text(state.provider)+' · '+text(state.machine)+' · '+text(state.byteorder)+' endian':text(state.error||'Dataplane unavailable')}</p>
       <p>${report.commissioned?'Commit validates and applies this plan through the MP control daemon.':'NAT activation is not commissioned. Rules can be staged; enabled rules cannot be committed yet.'}</p>
       ${report.blockers.length?'<ul>'+report.blockers.map(b=>'<li>'+text(b.scope+' / '+b.name+': '+b.reason)+'</li>').join('')+'</ul>':''}
       <div class="table-wrap"><table><thead><tr><th>Rule</th><th>Original packet</th><th>Source translation</th><th>Destination translation</th></tr></thead><tbody>${report.plan.rules.map(r=>`<tr><td>${text(r.scope+' / '+r.name)}</td><td>${text(r.source.join(', '))} → ${text(r.destination.join(', '))}<br>${text(r.ingress.join(', '))} → ${text(r.egress.join(', '))}</td><td>${text(r.snat.type==='none'?'None':r.snat.interface?'Interface '+r.snat.interface:r.snat.type+' '+r.snat.address)}</td><td>${text(r.dnat?r.dnat.address+(r.dnat.port?':'+r.dnat.port:''):'None')}</td></tr>`).join('')}</tbody></table></div>
       <p class="text-dim">${report.disabled_rules} disabled rule(s) excluded. First matching NAT rule wins. NAT does not permit traffic through Security policy. Existing sessions retain their translations.</p>`;
+    target.innerHTML+='<p><strong>NAT connection counters</strong></p><p>Counters measure initial connection packets, not total session traffic. They reset when a new NAT generation is applied.</p><ul>'+report.plan.rules.map(r=>{
+      const u=usage.get(JSON.stringify([r.scope,r.name])),known=active&&u?.available;
+      return '<li>'+text(r.scope+' / '+r.name)+': '+(known?text(u.packets)+' initial packets · '+text(u.bytes)+' bytes':'Unavailable')+'</li>';
+    }).join('')+'</ul>';
   }catch(e){if(target.isConnected)target.textContent=e.message;}
 }
 function editPolicyWorkspace(snapshot,url,existing,reload,clone=false){

@@ -19,6 +19,19 @@ async function main(){
       sdwan:{'Path Quality Profile':'quality','Traffic Distribution Profile':'distribution'}
     };
     for(const kind of ['security','nat','qos','pbf','decryption','tunnel-inspect','application-override','authentication','dos','sdwan']){
+      if(['nat','qos','pbf','decryption'].includes(kind)){
+        await open(kind);await page.locator('#pw-plan').click();
+        await page.waitForFunction(()=>document.getElementById('pw-plan-result')?.textContent.includes('Compilation passed'));
+        assert.match(await page.locator('#pw-plan-result').innerText(),/does not authorize traffic/);
+        await page.locator('#object-close').click();
+        await page.locator('#pw-test').click();
+        for(const [name,value] of Object.entries({source:'192.0.2.10',destination:'198.51.100.10',destination_port:'443'}))await page.locator('#pw-test-form [name='+name+']').fill(value);
+        await page.locator('#pw-test-form [name=from_zone]').selectOption('trust');
+        await page.locator('#pw-test-form [name=to_zone]').selectOption('untrust');
+        await page.getByRole('button',{name:'Test Match',exact:true}).click();
+        await page.waitForFunction(()=>document.getElementById('pw-plan-result')?.textContent.includes('No matching enabled rule'));
+        await page.locator('#pw-test-close').click();
+      }
       if(kind==='nat'){
         await open(kind);await page.locator('#pw-nat-preview').click();
         await page.waitForFunction(()=>document.getElementById('nat-preview')?.textContent.includes('Compilation passed'));
