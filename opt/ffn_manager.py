@@ -11663,6 +11663,9 @@ def _ensure_imported_into_vsys(iface_name: str, vsys_name: str = "vsys1"):
 
 
 from ffn_config_subinterfaces import SubinterfaceEdit as SubInterfaceEntry, SubinterfaceStore
+from ffn_config_interfaces import install as _install_interface_editor_api
+_install_interface_editor_api(app, get_current_user, _audit, config_mgr, CANDIDATE_CONFIG,
+                              lambda: set((_faceplate_map_sync('data') or _load_aliases()).keys()))
 
 @app.get("/api/config/subinterfaces")
 async def subinterface_list(parent: str, vsys: str = "vsys1", source: str = "candidate", user: dict = Depends(get_current_user)):

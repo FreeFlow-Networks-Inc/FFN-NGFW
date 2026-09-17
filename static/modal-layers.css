@@ -4,16 +4,16 @@ body.modal-active {overflow:hidden}
 .modal-overlay > .modal {max-height:calc(100dvh - 24px);overscroll-behavior:contain}
 .modal h3,.modal-header {cursor:move;touch-action:none;user-select:none}
 .modal:has(#vrr-name) > .form-actions {display:none}
-.modal:has(#subinterface-form) {width:760px;max-width:100%}
-.modal:has(#subinterface-form) > .form-actions {display:none}
-#subinterface-form .sif-fields {border:0;padding:0;margin:0;min-width:0}
-#subinterface-form [role="tabpanel"] {min-height:210px;padding:12px 0}
-#subinterface-form input,#subinterface-form select,#subinterface-form textarea {width:100%;box-sizing:border-box}
-#subinterface-form table {width:100%;margin-bottom:10px}
-#subinterface-form td:last-child {width:85px;text-align:right}
-#subinterface-form .settings-toolbar {position:sticky;bottom:0;background:var(--surface);padding:10px 0;margin-top:10px}
-#subinterface-form #sif-msg {flex:1;line-height:1.4}
-@media(max-width:600px) {#subinterface-form .form-row {flex-direction:column}#subinterface-form .setup-tabs {flex-wrap:wrap}}
+.modal:has(:is(#subinterface-form,#interface-form)) {width:760px;max-width:100%}
+.modal:has(:is(#subinterface-form,#interface-form)) > .form-actions {display:none}
+:is(#subinterface-form,#interface-form) :is(.sif-fields,.ifm-fields) {border:0;padding:0;margin:0;min-width:0}
+:is(#subinterface-form,#interface-form) [role="tabpanel"] {min-height:210px;padding:12px 0}
+:is(#subinterface-form,#interface-form) input,:is(#subinterface-form,#interface-form) select,:is(#subinterface-form,#interface-form) textarea {width:100%;box-sizing:border-box}
+:is(#subinterface-form,#interface-form) table {width:100%;margin-bottom:10px}
+:is(#subinterface-form,#interface-form) td:last-child {width:85px;text-align:right}
+:is(#subinterface-form,#interface-form) .settings-toolbar {position:sticky;bottom:0;background:var(--surface);padding:10px 0;margin-top:10px}
+:is(#subinterface-form,#interface-form) :is(#sif-msg,#ifm-msg) {flex:1;line-height:1.4}
+@media(max-width:600px) {:is(#subinterface-form,#interface-form) .form-row {flex-direction:column}:is(#subinterface-form,#interface-form) .setup-tabs {flex-wrap:wrap}}
 .modal:has(#vrr-name) {width:960px}
 .modal:has(#vrr-name) #info-modal-body > div > div:last-child {min-width:0}
 .vrr-pane .grid-4 {grid-template-columns:repeat(4,minmax(0,1fr))}

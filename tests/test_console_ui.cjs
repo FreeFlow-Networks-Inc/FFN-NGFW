@@ -162,28 +162,7 @@ const run = code => vm.runInContext(code,context);
   await context.doCommit();
   assert.match(element('commit-msg').textContent,/1 settings skipped/);
   assert.equal(element('commit-msg').style.color,'var(--orange)');
-  element('ifm-name').value='ethernet1/1'; element('ifm-mode').value='layer3';
-  element('ifm-vr').value='default'; element('ifm-vr').dataset.original='default';
-  const writes=[];
-  context.fetch=async(path)=>{writes.push(path);return {ok:true,status:200,json:async()=>({status:'created'})};};
-  await context.saveIface();
-  assert.deepEqual(writes,['/api/interfaces/ethernet1%2F1'],'Unchanged VR must not trigger a runtime write');
-  element('ifm-addressing').value='dhcp';element('ifm-ip').value='192.0.2.1/24';
-  let dhcpBody;
-  context.fetch=async(path,opts)=>{dhcpBody=JSON.parse(opts.body);return {ok:true,status:200,json:async()=>({status:'created'})};};
-  await context.saveIface();
-  assert.equal(dhcpBody.dhcp_client,true);assert.deepEqual(dhcpBody.ip_addresses,[]);
-  element('ifm-addressing').value='static';
-  element('ifm-vr').value='new-router';
-  context.fetch=async(path)=>path.endsWith('/virtual-router') ?
-    {ok:false,status:503,json:async()=>({detail:'MP unavailable'})} :
-    {ok:true,status:200,json:async()=>({status:'created'})};
-  await context.saveIface();
-  assert.match(element('ifm-msg').textContent,/Interface saved to candidate; virtual-router assignment failed: MP unavailable/);
-  assert.equal(element('ifm-vr').dataset.original,'default','Failed VR write must remain retryable');
-  element('ifm-ip').value='192.0.2.1/24';
-  context.switchIfaceEditorTab('advanced');context.switchIfaceEditorTab('config');
-  assert.equal(element('ifm-ip').value,'192.0.2.1/24');
+  // Parent interface form writes are exercised in test_interface_defaults_browser.cjs.
   element('zones-vsys-select').value='vsys1'; element('zones-source').value='candidate';
   context.fetch=async()=>({ok:true,status:200,json:async()=>({vsys:'vsys1',revision:'a'.repeat(64),can_edit:true,
     entries:[{name:'<img src=x>',zone_type:'layer3',interfaces:['ethernet1/1'],editable:true,comment:'test'}],
@@ -197,15 +176,7 @@ const run = code => vm.runInContext(code,context);
   await context.loadZones();
   assert.equal(element('zones-add').disabled,true);
   assert.match(element('zones-notice').textContent,/Unable to load zones/);
-  element('sif-save').disabled=false; element('sif-unit').value='1';element('sif-tag').value='200';
-  element('sif-vsys').value='vsys1';element('sif-ip').value='192.0.2.1/24';
-  let subWrite;
-  context.fetch=async(path,opts)=>{subWrite={path,...opts};return {ok:false,status:409,json:async()=>({detail:'Candidate changed'})};};
-  await context.saveSubinterface('ethernet1/1',{can_edit:true,revision:'b'.repeat(64),mode:'layer3'},{name:'ethernet1/1.1'});
-  assert.equal(subWrite.method,'PUT');
-  assert.equal(JSON.parse(subWrite.body).unit,1);assert.equal(JSON.parse(subWrite.body).tag,200);
-  assert.equal(element('sif-tag').value,'200');assert.equal(element('sif-save').disabled,false);
-  assert.match(element('sif-msg').textContent,/Candidate changed/);
+  // Subinterface form writes are exercised in test_subinterface_browser.cjs.
   context.fetch=async()=>({ok:true,status:200,json:async()=>({can_edit:true,rules:[{id:1,name:'<img src=x>',src_ip:'192.0.2.0/24',dst_ip:'0.0.0.0/0',src_iface:'ethernet1/1',dst_iface:'ethernet1/2',src_port:0,dst_port:443,proto:'tcp',action:'permit',vsys:3,enabled:1,position:1}]})});
   await context.loadPolicies();
   assert(!element('policy-table-body').innerHTML.includes('<img'));

@@ -3642,7 +3642,7 @@ function renderDeviceSetup(c) {
 }
 function consoleTabKey(event) {
   if (!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
-  const tabs = Array.from(event.currentTarget.querySelectorAll('[role="tab"]'));
+  const tabs = Array.from(event.currentTarget.querySelectorAll('[role="tab"]')).filter(tab=>!tab.hidden&&!tab.disabled);
   const index = tabs.indexOf(event.target);
   if (index < 0) return;
   event.preventDefault();
@@ -4159,275 +4159,146 @@ async function aggregateOperation(name, operation) {
 }
 
 function switchIfaceEditorTab(name) {
-  if (!['config','advanced'].includes(name)) return;
-  for (const key of ['config','advanced']) {
-    const selected = key === name;
-    document.getElementById('ifm-panel-'+key).hidden = !selected;
-    const tab = document.getElementById('ifm-tab-'+key);
-    tab.classList.toggle('active', selected);
-    tab.setAttribute('aria-selected', String(selected));
-    tab.tabIndex = selected ? 0 : -1;
-  }
+  document.querySelectorAll('#interface-form [role="tab"]').forEach(tab=>{
+    const selected=tab.id==='ifm-tab-'+name;
+    tab.classList.toggle('active',selected);tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;
+    document.getElementById(tab.getAttribute('aria-controls')).hidden=!selected;
+  });
+}
+function addIfaceAddress(family,value='') {
+  const row=document.createElement('tr');
+  row.innerHTML=`<td><input aria-label="IPv${family} address with prefix" data-family="${family}" required placeholder="${family===4?'192.0.2.1/24':'2001:db8::1/64'}" value="${_escSP(value)}"></td><td><button class="btn btn-sm" type="button" aria-label="Remove IPv${family} address">Remove</button></td>`;
+  row.querySelector('button').onclick=()=>{row.remove();document.getElementById('ifm-add-'+family).focus();};
+  document.getElementById('ifm-addresses-'+family).appendChild(row);
+  if(!value)row.querySelector('input').focus();
 }
 async function openIfaceModal(name) {
-  const ethList = _ifaceState.configured.ethernet||[];
-  const aeList = _ifaceState.configured['aggregate-ethernet']||[];
-  const existing = [...ethList, ...aeList].find(e=>e.name===name);
-  let cap = _ifaceState.caps[name] || {supported_speeds:[], current_speed_mbps:0};
-  if(window.ffnExtensions?.interfaceLinkCapabilities && name.startsWith('ethernet')){
-    try{cap=await window.ffnExtensions.interfaceLinkCapabilities(name)||cap;}
-    catch(e){cap={supported_speeds:[],configurable:false,source:'Hardware controller unavailable'};}
-  }
-
-  const speedOptions = ['auto'];
-  const seen = new Set();
-  for (const s of cap.supported_speeds||[]) {
-    const key = `${s.speed_mbps}`;
-    if (!seen.has(key)) { speedOptions.push(key); seen.add(key); }
-  }
-  if(existing?.link_speed && !speedOptions.includes(existing.link_speed))speedOptions.push(existing.link_speed);
-
-  const speedOpts = speedOptions.map(s=>`<option value="${s}">${s==='auto'?'Auto-negotiate':s+' Mb/s'}</option>`).join('');
-  const modeOpts = IFACE_MODES.map(m=>`<option value="${m.value}">${m.label}</option>`).join('');
-
-  const cur = existing || {name, mode:'none', ip_addresses:[], link_speed:'auto', link_duplex:'auto', link_state:'auto', mtu:'', aggregate_group:'', interface_management_profile:'', comment:'', lldp_enabled:false, lldp_profile:''};
-  // Interface Management Profiles available for the dropdown
-  let _mgmtProfileNames = [];
+  const box=document.getElementById('info-modal-body');
+  document.getElementById('info-modal-title').textContent='Interface: '+name;
+  box.innerHTML='<p id="ifm-loading" role="status">Loading candidate interface configuration…</p>';
+  const loading=document.getElementById('ifm-loading'),overlay=document.getElementById('modal-info');
+  overlay.classList.add('show');
+  const generation=openIfaceModal.generation=(openIfaceModal.generation||0)+1;
   try {
-    const _pr = await api('/api/network-resources/interface-mgmt-profiles');
-    if (_pr && Array.isArray(_pr.entries)) _mgmtProfileNames = _pr.entries.map(e=>e.name);
-  } catch (e) { _mgmtProfileNames = []; }
-  // Virtual Router options + this interface's current VR (SQLite VR store)
-  let _vrNames = []; let _vrCurrent = ''; let _vrLoaded = false;
-  const _devName = (_ifaceState.panToLinux||{})[name] || name;
-  try {
-    const _vrresp = await consoleRequest('/api/network/virtual-routers');
-    const _vrs = _vrresp.virtual_routers || _vrresp.entries;
-    if (!Array.isArray(_vrs)) throw new Error('Virtual router inventory unavailable');
-    _vrLoaded = true;
-    for (const _v of _vrs) {
-      if (_v.name === 'default') continue;
-      _vrNames.push(_v.name);
-      if ((_v.interfaces||[]).includes(_devName) || (_v.interfaces||[]).includes(name)) _vrCurrent = _v.name;
+    const row=((_ifaceState.enriched||{}).ethernet||[]).find(e=>e.name===name);
+    const snapshot=await consoleRequest('/api/config/interfaces?name='+encodeURIComponent(name)+'&vsys='+encodeURIComponent(row?.virtual_system||'vsys1'));
+    const cur=snapshot.entry,isAE=name.startsWith('ae');
+    let cap=_ifaceState.caps[name]||{supported_speeds:[]};
+    if(!isAE&&window.ffnExtensions?.interfaceLinkCapabilities){
+      try{cap=await window.ffnExtensions.interfaceLinkCapabilities(name)||cap;}
+      catch(e){cap={supported_speeds:[],configurable:false,source:'Hardware controller unavailable'};}
     }
-  } catch (e) {}
-
-  document.getElementById('info-modal-title').textContent = (existing?'Edit':'Create')+' Interface: '+name;
-  document.getElementById('info-modal-body').innerHTML = `
-    <input type="hidden" id="ifm-name" value="${_escSP(name)}">
-    <div class="form-group"><label>Mode</label>
-      <select id="ifm-mode" onchange="_ifmToggle()" style="width:100%">${modeOpts}</select>
-      <div class="text-dim">Front-panel ports default to None, which physically disables the link. Select an interface mode before enabling the port.</div>
-    </div>
-    <div class="form-group"><label>Comment</label><input id="ifm-comment" type="text" style="width:100%" placeholder="Description of this interface"></div>
-
-    <div class="setup-tabs" role="tablist" aria-label="Interface settings" onkeydown="consoleTabKey(event)">
-      <button id="ifm-tab-config" role="tab" aria-selected="true" aria-controls="ifm-panel-config" class="active" onclick="switchIfaceEditorTab('config')">Config</button>
-      <button id="ifm-tab-advanced" role="tab" tabindex="-1" aria-selected="false" aria-controls="ifm-panel-advanced" onclick="switchIfaceEditorTab('advanced')">Advanced</button>
-    </div>
-    <div id="ifm-panel-config" role="tabpanel" aria-labelledby="ifm-tab-config">
-    <div id="ifm-l3-block" class="section">
-      <div class="section-title">Layer 3 Settings</div>
-      <div class="form-group"><label>IPv4 Addressing</label><select id="ifm-addressing" onchange="document.getElementById('ifm-ip').disabled=this.value==='dhcp'"><option value="static">Static</option><option value="dhcp">DHCP client</option></select></div>
-      <div class="form-group"><label>DHCP Default Route</label><select id="ifm-dhcp-route"><option value="yes">Install received default route</option><option value="no">Do not install default route</option></select></div>
-      <div class="form-group"><label>IP Addresses (comma-separated CIDR)</label>
-        <input id="ifm-ip" type="text" style="width:100%" placeholder="10.0.0.1/24, 2001:db8::1/64">
-      </div>
-      <div class="form-group"><label>Interface MTU</label>
-        <input id="ifm-mtu" type="number" style="width:100%" placeholder="inherits global (${_ifaceState.jumbo.mtu})">
-      </div>
-      <div class="form-group"><label>Interface Management Profile</label>
-        <select id="ifm-mgmt" style="width:100%"></select>
-        <div class="text-dim" style="font-size:10px;margin-top:3px">Permits admin services (SSH/HTTPS/SNMP/ping/OCSP) to the firewall on this interface. Blank = no management access here. Add or edit profiles in the Network Profiles section.</div>
-      </div>
-      <div class="form-group"><label>Virtual Router</label>
-        <select id="ifm-vr" style="width:100%"></select>
-        <div class="text-dim" style="font-size:10px;margin-top:3px">Assigns this interface to a virtual router (its own VRF / routing table). &quot;default (main table)&quot; keeps it in the global table. Changing this assignment updates the virtual router immediately when saved. Other interface settings require Commit.</div>
-      </div>
-    </div>
-
-    <div id="ifm-ae-block" class="section" style="display:none">
-      <div class="section-title">Aggregate Group</div>
-      <div class="form-group"><label>Aggregate Group (ae name)</label>
-        <input id="ifm-agg" type="text" style="width:100%" placeholder="ae1">
-      </div>
-    </div>
-
-    <div id="ifm-bond-block" class="section" style="display:none">
-      <div class="section-title">Bonding (Aggregate Ethernet)</div>
-      <p class="text-dim" style="font-size:10px;margin-bottom:8px">
-        On VMware/hypervisor vNICs use <strong>active-backup</strong>. Use
-        <strong>802.3ad (LACP)</strong> only if your upstream switch actually negotiates LACP.
-      </p>
-      <div class="form-row">
-        <div class="form-group"><label>Bond Mode</label>
-          <select id="ifm-bondmode" style="width:100%">
-            <option value="active-backup">active-backup (VMware/hypervisor safe)</option>
-            <option value="802.3ad">802.3ad (LACP — requires switch negotiation)</option>
-            <option value="balance-rr">balance-rr (round-robin)</option>
-            <option value="balance-xor">balance-xor (static hash)</option>
-            <option value="balance-tlb">balance-tlb</option>
-            <option value="balance-alb">balance-alb</option>
-            <option value="broadcast">broadcast</option>
-          </select>
+    if(generation!==openIfaceModal.generation||!loading.isConnected||!overlay.classList.contains('show'))return;
+    const speeds=[...new Set(['auto',...(cap.supported_speeds||[]).map(s=>String(s.speed_mbps)),cur.link_speed||'auto'])];
+    const tabs=[['config','Configuration'],['ipv4','IPv4'],['ipv6','IPv6'],['advanced','Advanced']];
+    const modes=IFACE_MODES.filter(m=>!isAE||['none','layer2','layer3'].includes(m.value));
+    box.innerHTML=`<form id="interface-form" novalidate>
+      <p class="text-dim">${_escSP(name)} · ${isAE?'Aggregate Ethernet':'Physical interface'} · Virtual system: <strong>${_escSP(snapshot.vsys)}</strong> · Candidate configuration</p>
+      <fieldset class="ifm-fields">
+      <input id="ifm-name" type="hidden" value="${_escSP(name)}">
+      <div class="form-group"><label for="ifm-mode">Interface Type</label><select id="ifm-mode" onchange="_ifmToggle()">${modes.map(m=>`<option value="${m.value}">${_escSP(m.label)}</option>`).join('')}</select></div>
+      <p class="text-dim">None disables the interface${isAE?'': ' and its physical link'}. Changes take effect after Commit.</p>
+      <div class="setup-tabs" role="tablist" aria-label="Interface settings" onkeydown="consoleTabKey(event)">${tabs.map(([key,label],i)=>`<button id="ifm-tab-${key}" type="button" role="tab" aria-controls="ifm-panel-${key}" aria-selected="${i===0}" tabindex="${i===0?0:-1}" class="${i===0?'active':''}" onclick="switchIfaceEditorTab('${key}')">${label}</button>`).join('')}</div>
+      <section id="ifm-panel-config" role="tabpanel" aria-labelledby="ifm-tab-config">
+        <div class="form-group"><label for="ifm-comment">Comment</label><textarea id="ifm-comment" rows="2" maxlength="1024">${_escSP(cur.comment)}</textarea></div>
+        <div class="form-row"><div id="ifm-zone-block" class="form-group"><label for="ifm-zone">Security Zone</label><select id="ifm-zone"></select></div>
+        <div id="ifm-l3-block" class="form-group"><label for="ifm-vr">Virtual Router</label><select id="ifm-vr">${subinterfaceOptions(snapshot.virtual_router_choices,cur.virtual_router)}</select></div>
+        <div id="ifm-l2-block" class="form-group"><label for="ifm-vlan">VLAN</label><select id="ifm-vlan">${subinterfaceOptions(snapshot.vlan_choices,cur.vlan)}</select></div></div>
+        <div id="ifm-ae-block" class="form-group"><label for="ifm-agg">Aggregate Group</label><select id="ifm-agg">${subinterfaceOptions(snapshot.aggregate_choices,cur.aggregate_group)}</select></div>
+        <div id="ifm-bond-block">
+          <div class="form-row"><div class="form-group"><label for="ifm-bondmode">Bond Mode</label><select id="ifm-bondmode">${['active-backup','802.3ad','balance-xor','balance-rr','balance-tlb','balance-alb','broadcast'].map(m=>`<option value="${m}">${m==='802.3ad'?'802.3ad (LACP)':m}</option>`).join('')}</select></div>
+          <div class="form-group"><label for="ifm-bondmiimon">Link Monitor Interval (ms)</label><input id="ifm-bondmiimon" type="number" min="1" max="60000" required value="${_escSP(cur.bond_miimon_ms)}"></div></div>
+          <p class="text-dim">LACP requires an upstream switch configured for link aggregation. Supported bond modes depend on the platform.</p>
         </div>
-        <div class="form-group"><label>MII Monitor Interval (ms)</label>
-          <input id="ifm-bondmiimon" type="number" style="width:100%" value="100">
-        </div>
-      </div>
-    </div>
-
-    </div>
-    <div id="ifm-panel-advanced" role="tabpanel" aria-labelledby="ifm-tab-advanced" hidden>
-    <div class="section">
-      <div class="section-title">Physical Link Settings</div>
-      <p class="text-dim" style="font-size:10px;margin-bottom:8px">${_escSP(cap.source||'ethtool')} capabilities: ${
-        cap.supported_speeds && cap.supported_speeds.length
-          ? cap.supported_speeds.map(s=>`${s.speed_mbps}Mb/s ${s.duplex}`).join(', ')
-          : (cap.ethtool_available===false ? 'ethtool not installed' : 'auto-detect unavailable')
-      }${cap.current_speed_mbps?' | current: '+cap.current_speed_mbps+' Mb/s '+(cap.current_duplex||''):''}</p>
-      <div class="form-row">
-        <div class="form-group"><label>Link Speed</label><select id="ifm-speed" style="width:100%">${speedOpts}</select></div>
-        <div class="form-group"><label>Duplex</label><select id="ifm-duplex" style="width:100%"><option value="auto">Auto</option><option value="full">Full</option><option value="half">Half</option></select></div>
-        <div class="form-group"><label>Admin State</label><select id="ifm-state" style="width:100%"><option value="auto">Auto</option><option value="up">Up</option><option value="down">Down</option></select></div>
-      </div>
-    </div>
-
-    <div class="section">
-      <div class="form-row">
-        <div class="form-group"><label>LLDP</label><select id="ifm-lldp" style="width:100%"><option value="no">Disabled</option><option value="yes">Enabled</option></select></div>
-        <div class="form-group"><label>LLDP Profile</label><input id="ifm-lldp-profile" type="text" style="width:100%" placeholder="e.g. CISCO"></div>
-      </div>
-    </div>
-
-    </div>
-    <div class="settings-toolbar">
-      <button class="btn btn-primary btn-sm" id="ifm-save" onclick="saveIface()">OK</button>
-      <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
-      <span id="ifm-msg" style="font-size:11px;align-self:center"></span>
-    </div>`;
-
-  // Populate
-  document.getElementById('ifm-mode').value = ['off','disabled','unconfigured'].includes(cur.mode) ? 'none' : (cur.mode || 'none');
-  document.getElementById('ifm-comment').value = cur.comment || '';
-  document.getElementById('ifm-ip').value = (cur.ip_addresses||[]).join(', ');
-  document.getElementById('ifm-mtu').value = cur.mtu || '';
-  (function(){
-    const _sel = document.getElementById('ifm-mgmt');
-    _sel.innerHTML = '<option value="">-- none (no management access) --</option>';
-    for (const _n of _mgmtProfileNames) {
-      const _o = document.createElement('option'); _o.value=_n; _o.textContent=_n; _sel.appendChild(_o);
-    }
-    const _curp = cur.interface_management_profile || '';
-    if (_curp && !_mgmtProfileNames.includes(_curp)) {
-      const _o = document.createElement('option'); _o.value=_curp; _o.textContent=_curp+' (missing)'; _sel.appendChild(_o);
-    }
-    _sel.value = _curp;
-  })();
-  (function(){
-    const _s = document.getElementById('ifm-vr'); if (!_s) return;
-    _s.innerHTML = '<option value="">default (main table)</option>';
-    for (const _n of _vrNames) { const _o=document.createElement('option'); _o.value=_n; _o.textContent=_n; _s.appendChild(_o); }
-    _s.value = _vrCurrent;
-    _s.dataset.original = _vrCurrent;
-    _s.disabled = !_vrLoaded;
-    if (!_vrLoaded) _s.innerHTML = '<option value="">Unavailable — assignment will be preserved</option>';
-  })();
-  document.getElementById('ifm-agg').value = cur.aggregate_group || '';
-  document.getElementById('ifm-addressing').value = cur.dhcp_client ? 'dhcp' : 'static';
-  document.getElementById('ifm-ip').disabled = !!cur.dhcp_client;
-  document.getElementById('ifm-dhcp-route').value = cur.dhcp_default_route===false ? 'no' : 'yes';
-  document.getElementById('ifm-speed').value = cur.link_speed || 'auto';
-  document.getElementById('ifm-speed').disabled = cap.configurable===false;
-  document.getElementById('ifm-duplex').value = cur.link_duplex || 'auto';
-  document.getElementById('ifm-state').value = ['none','off','disabled','unconfigured'].includes(cur.mode) ? 'auto' : (cur.link_state || 'auto');
-  document.getElementById('ifm-lldp').value = cur.lldp_enabled ? 'yes' : 'no';
-  document.getElementById('ifm-lldp-profile').value = cur.lldp_profile || '';
-  // Bond settings (only used when editing an aeN)
-  const bm = document.getElementById('ifm-bondmode');
-  if (bm) bm.value = cur.bond_mode || 'active-backup';
-  const mii = document.getElementById('ifm-bondmiimon');
-  if (mii) mii.value = cur.bond_miimon_ms || 100;
-  _ifmToggle();
-  document.getElementById('modal-info').classList.add('show');
+        <p class="text-dim">Selections come from candidate configuration. Existing subinterfaces and additional settings are preserved; remove subinterfaces before changing the parent type.</p>
+      </section>
+      <section id="ifm-panel-ipv4" role="tabpanel" aria-labelledby="ifm-tab-ipv4" hidden>
+        <div class="form-group"><label for="ifm-addressing">IPv4 Addressing</label><select id="ifm-addressing" onchange="_ifmToggle()"><option value="static">Static</option><option value="dhcp">DHCP client</option></select></div>
+        <div id="ifm-dhcp-block"><div class="form-row"><div class="form-group"><label for="ifm-dhcp-route">DHCP Default Route</label><select id="ifm-dhcp-route"><option value="yes">Install received default route</option><option value="no">Do not install default route</option></select></div>
+        <div class="form-group"><label for="ifm-dhcp-metric">Default Route Metric</label><input id="ifm-dhcp-metric" type="number" min="1" max="65535" required value="${_escSP(cur.dhcp_route_metric)}"></div></div>
+        <p class="text-dim">DHCP replaces static interface addresses when saved. This client does not configure static IPv6 addresses alongside DHCP.</p></div>
+        <div id="ifm-static4"><p class="text-dim">Enter each IPv4 address with its prefix length.</p><table><thead><tr><th>Address / Prefix</th><th>Actions</th></tr></thead><tbody id="ifm-addresses-4"></tbody></table><button id="ifm-add-4" class="btn btn-sm" type="button" onclick="addIfaceAddress(4)">Add IPv4 Address</button></div>
+      </section>
+      <section id="ifm-panel-ipv6" role="tabpanel" aria-labelledby="ifm-tab-ipv6" hidden>
+        <div class="form-group"><label for="ifm-ipv6-enabled">IPv6</label><select id="ifm-ipv6-enabled"><option value="no">Disabled</option><option value="yes">Enabled</option></select></div>
+        <p class="text-dim">Static IPv6 addresses with prefix lengths. Existing IPv6 options are preserved.</p>
+        <table><thead><tr><th>Address / Prefix</th><th>Actions</th></tr></thead><tbody id="ifm-addresses-6"></tbody></table><button id="ifm-add-6" class="btn btn-sm" type="button" onclick="addIfaceAddress(6)">Add IPv6 Address</button>
+      </section>
+      <section id="ifm-panel-advanced" role="tabpanel" aria-labelledby="ifm-tab-advanced" hidden>
+        <div id="ifm-ip-advanced"><div class="form-row"><div class="form-group"><label for="ifm-mtu">MTU</label><input id="ifm-mtu" type="number" min="576" max="9216" placeholder="Inherit" value="${_escSP(cur.mtu)}"></div>
+        <div class="form-group"><label for="ifm-mgmt">Interface Management Profile</label><select id="ifm-mgmt">${subinterfaceOptions(snapshot.management_profile_choices,cur.interface_management_profile)}</select></div></div>
+        <p class="text-dim">MTU: 576–9216 bytes; IPv6 requires at least 1280. Management profiles control access to the interface's own address.</p></div>
+        <div class="form-row"><div class="form-group" ${isAE?'hidden':''}><label for="ifm-speed">Link Speed</label><select id="ifm-speed">${speeds.map(s=>`<option value="${_escSP(s)}">${s==='auto'?'Auto-negotiate':_escSP(s)+' Mb/s'}</option>`).join('')}</select></div>
+        <div class="form-group" ${isAE?'hidden':''}><label for="ifm-duplex">Duplex</label><select id="ifm-duplex"><option value="auto">Auto</option><option value="full">Full</option><option value="half">Half</option></select></div>
+        <div class="form-group"><label for="ifm-state">Admin State</label><select id="ifm-state"><option value="auto">Auto</option><option value="up">Up</option><option value="down">Down</option></select></div></div>
+        <p class="text-dim">${isAE?'Configure physical speed and duplex on the aggregate members.':_escSP(cap.source||'Detected interface capabilities')+(cap.current_speed_mbps?' · Current: '+_escSP(cap.current_speed_mbps)+' Mb/s':'')+(cap.configurable===false?' · Link controls unavailable; existing settings are retained.':'')}</p>
+        <div class="form-row"><div class="form-group"><label for="ifm-lldp">LLDP</label><select id="ifm-lldp"><option value="no">Disabled</option><option value="yes">Enabled</option></select></div>
+        <div class="form-group"><label for="ifm-lldp-profile">LLDP Profile</label><select id="ifm-lldp-profile">${subinterfaceOptions(snapshot.lldp_profile_choices,cur.lldp_profile)}</select></div></div>
+      </section></fieldset>
+      <p class="text-dim">OK stages one candidate update. Commit applies it through the control daemon; check Tasks for the platform result.</p>
+      <div class="settings-toolbar"><span id="ifm-msg" role="status"></span><button class="btn" type="button" onclick="closeModal('modal-info')">Cancel</button><button id="ifm-save" class="btn btn-primary" type="submit" ${snapshot.can_edit?'':'disabled'}>OK</button></div>
+    </form>`;
+    const form=document.getElementById('interface-form');form.snapshot=snapshot;form.cap=cap;
+    const values={'mode':cur.mode,'addressing':cur.dhcp_client?'dhcp':'static','dhcp-route':cur.dhcp_default_route?'yes':'no','ipv6-enabled':cur.ipv6_enabled?'yes':'no','speed':cur.link_speed,'duplex':cur.link_duplex,'state':cur.mode==='none'?'auto':cur.link_state,'lldp':cur.lldp_enabled?'yes':'no','bondmode':cur.bond_mode};
+    Object.entries(values).forEach(([id,value])=>document.getElementById('ifm-'+id).value=value);
+    cur.ip_addresses.forEach(address=>addIfaceAddress(address.includes(':')?6:4,address));
+    form.onsubmit=event=>{event.preventDefault();saveIface();};
+    _ifmToggle();document.getElementById('ifm-mode').focus();
+  } catch(error){if(generation===openIfaceModal.generation&&loading.isConnected)box.textContent=error.message;}
 }
-
 function _ifmToggle() {
-  const mode = document.getElementById('ifm-mode').value;
-  const name = document.getElementById('ifm-name').value;
-  const isAE = name.startsWith('ae') && !name.includes('.');
-  const state = document.getElementById('ifm-state');
+  const form=document.getElementById('interface-form'),snapshot=form.snapshot,cur=snapshot.entry;
+  const mode=document.getElementById('ifm-mode').value,l3=mode==='layer3',isAE=cur.name.startsWith('ae'),dhcp=document.getElementById('ifm-addressing').value==='dhcp';
+  const state=document.getElementById('ifm-state');
   if(mode==='none'){
     if(state.dataset.noneForced!=='true')state.dataset.previousState=state.value;
-    state.value='down';state.disabled=true;state.dataset.noneForced='true';
-  } else if(state.dataset.noneForced==='true'){
-    state.value=state.dataset.previousState||'auto';state.disabled=false;delete state.dataset.noneForced;
+    state.value='down';state.dataset.noneForced='true';
+  }else if(state.dataset.noneForced==='true'){state.value=state.dataset.previousState||'auto';delete state.dataset.noneForced;}
+  const zone=document.getElementById('ifm-zone'),choices=snapshot.zone_choices[mode]||[];
+  const selected=choices.includes(zone.value)?zone.value:(mode===cur.mode?cur.zone:'');
+  zone.innerHTML=subinterfaceOptions(choices,selected);
+  for(const [id,visible] of Object.entries({'l3-block':l3,'l2-block':mode==='layer2','zone-block':['layer3','layer2','tap','virtual-wire'].includes(mode),'ae-block':mode==='aggregate-group','bond-block':isAE&&l3,'ip-advanced':l3,'dhcp-block':l3&&dhcp,'static4':l3&&!dhcp})){
+    const block=document.getElementById('ifm-'+id);block.hidden=!visible;block.querySelectorAll('input,select,button').forEach(el=>el.disabled=!visible||!snapshot.can_edit);
   }
-  document.getElementById('ifm-l3-block').style.display = mode==='layer3'?'block':'none';
-  document.getElementById('ifm-ae-block').style.display = mode==='aggregate-group'?'block':'none';
-  // Bonding block appears when editing an aeN interface in layer3 mode
-  document.getElementById('ifm-bond-block').style.display = (isAE && mode==='layer3')?'block':'none';
+  for(const family of [4,6]){
+    const tab=document.getElementById('ifm-tab-ipv'+family),available=l3&&(family===4||!dhcp);
+    tab.hidden=!available;
+    if(!available&&tab.getAttribute('aria-selected')==='true')switchIfaceEditorTab('config');
+    document.getElementById('ifm-panel-ipv'+family).querySelectorAll('input,select,button').forEach(el=>el.disabled=!available||!snapshot.can_edit||(family===4&&(el.closest('#ifm-static4')?dhcp:el.closest('#ifm-dhcp-block')?!dhcp:false)));
+  }
+  state.disabled=mode==='none'||!snapshot.can_edit;
+  document.getElementById('ifm-speed').disabled=isAE||form.cap.configurable===false||!snapshot.can_edit;
+  document.getElementById('ifm-duplex').disabled=isAE||form.cap.configurable===false||!snapshot.can_edit;
+  if(!snapshot.can_edit)form.querySelectorAll('input,select,textarea,button:not([role="tab"]):not(.settings-toolbar button)').forEach(el=>el.disabled=true);
 }
-
 let ifaceSavePending = false;
 async function saveIface() {
-  if (ifaceSavePending) return;
-  const name = document.getElementById('ifm-name').value;
-  const body = {
-    name,
-    kind: (name.startsWith('ae') && !name.includes('.')) ? 'aggregate-ethernet' : 'ethernet',
-    mode: document.getElementById('ifm-mode').value,
-    ip_addresses: document.getElementById('ifm-ip').value.split(',').map(s=>s.trim()).filter(Boolean),
-    interface_management_profile: document.getElementById('ifm-mgmt').value.trim(),
-    mtu: document.getElementById('ifm-mtu').value ? parseInt(document.getElementById('ifm-mtu').value) : null,
-    aggregate_group: document.getElementById('ifm-agg').value.trim(),
-    dhcp_client: document.getElementById('ifm-mode').value==='layer3' && document.getElementById('ifm-addressing').value==='dhcp',
-    dhcp_default_route: document.getElementById('ifm-dhcp-route').value!=='no',
-    link_speed:  document.getElementById('ifm-speed').value,
-    link_duplex: document.getElementById('ifm-duplex').value,
-    link_state:  document.getElementById('ifm-state').value,
-    lldp_enabled: document.getElementById('ifm-lldp').value === 'yes',
-    lldp_profile: document.getElementById('ifm-lldp-profile').value.trim(),
-    comment: document.getElementById('ifm-comment').value,
-    // Bond settings (ignored by the backend unless name is aeN)
-    bond_mode: (document.getElementById('ifm-bondmode')||{}).value || 'active-backup',
-    bond_miimon_ms: parseInt((document.getElementById('ifm-bondmiimon')||{}).value || '100'),
-  };
-  if(body.dhcp_client)body.ip_addresses=[];
-  if(body.mode==='none'){
-    body.ip_addresses=[];body.interface_management_profile='';body.mtu=null;body.aggregate_group='';
-    body.lldp_enabled=false;body.lldp_profile='';
-    body.link_state='down';
+  const form=document.getElementById('interface-form');
+  if(!form||!form.snapshot.can_edit||form.saving)return;
+  const get=id=>document.getElementById('ifm-'+id).value,mode=get('mode'),l3=mode==='layer3',dhcp=l3&&get('addressing')==='dhcp';
+  for(const input of form.querySelectorAll('input[data-family]')){
+    const value=input.value.trim(),family=Number(input.dataset.family);
+    input.setCustomValidity(value.includes('/')&&(family===6?value.includes(':'):!value.includes(':'))?'':'Enter an IPv'+family+' address with its prefix length.');
   }
-  const msg = document.getElementById('ifm-msg');
-  if (msg) { msg.textContent = 'Saving...'; msg.style.color = 'var(--orange)'; }
-  const vr = document.getElementById('ifm-vr');
-  const requestedVR = vr ? vr.value : '';
-  const changeVR = body.mode === 'layer3' && vr && !vr.disabled && requestedVR !== vr.dataset.original;
-  const saveButton = document.getElementById('ifm-save');
-  if (saveButton) saveButton.disabled = true;
-  ifaceSavePending = true;
-  let candidateSaved = false;
-  try {
-    const r = await consoleRequest(`/api/interfaces/${encodeURIComponent(name)}`, {method:'PUT', body:JSON.stringify(body)});
-    if (r.status !== 'created') throw new Error('Candidate update was not confirmed.');
-    candidateSaved = true;
-    if (changeVR) {
-      const device = (_ifaceState.panToLinux || {})[name] || name;
-      await consoleRequest(`/api/network/interfaces/${encodeURIComponent(device)}/virtual-router`, {method:'PUT', body:JSON.stringify({virtual_router:requestedVR})});
-      vr.dataset.original = requestedVR;
-    }
-    if (msg) { msg.textContent = 'Saved to candidate — review and commit to apply.'; msg.style.color = 'var(--green)'; }
-  } catch (error) {
-    if (msg) {
-      msg.textContent = candidateSaved ? 'Interface saved to candidate; virtual-router assignment failed: '+error.message : 'Save failed: '+error.message;
-      msg.style.color = candidateSaved ? 'var(--orange)' : 'var(--red)';
-    }
-  }
-  ifaceSavePending = false;
-  if (saveButton && saveButton.isConnected) saveButton.disabled = false;
-  if (candidateSaved) { refreshCommitIndicator(); loadInterfacesFull(); }
-
+  const invalid=Array.from(form.elements).find(el=>el.willValidate&&!el.validity.valid);
+  if(invalid){const panel=invalid.closest('[role="tabpanel"]');if(panel)switchIfaceEditorTab(panel.id.replace('ifm-panel-',''));invalid.reportValidity();return;}
+  const body={name:get('name'),revision:form.snapshot.revision,vsys:form.snapshot.vsys,mode,
+    comment:get('comment'),zone:['layer3','layer2','tap','virtual-wire'].includes(mode)?get('zone'):'',virtual_router:l3?get('vr'):'',vlan:mode==='layer2'?get('vlan'):'',
+    ip_addresses:l3&&!dhcp?Array.from(form.querySelectorAll('input[data-family]'),input=>input.value.trim()):[],
+    dhcp_client:dhcp,dhcp_default_route:get('dhcp-route')==='yes',dhcp_route_metric:Number(get('dhcp-metric')),
+    ipv6_enabled:l3&&!dhcp&&get('ipv6-enabled')==='yes',mtu:l3&&get('mtu')?Number(get('mtu')):null,
+    interface_management_profile:l3?get('mgmt'):'',aggregate_group:mode==='aggregate-group'?get('agg'):'',
+    link_speed:get('speed'),link_duplex:get('duplex'),link_state:mode==='none'?'down':get('state'),
+    lldp_enabled:mode!=='none'&&get('lldp')==='yes',lldp_profile:get('lldp-profile'),bond_mode:get('bondmode'),bond_miimon_ms:Number(get('bondmiimon'))};
+  const button=document.getElementById('ifm-save'),msg=document.getElementById('ifm-msg');
+  form.saving=true;button.disabled=true;form.querySelector('fieldset').disabled=true;msg.textContent='Saving…';
+  try{
+    const result=await consoleRequest('/api/config/interfaces',{method:'PUT',body:JSON.stringify(body)});
+    if(!['created','updated'].includes(result.status))throw Error('Candidate update was not confirmed.');
+    refreshCommitIndicator();loadInterfacesFull();
+    if(msg.isConnected&&document.getElementById('interface-form')===form){closeModal('modal-info');const notice=document.getElementById('iface-notice');if(notice)notice.textContent='Saved '+result.name+' to candidate. Commit required.';}
+  }catch(error){if(msg.isConnected){msg.textContent=error.message;button.disabled=false;form.querySelector('fieldset').disabled=false;}}
+  finally{form.saving=false;}
 }
 
 async function deleteIface(name) {
@@ -4599,7 +4470,6 @@ function openAggregateModal() {
   while (existing.has(`ae${n}`)) n++;
   const name = `ae${n}`;
   // Trigger the iface modal with an empty entry
-  _ifaceState.configured['aggregate-ethernet'].push({name, mode:'layer3', ip_addresses:[], mtu:'', comment:'', link_speed:'auto', link_duplex:'auto'});
   openIfaceModal(name);
 }
 
