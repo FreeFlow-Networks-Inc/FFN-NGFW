@@ -4,8 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>FFN NGFW Management Console</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<script src="/static/theme.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="/static/plane-control.js"></script>
+<script src="/static/mp-interfaces.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
@@ -262,6 +265,7 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
 <script src="/static/config-objects.js"></script>
 <link rel="stylesheet" href="/static/config-objects.css">
 <script src="/static/config-policies.js"></script>
+<link rel="stylesheet" href="/static/theme.css">
 </head>
 <body>
 
@@ -269,6 +273,7 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
 <!-- LOGIN SCREEN                                                  -->
 <!-- ============================================================ -->
 <div id="login-screen" class="login-screen">
+<div class="login-theme"><select class="theme-picker" data-theme-picker aria-label="Color theme"><option value="light">Light</option><option value="dark">Dark</option></select></div>
   <div class="login-box">
     <svg width="44" height="44" viewBox="0 0 48 48" style="margin-bottom:10px">
       <rect x="4" y="4" width="40" height="40" rx="8" fill="#2f81f7" opacity=".15"/>
@@ -311,6 +316,7 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
     <button data-tab="device">Device</button>
   </div>
   <div class="user-area">
+<select class="theme-picker" data-theme-picker aria-label="Color theme"><option value="light">Light</option><option value="dark">Dark</option></select><img class="header-icon" src="/static/favicon.svg" alt="FFN" style="order:99">
     <span id="fips-badge" class="badge" style="display:none;margin-right:8px" title="FIPS-CC mode"></span>
     <span id="commit-indicator" class="commit-indicator" style="display:none"></span>
     <button id="commit-btn" class="btn btn-sm" onclick="openCommitModal()" title="Open commit dialog">
@@ -1682,7 +1688,7 @@ function renderDashOverview(c) {
     <div class="page-header"><h2>Dashboard</h2><span id="dash-time" class="text-dim" style="font-size:11px"></span></div>
     <div class="section"><div class="grid grid-4" id="port-cards"></div></div>
     <div class="section"><div class="grid grid-2">
-      <div class="card"><h3>Throughput (Gbps) - Last 60 Seconds</h3><div class="chart-container"><canvas id="chart-throughput"></canvas></div></div>
+      <div class="card"><h3 id="data-port-history">Data Port Traffic</h3><div class="chart-container"><canvas id="chart-throughput"></canvas></div></div>
       <div class="card"><h3>Threat Summary</h3><div class="chart-container"><canvas id="chart-threats"></canvas></div></div>
     </div></div>
     <div class="section"><div class="grid grid-3">
@@ -1746,10 +1752,10 @@ function initDashboardCharts() {
     data:{labels:[],datasets:[]},
     options:{responsive:true,maintainAspectRatio:false,animation:{duration:200},
       scales:{
-        x:{display:true,grid:{color:'#21262d'},ticks:{color:'#484f58',maxTicksLimit:8,font:{size:9}}},
-        y:{display:true,grid:{color:'#21262d'},ticks:{color:'#484f58',font:{size:9}},min:0,title:{display:true,text:'Gbps',color:'#484f58',font:{size:9}}}
+        x:{display:true,grid:{color:getComputedStyle(document.documentElement).getPropertyValue('--chart-grid').trim()},ticks:{color:getComputedStyle(document.documentElement).getPropertyValue('--text-muted').trim(),maxTicksLimit:8,font:{size:9}}},
+        y:{display:true,grid:{color:getComputedStyle(document.documentElement).getPropertyValue('--chart-grid').trim()},ticks:{color:getComputedStyle(document.documentElement).getPropertyValue('--text-muted').trim(),font:{size:9}},min:0,title:{display:true,text:'Gbps',color:getComputedStyle(document.documentElement).getPropertyValue('--text-muted').trim(),font:{size:9}}}
       },
-      plugins:{legend:{labels:{color:'#8b949e',boxWidth:10,font:{size:10}}}}
+      plugins:{legend:{labels:{color:getComputedStyle(document.documentElement).getPropertyValue('--text-dim').trim(),boxWidth:10,font:{size:10}}}}
     }
   });
 
@@ -1759,8 +1765,51 @@ function initDashboardCharts() {
   charts.threats = new Chart(pCtx,{
     type:'doughnut',
     data:{labels:['DPI','DLP','DNS','ML'],datasets:[{data:[0,0,0,0],backgroundColor:['#2f81f7','#f85149','#d29922','#3fb950'],borderWidth:0}]},
-    options:{responsive:true,maintainAspectRatio:false,cutout:'65%',plugins:{legend:{position:'right',labels:{color:'#8b949e',padding:14,font:{size:11}}}}}
+    options:{responsive:true,maintainAspectRatio:false,cutout:'65%',plugins:{legend:{position:'right',labels:{color:getComputedStyle(document.documentElement).getPropertyValue('--text-dim').trim(),padding:14,font:{size:11}}}}}
   });
+}
+
+function renderDataPortTraffic(tp) {
+  const cards = document.getElementById('port-cards');
+  const marker = document.getElementById('dash-time');
+  const valid = tp && Array.isArray(tp.ports);
+  const ports = valid ? tp.ports.filter(p => p.link === true) : [];
+  const unit = tp?.unit === 'pps' ? 'pps' : 'Gbps';
+  const field = unit === 'pps' ? 'pps' : 'gbps';
+  const heading=document.getElementById('data-port-history');
+  if(heading)heading.textContent='Data Port Traffic · '+unit+(unit==='pps'?' (byte counters unavailable)':'');
+  if(marker && valid){
+    const generation=marker._trafficGeneration=(marker._trafficGeneration||0)+1;
+    setTimeout(()=>{if(marker.isConnected&&marker._trafficGeneration===generation)renderDataPortTraffic(null);},15000);
+  }
+  const show = n => Number.isFinite(n) ? n.toLocaleString(undefined,{maximumFractionDigits:unit==='pps'?1:4}) : '—';
+  if (marker) marker.textContent = valid ? 'Updated: '+timeStr() : 'Data-port telemetry unavailable';
+  if (cards) cards.innerHTML = ports.length ? ports.map(p => {
+    const rx=p['rx_'+field], tx=p['tx_'+field];
+    const state = p.link === true ? 'Link up' : p.link === false ? 'Link down' : 'Link unknown';
+    const percent = unit==='Gbps' && p.speed_gbps>0 && Number.isFinite(rx) ? Math.min(100,rx/p.speed_gbps*100) : null;
+    return `<div class="card port-card"><h3>${_netEscape(p.name)}</h3>
+      <p class="text-dim">${state}${p.speed_gbps>0?' · '+p.speed_gbps+' Gbps':''}</p>
+      <div class="big-num">${show(rx)} <small>${unit} RX</small></div>
+      <div class="tp-row">TX: ${show(tx)} ${unit}</div>
+      ${percent!==null?`<div class="gauge-bar"><div class="fill rx" style="width:${percent}%"></div></div>`:''}
+      ${p.state==='warming'?'<small class="text-dim">Waiting for counter delta</small>':''}</div>`;
+  }).join('') : `<p class="text-dim">${valid?'No active data-port links.':'Data-port counters unavailable. Retry on the next refresh.'}</p>`;
+  if (charts.throughput) {
+    const chart=charts.throughput, old=new Map(chart.data.datasets.map(ds=>[ds.label,ds]));
+    if (chart.options.scales.y.title.text !== unit) { chart.data.labels=[]; old.clear(); }
+    chart.options.scales.y.title.text=unit;
+    chart.data.datasets=ports.flatMap((p,i)=>['rx','tx'].map(direction=>{
+      const label=p.name+' '+direction.toUpperCase(), color=_chartColors[i%_chartColors.length];
+      const ds=old.get(label) || {label,borderColor:color,borderDash:direction==='tx'?[4,3]:[],
+        data:Array(chart.data.labels.length).fill(null),pointRadius:0,borderWidth:1.5,tension:.2,fill:false};
+      ds.data.push(Number.isFinite(p[direction+'_'+field])?p[direction+'_'+field]:null);return ds;
+    }));
+    if (!valid) chart.data.labels=[];
+    else chart.data.labels.push(ts());
+    if (chart.data.labels.length>30) {chart.data.labels.shift();chart.data.datasets.forEach(ds=>ds.data.shift());}
+    chart.update('none');
+  }
 }
 
 const _chartColors = ['#2f81f7','#3fb950','#d29922','#f85149','#a371f7','#f0883e','#56d4dd','#db61a2'];
@@ -1829,59 +1878,7 @@ async function refreshDashboard() {
     _setPlaneWidget('mp', planes?.management_plane);
     _setPlaneWidget('dp', planes?.data_plane);
   }
-  if (!tp || !Array.isArray(tp.ports)) { marker.textContent = 'Throughput unavailable'; return; }
-
-  document.getElementById('dash-time').textContent = 'Updated: '+timeStr();
-
-  let portHTML = '';
-  tp.ports.forEach(p => {
-    const maxGbps = p.type==='fpga'?100:(p.speed_gbps||1);
-    const pct = maxGbps>0?Math.min(Math.round(p.rx_gbps/maxGbps*100),100):0;
-    const color = pct>90?'var(--red)':pct>70?'var(--orange)':'var(--accent)';
-    const typeBadge = p.type==='fpga'?'FPGA':'CPU';
-    portHTML += `<div class="card port-card">
-      <div class="link-dot up"></div>
-      <h3>${p.name} <span style="font-size:9px;color:var(--text-muted)">${typeBadge}</span></h3>
-      <div class="gauge-ring" style="background:conic-gradient(${color} ${pct*3.6}deg, var(--border) 0)">
-        <div style="width:60px;height:60px;border-radius:50%;background:var(--card);display:flex;align-items:center;justify-content:center">
-          <span class="gauge-val">${p.rx_gbps<1?p.rx_gbps.toFixed(3):p.rx_gbps.toFixed(1)}</span>
-        </div>
-      </div>
-      <div style="text-align:center;font-size:11px;color:var(--text-dim)">Gbps</div>
-      <div class="tp-row"><div><span>RX:</span> ${p.rx_gbps<1?p.rx_gbps.toFixed(4):p.rx_gbps} Gbps</div><div><span>TX:</span> ${p.tx_gbps<1?p.tx_gbps.toFixed(4):p.tx_gbps} Gbps</div></div>
-      ${p.rx_pps!==undefined?`<div class="tp-row text-dim" style="font-size:10px"><div>RX: ${fmt(p.rx_pps)} pps</div><div>TX: ${fmt(p.tx_pps)} pps</div></div>`:''}
-      <div class="gauge-bar"><div class="fill rx" style="width:${pct}%"></div></div>
-    </div>`;
-  });
-  document.getElementById('port-cards').innerHTML = portHTML;
-
-  // Throughput chart — auto-create datasets for detected interfaces
-  if (charts.throughput) {
-    // Dynamically add datasets for new interfaces
-    while (charts.throughput.data.datasets.length < tp.ports.length) {
-      const i = charts.throughput.data.datasets.length;
-      const col = _chartColors[i % _chartColors.length];
-      charts.throughput.data.datasets.push({
-        label: tp.ports[i].name + ' RX',
-        borderColor: col,
-        backgroundColor: col.replace(')', ',.08)').replace('rgb','rgba').replace('#',''),
-        data: [],
-        tension: .3, fill: true, pointRadius: 0, borderWidth: 1.5,
-      });
-    }
-    charts.throughput.data.labels.push(ts());
-    tp.ports.forEach((p,i) => {
-      if (charts.throughput.data.datasets[i]) {
-        charts.throughput.data.datasets[i].label = p.name + ' RX';
-        charts.throughput.data.datasets[i].data.push(p.rx_gbps);
-      }
-    });
-    if (charts.throughput.data.labels.length > 30) {
-      charts.throughput.data.labels.shift();
-      charts.throughput.data.datasets.forEach(ds=>ds.data.shift());
-    }
-    charts.throughput.update('none');
-  }
+  renderDataPortTraffic(tp);
 
   // Threat chart
   if (charts.threats && threats) {
@@ -1942,7 +1939,7 @@ function renderDashThroughput(c) {
   c.innerHTML = `
     <div class="page-header"><h2>Throughput</h2><span id="dash-time" class="text-dim" style="font-size:11px"></span></div>
     <div class="section"><div class="grid grid-4" id="port-cards"></div></div>
-    <div class="section"><div class="card"><h3>Throughput History (Gbps)</h3><div class="chart-container" style="height:300px"><canvas id="chart-throughput"></canvas></div></div></div>`;
+    <div class="section"><div class="card"><h3 id="data-port-history">Data Port Traffic</h3><div class="chart-container" style="height:300px"><canvas id="chart-throughput"></canvas></div></div></div>`;
   _dashChartInitialized = false;
   initDashboardCharts();
   refreshDashboard();
@@ -2711,7 +2708,7 @@ async function loadURLFilterLogs() {
       charts.urlCats = new Chart(canvas.getContext('2d'),{
         type:'pie',
         data:{labels:['No Data'],datasets:[{data:[1],backgroundColor:['#30363d'],borderWidth:0}]},
-        options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right',labels:{color:'#8b949e',font:{size:10},boxWidth:8}}}}
+        options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right',labels:{color:getComputedStyle(document.documentElement).getPropertyValue('--text-dim').trim(),font:{size:10},boxWidth:8}}}}
       });
     }
     return;
@@ -3559,6 +3556,7 @@ function renderDeviceSetup(c) {
     </div>
     <div id="setup-panel-operations" role="tabpanel" aria-labelledby="setup-tab-operations" hidden></div>`;
   loadSetupInfo();
+  window.ffnMpInterfaces?.render(document.getElementById('setup-panel-management'));
 }
 function consoleTabKey(event) {
   if (!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
@@ -3646,6 +3644,7 @@ async function changePassword() {
    config (/api/interfaces/configured) into one management view.            */
 
 const IFACE_MODES = [
+  {value:'none',            label:'None (disabled)'},
   {value:'layer3',          label:'Layer 3'},
   {value:'layer2',          label:'Layer 2'},
   {value:'virtual-wire',    label:'Virtual Wire'},
@@ -3862,7 +3861,7 @@ function _unconfiguredRow(name) {
   const observed = ((_ifaceState.hardware || {}).nics || []).find(n => n.name === linux);
   return {
     name, parent:null, tag:null, kind:'ethernet',
-    type:'', management_profile:'',
+    type:'None', management_profile:'',
     link_state: f ? (f.live && typeof f.link === 'boolean' ? f.link : null) : observed ? (observed.state === 'up' ? true : observed.state === 'down' ? false : null) : null,
     linux_name:linux,
     ip_address:[], mtu:'', virtual_router:'', vlan_tag:'', vlan_or_vwire:'',
@@ -3979,13 +3978,18 @@ function _renderConfiguredAE() {
   tbody.innerHTML = list.map(ae=>{
     const cfgMembers = members[ae.name]||[];
     const live = liveByAe[ae.name];
-    const bondName = live ? live.bond : `(ae${(ae.name.match(/\d+/)||[''])[0]})`;
+    const hardware=live?.backend==='pa5200-bcm';
+    const bondName = hardware?'BCM / OCTEON':live ? live.bond : `(ae${(ae.name.match(/\d+/)||[''])[0]})`;
 
     // Status badge — kernel present? enslavement drift?
-    let statusBadge = '<span class="badge badge-down">PENDING COMMIT</span>';
-    let statusDetail = '';
+    let statusBadge = '<span class="badge badge-down">STATUS UNAVAILABLE</span>';
+    let statusDetail = 'Refresh to read aggregate controller status.';
     if (live) {
-      if (!live.kernel_exists) {
+      if (hardware) {
+        statusBadge='<span class="badge badge-down">'+_escSP(live.state.toUpperCase())+'</span>';
+        statusDetail=(live.committed?'Committed configuration. ':'Pending candidate changes. ')+
+          (live.blockers||[]).map(b=>_escSP(b.message)).join(' · ');
+      } else if (!live.kernel_exists) {
         statusBadge = '<span class="badge badge-down">NO KERNEL BOND</span>';
         statusDetail = 'Commit to create bond interface.';
       } else {
@@ -4003,16 +4007,18 @@ function _renderConfiguredAE() {
       }
     }
 
-    const cfgMemStr = cfgMembers.length
+    const cfgMemStr = hardware ? (live.members||[]).map(m=>_escSP(m.name)+' <span class="text-dim">(BCM '+_escSP(String(m.bcm_port))+')</span>').join(', ') : cfgMembers.length
       ? cfgMembers.map(m=>`${m.pan}${m.linux?` <span class="text-dim">(${m.linux})</span>`:''}`).join(', ')
       : '<span class="text-dim">(no members)</span>';
-    const liveMemStr = (live && live.kernel_slaves && live.kernel_slaves.length)
+    const liveMemStr = hardware ? (live.members||[]).map(m=>_escSP(m.name)+': '+
+      (m.link===true?_escSP(String(m.speed_mbps))+' Mb/s':m.link===false?'Link down':'Unknown')+
+      (m.partner_observation?' · Partner '+_escSP(m.partner_observation.actor.system):' · No LACP observation')).join('<br>') : (live && live.kernel_slaves && live.kernel_slaves.length)
       ? live.kernel_slaves.join(', ')
       : '<span class="text-dim">(none)</span>';
 
     return `<tr>
       <td><strong>${ae.name}</strong></td>
-      <td class="mono" style="font-size:11px">${bondName}${live&&live.kernel_exists?'':' <span class="text-red" style="font-size:9px">(not created)</span>'}</td>
+      <td class="mono" style="font-size:11px">${bondName}${hardware||live&&live.kernel_exists?'':' <span class="text-red" style="font-size:9px">(not created)</span>'}</td>
       <td><span class="badge" style="background:#1a4f9e;color:#fff">${ae.mode}</span></td>
       <td class="mono" style="font-size:10px">${cfgMemStr}</td>
       <td class="mono" style="font-size:10px">${liveMemStr}</td>
@@ -4063,7 +4069,7 @@ async function openIfaceModal(name) {
   const speedOpts = speedOptions.map(s=>`<option value="${s}">${s==='auto'?'Auto-negotiate':s+' Mb/s'}</option>`).join('');
   const modeOpts = IFACE_MODES.map(m=>`<option value="${m.value}">${m.label}</option>`).join('');
 
-  const cur = existing || {name, mode:'layer3', ip_addresses:[], link_speed:'auto', link_duplex:'auto', link_state:'auto', mtu:'', aggregate_group:'', interface_management_profile:'', comment:'', lldp_enabled:false, lldp_profile:''};
+  const cur = existing || {name, mode:'none', ip_addresses:[], link_speed:'auto', link_duplex:'auto', link_state:'auto', mtu:'', aggregate_group:'', interface_management_profile:'', comment:'', lldp_enabled:false, lldp_profile:''};
   // Interface Management Profiles available for the dropdown
   let _mgmtProfileNames = [];
   try {
@@ -4090,6 +4096,7 @@ async function openIfaceModal(name) {
     <input type="hidden" id="ifm-name" value="${_escSP(name)}">
     <div class="form-group"><label>Mode</label>
       <select id="ifm-mode" onchange="_ifmToggle()" style="width:100%">${modeOpts}</select>
+      <div class="text-dim">Front-panel ports default to None, which physically disables the link. Select an interface mode before enabling the port.</div>
     </div>
     <div class="form-group"><label>Comment</label><input id="ifm-comment" type="text" style="width:100%" placeholder="Description of this interface"></div>
 
@@ -4180,7 +4187,7 @@ async function openIfaceModal(name) {
     </div>`;
 
   // Populate
-  document.getElementById('ifm-mode').value = cur.mode;
+  document.getElementById('ifm-mode').value = ['off','disabled','unconfigured'].includes(cur.mode) ? 'none' : (cur.mode || 'none');
   document.getElementById('ifm-comment').value = cur.comment || '';
   document.getElementById('ifm-ip').value = (cur.ip_addresses||[]).join(', ');
   document.getElementById('ifm-mtu').value = cur.mtu || '';
@@ -4212,7 +4219,7 @@ async function openIfaceModal(name) {
   document.getElementById('ifm-speed').value = cur.link_speed || 'auto';
   document.getElementById('ifm-speed').disabled = cap.configurable===false;
   document.getElementById('ifm-duplex').value = cur.link_duplex || 'auto';
-  document.getElementById('ifm-state').value = cur.link_state || 'auto';
+  document.getElementById('ifm-state').value = ['none','off','disabled','unconfigured'].includes(cur.mode) ? 'auto' : (cur.link_state || 'auto');
   document.getElementById('ifm-lldp').value = cur.lldp_enabled ? 'yes' : 'no';
   document.getElementById('ifm-lldp-profile').value = cur.lldp_profile || '';
   // Bond settings (only used when editing an aeN)
@@ -4228,6 +4235,13 @@ function _ifmToggle() {
   const mode = document.getElementById('ifm-mode').value;
   const name = document.getElementById('ifm-name').value;
   const isAE = name.startsWith('ae') && !name.includes('.');
+  const state = document.getElementById('ifm-state');
+  if(mode==='none'){
+    if(state.dataset.noneForced!=='true')state.dataset.previousState=state.value;
+    state.value='down';state.disabled=true;state.dataset.noneForced='true';
+  } else if(state.dataset.noneForced==='true'){
+    state.value=state.dataset.previousState||'auto';state.disabled=false;delete state.dataset.noneForced;
+  }
   document.getElementById('ifm-l3-block').style.display = mode==='layer3'?'block':'none';
   document.getElementById('ifm-ae-block').style.display = mode==='aggregate-group'?'block':'none';
   // Bonding block appears when editing an aeN interface in layer3 mode
@@ -4259,6 +4273,11 @@ async function saveIface() {
     bond_miimon_ms: parseInt((document.getElementById('ifm-bondmiimon')||{}).value || '100'),
   };
   if(body.dhcp_client)body.ip_addresses=[];
+  if(body.mode==='none'){
+    body.ip_addresses=[];body.interface_management_profile='';body.mtu=null;body.aggregate_group='';
+    body.lldp_enabled=false;body.lldp_profile='';
+    body.link_state='down';
+  }
   const msg = document.getElementById('ifm-msg');
   if (msg) { msg.textContent = 'Saving...'; msg.style.color = 'var(--orange)'; }
   const vr = document.getElementById('ifm-vr');
@@ -7933,7 +7952,7 @@ async function loadACCDashboard() {
     charts.appBW = new Chart(bwCanvas.getContext('2d'),{
       type:'bar', data:{labels:apps,datasets:[{data:bwData,backgroundColor:colors,borderWidth:0}]},
       options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
-        scales:{x:{grid:{color:'#21262d'},ticks:{color:'#8b949e',font:{size:9}},title:{display:true,text:'Mbps',color:'#484f58',font:{size:9}}},y:{grid:{display:false},ticks:{color:'#e6edf3',font:{size:10}}}}}
+        scales:{x:{grid:{color:getComputedStyle(document.documentElement).getPropertyValue('--chart-grid').trim()},ticks:{color:getComputedStyle(document.documentElement).getPropertyValue('--text-dim').trim(),font:{size:9}},title:{display:true,text:'Mbps',color:getComputedStyle(document.documentElement).getPropertyValue('--text-muted').trim(),font:{size:9}}},y:{grid:{display:false},ticks:{color:'#e6edf3',font:{size:10}}}}}
     });
   } else if (charts.appBW) { charts.appBW.data.labels=apps; charts.appBW.data.datasets[0].data=bwData; charts.appBW.update('none'); }
 
@@ -7942,7 +7961,7 @@ async function loadACCDashboard() {
     charts.appSess = new Chart(sessCanvas.getContext('2d'),{
       type:'bar', data:{labels:apps,datasets:[{data:sessData,backgroundColor:colors,borderWidth:0}]},
       options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
-        scales:{x:{grid:{color:'#21262d'},ticks:{color:'#8b949e',font:{size:9}},title:{display:true,text:'Sessions',color:'#484f58',font:{size:9}}},y:{grid:{display:false},ticks:{color:'#e6edf3',font:{size:10}}}}}
+        scales:{x:{grid:{color:getComputedStyle(document.documentElement).getPropertyValue('--chart-grid').trim()},ticks:{color:getComputedStyle(document.documentElement).getPropertyValue('--text-dim').trim(),font:{size:9}},title:{display:true,text:'Sessions',color:getComputedStyle(document.documentElement).getPropertyValue('--text-muted').trim(),font:{size:9}}},y:{grid:{display:false},ticks:{color:'#e6edf3',font:{size:10}}}}}
     });
   } else if (charts.appSess) { charts.appSess.data.labels=apps; charts.appSess.data.datasets[0].data=sessData; charts.appSess.update('none'); }
 
@@ -7971,7 +7990,7 @@ async function loadACCDashboard() {
   if (riskCanvas && !charts.riskDist) {
     charts.riskDist = new Chart(riskCanvas.getContext('2d'),{
       type:'pie', data:{labels:['Low','Medium','High','Critical'],datasets:[{data:riskData,backgroundColor:['#2f81f7','#d29922','#f85149','#ff6b6b'],borderWidth:0}]},
-      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{color:'#8b949e',font:{size:10},boxWidth:8}}}}
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{color:getComputedStyle(document.documentElement).getPropertyValue('--text-dim').trim(),font:{size:10},boxWidth:8}}}}
     });
   } else if (charts.riskDist) { charts.riskDist.data.datasets[0].data=riskData; charts.riskDist.update('none'); }
 }
@@ -8103,7 +8122,7 @@ async function loadMLInference() {
   if (verdictCanvas && !charts.mlVerdict) {
     charts.mlVerdict = new Chart(verdictCanvas.getContext('2d'),{
       type:'doughnut', data:{labels:['Benign','Suspicious','Malicious'],datasets:[{data:[benign,gray,mal],backgroundColor:['#3fb950','#d29922','#f85149'],borderWidth:0}]},
-      options:{responsive:true,maintainAspectRatio:false,cutout:'60%',plugins:{legend:{position:'bottom',labels:{color:'#8b949e',font:{size:10},boxWidth:8}}}}
+      options:{responsive:true,maintainAspectRatio:false,cutout:'60%',plugins:{legend:{position:'bottom',labels:{color:getComputedStyle(document.documentElement).getPropertyValue('--text-dim').trim(),font:{size:10},boxWidth:8}}}}
     });
   } else if (charts.mlVerdict) {
     charts.mlVerdict.data.datasets[0].data=[benign,gray,mal];
@@ -8283,7 +8302,7 @@ async function loadIoTDevices() {
   if (pieCanvas && !charts.iotPie) {
     charts.iotPie = new Chart(pieCanvas.getContext('2d'),{
       type:'doughnut',data:{labels:['IoT','Non-IoT'],datasets:[{data:[iotCount,nonIotCount],backgroundColor:['#2f81f7','#484f58'],borderWidth:0}]},
-      options:{responsive:true,maintainAspectRatio:false,cutout:'60%',plugins:{legend:{position:'bottom',labels:{color:'#8b949e',font:{size:10},boxWidth:8}}}}
+      options:{responsive:true,maintainAspectRatio:false,cutout:'60%',plugins:{legend:{position:'bottom',labels:{color:getComputedStyle(document.documentElement).getPropertyValue('--text-dim').trim(),font:{size:10},boxWidth:8}}}}
     });
   }
 
@@ -8296,7 +8315,7 @@ async function loadIoTDevices() {
   if (typeCanvas && !charts.iotTypes) {
     charts.iotTypes = new Chart(typeCanvas.getContext('2d'),{
       type:'pie',data:{labels:typeLabels,datasets:[{data:typeData,backgroundColor:typeColors,borderWidth:0}]},
-      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{color:'#8b949e',font:{size:9},boxWidth:6}}}}
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{color:getComputedStyle(document.documentElement).getPropertyValue('--text-dim').trim(),font:{size:9},boxWidth:6}}}}
     });
   }
 

@@ -30,7 +30,9 @@ def main():
             def apply(rows):return nat.apply({'revision':nat.saved()['revision'],'plan':{'version':1,'rules':rows}})
             assert not ping(1100),'WAN has no return route before source NAT'
             apply([base]);assert ping(1101),'Masquerade did not translate ICMP/reply'
-            assert nat.status()['applied'];print('Native ICMP source NAT and return translation passed',flush=True)
+            observed=nat.status();assert observed['applied']
+            assert observed['usage'][0]['available'] and observed['usage'][0]['packets']>=1 and observed['usage'][0]['bytes']>0,observed['usage']
+            print('Native ICMP source NAT, return translation and per-rule initial-packet counters passed',flush=True)
             exempt=copy.deepcopy(base);exempt.update(name='exception',snat={'type':'none'},destination=['198.51.100.2/32'])
             apply([exempt,base]);assert not ping(1102),'First-match no-NAT exception failed'
             apply([base]);assert ping(1103),'Removing no-NAT exception failed'
@@ -52,6 +54,7 @@ def main():
                     if proc.poll() is None:proc.kill();proc.wait()
                 print(proto+' '+('combined SNAT/DNAT' if combined else 'destination NAT')+' port forwarding and reply passed',flush=True)
             apply([]);assert not ping(1105),'Removed NAT rules continued to translate new connections'
+            assert nat.status()['usage']==[],'Deleted rules retained stale usage'
             apply([base]);nat.nft(['delete','table','ip',nat.TABLE]);nat.restore()
             assert ping(1106),'Boot replay did not restore source NAT'
             print('No-NAT ordering, static SNAT, deletion and empty-plan application passed',flush=True)

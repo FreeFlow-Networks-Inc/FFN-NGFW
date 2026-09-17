@@ -18,6 +18,11 @@ class PolicyRequest(BaseModel):
     class Config: extra='forbid'
 
 
+class PolicyTestRequest(BaseModel):
+    packet: dict
+    class Config: extra='forbid'
+
+
 def install(app,current_user,require_admin,audit,manager,client=None):
     client=client or ControldClient(timeout=15)
 
@@ -47,6 +52,14 @@ def install(app,current_user,require_admin,audit,manager,client=None):
         result=await call(dict(action='list',kind=kind,scope=scope,source=source))
         result['can_edit']=source=='candidate' and user.get('role') in ('admin','superuser')
         return result
+
+    @app.get('/api/config/policies/{kind}/preview')
+    async def policy_preview(kind:str,scope:str='vsys1',source:Literal['candidate','running']='candidate',user=Depends(current_user)):
+        return await call(dict(action='preview',kind=kind,scope=scope,source=source))
+
+    @app.post('/api/config/policies/{kind}/test')
+    async def policy_test(kind:str,request:PolicyTestRequest,scope:str='vsys1',source:Literal['candidate','running']='candidate',user=Depends(current_user)):
+        return await call(dict(action='test',kind=kind,scope=scope,source=source,packet=request.packet))
 
     @app.post('/api/config/policies/{kind}')
     async def policy_mutate(kind:str,request:PolicyRequest,scope:str='vsys1',user=Depends(current_user)):

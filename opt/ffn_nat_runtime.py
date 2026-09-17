@@ -173,8 +173,24 @@ def status():
         mapping=bindings();table,data=inspect()
         result.update(available=True,interfaces=mapping,applied=bool(table and table.get('comment')=='ffn-nat:'+str(state['digest']) and state.get('kernel_digest')==kernel_digest(data)))
         result['rules']=[x['rule'] for x in data['nftables'] if x.get('rule',{}).get('table')==TABLE and x['rule'].get('chain','').startswith('r')]
+        result['usage']=rule_usage(state,data,result['applied'])
     except (NatError,OSError,ValueError) as error:result['error']=str(error)
     return result
+
+
+def rule_usage(state,data,applied):
+    """NAT chain counters count initial connection packets, not session traffic."""
+    usage=[]
+    for index,rule in enumerate(state.get('plan',{}).get('rules',[])):
+        counters=[expr['counter'] for item in data.get('nftables',[]) for row in [item.get('rule',{})]
+                  if row.get('family')=='ip' and row.get('table')==TABLE and row.get('chain')=='r'+str(index)
+                  for expr in row.get('expr',[]) if isinstance(expr.get('counter'),dict)]
+        available=applied and len(counters)==1 and all(type(counters[0].get(k)) is int and counters[0][k]>=0 for k in ('packets','bytes'))
+        usage.append(dict(scope=rule['scope'],name=rule['name'],available=available,
+                          packets=counters[0]['packets'] if available else None,
+                          bytes=counters[0]['bytes'] if available else None,
+                          generation=state['revision'],source='nftables NAT initial-packet counters'))
+    return usage
 
 
 def prepare(request):

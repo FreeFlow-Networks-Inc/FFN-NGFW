@@ -45,7 +45,7 @@ def main():
     root=Path(__file__).resolve().parents[1]
     writes={a.daemons/'ffn_controld.py':merge_control((a.daemons/'ffn_controld.py').read_text()),a.daemons/'ffn_configd.py':merge_configd((a.daemons/'ffn_configd.py').read_text())}
     for directory in (a.manager,a.daemons):
-        for name in ('ffn_nat_policy.py','ffn_nat_control.py','ffn_policy_config.py'):
+        for name in ('ffn_nat_policy.py','ffn_nat_control.py','ffn_policy_config.py','ffn_policy_plan.py'):
             writes[directory/name]=(root/'opt'/name).read_text()
     for name in ('ffn_policy_api.py','ffn_policy_cli.py'):writes[a.manager/name]=(root/'opt'/name).read_text()
     writes[a.manager/'static/config-policies.js']=(root/'static/config-policies.js').read_text()

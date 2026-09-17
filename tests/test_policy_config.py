@@ -11,16 +11,20 @@ from unittest.mock import AsyncMock,Mock
 from fastapi import FastAPI,HTTPException
 from fastapi.testclient import TestClient
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'opt'))
-from ffn_policy_config import PolicyController,SCHEMAS,revision,require_supported,PolicyError,configd_validate,parse
+from ffn_policy_config import PolicyController,SCHEMAS,SECURITY_PROFILES,revision,require_supported,PolicyError,configd_validate,parse
 from ffn_policy_api import install
 from ffn_policy_cli import handle
 from ffn_config_objects import install as install_objects
 
 XML='''<config><shared><application><entry name="custom-app"><category>business</category></entry></application>
 <authentication-enforcement><entry name="auth-profile"/></authentication-enforcement>
+<device><entry name="workstation"/></device><tag><entry name="reviewed"/></tag>
+<profile-group><entry name="inspection"/></profile-group>
+<log-settings><profiles><entry name="central-logs"/></profiles></log-settings>
 <profiles><sdwan-path-quality><entry name="quality"/></sdwan-path-quality><sdwan-traffic-distribution><entry name="distribution"/></sdwan-traffic-distribution></profiles>
 </shared><devices><entry name="localhost.localdomain"><network><interface><ethernet><entry name="ethernet1/1"><layer3/></entry></ethernet></interface></network>
 <vsys><entry name="vsys1"><zone><entry name="trust"/><entry name="untrust"/></zone></entry><entry name="vsys2"/></vsys></entry></devices></config>'''
+XML=XML.replace('<profiles><sdwan','<profiles>'+''.join('<'+path+'><entry name="inspect-'+key+'"/></'+path+'>' for key,(_,path) in SECURITY_PROFILES.items())+'<sdwan',1)
 
 
 class Manager:
@@ -137,6 +141,64 @@ class PolicyTests(unittest.TestCase):
             rule=self.client.get('/api/config/policies/'+kind).json()['entries'][0]
             self.assertTrue(rule['editable'],rule)
             for key,value in settings.items():self.assertEqual(rule['settings'][key],value)
+
+    def test_complete_security_rule_roundtrip_and_read_only_usage(self):
+        settings={'rule-type':'interzone','from':['trust'],'to':['untrust'],
+            'source':['192.0.2.0/24'],'source-user':['EXAMPLE\\alice'],'source-device':['workstation'],
+            'destination':['198.51.100.1'],'destination-device':['workstation'],
+            'application':['custom-app'],'service':['application-default'],'tag':['reviewed'],
+            'action':'reset-both','icmp-unreachable':'yes','profile-mode':'profiles',
+            'log-start':'yes','log-end':'yes','log-setting':'central-logs',
+            **{key:'inspect-'+key for key in SECURITY_PROFILES}}
+        spec=self.spec('security',**settings)
+        response=self.mutate('security',rule=spec);self.assertEqual(response.status_code,200,response.text)
+        row=self.client.get('/api/config/policies/security').json()['entries'][0]
+        self.assertTrue(row['editable']);self.assertEqual(row['settings'],spec['settings'])
+        self.assertFalse(row['usage']['available'])
+        self.assertTrue(all(row['usage'][k] is None for k in ('hit_count','first_hit','last_hit')))
+        root=parse(self.manager.get_candidate());entry=root.find('.//rulebase/security/rules/entry')
+        self.assertIsNone(entry.find('profile-mode'))
+        for key,(_,path) in SECURITY_PROFILES.items():self.assertEqual(entry.findtext('profile-setting/profiles/'+path+'/member'),'inspect-'+key)
+        before=self.manager.get_candidate()
+        spec['usage']={'hit_count':42}
+        self.assertEqual(self.mutate('security','update',name='rule',rule=spec).status_code,422)
+        self.assertEqual(self.manager.get_candidate(),before)
+
+    def test_security_profile_modes_and_invalid_combinations(self):
+        for settings in [
+            {'profile-mode':'group'},
+            {'profile-mode':'none','profile-group':'inspection'},
+            {'profile-mode':'group','profile-group':'inspection','antivirus':'inspect-antivirus'},
+            {'profile-mode':'profiles'},
+            {'profile-mode':'profiles','antivirus':'missing'},
+            {'action':'allow','icmp-unreachable':'yes'},
+            {'source-device':['missing']},{'destination-device':['missing']},
+            {'log-setting':'missing'},{'rule-type':'intrazone','to':['untrust']},
+        ]:
+            with self.subTest(settings=settings):
+                before=self.manager.get_candidate()
+                result=self.mutate('security',rule=self.spec('security',**settings))
+                self.assertEqual(result.status_code,422,result.text);self.assertEqual(self.manager.get_candidate(),before)
+        self.assertEqual(self.mutate('security',rule=self.spec('security',**{'profile-mode':'group','profile-group':'inspection'})).status_code,200)
+        self.assertIn('<group><member>inspection</member></group>',self.manager.get_candidate())
+        self.assertEqual(self.mutate('security','update',name='rule',rule=self.spec('security')).status_code,200)
+        self.assertNotIn('<profile-setting>',self.manager.get_candidate())
+
+    def test_older_security_rules_and_profile_groups_stay_editable(self):
+        path=self.directory/'candidate-config.xml'
+        for group in ('inspection','<member>inspection</member>'):
+            path.write_text(XML.replace('<zone>','<rulebase><security><rules><entry name="old"><disabled>yes</disabled><profile-setting><group>'+group+'</group></profile-setting></entry></rules></security></rulebase><zone>',1),encoding='utf-8',newline='\n')
+            row=self.client.get('/api/config/policies/security').json()['entries'][0]
+            self.assertTrue(row['editable']);self.assertEqual(row['settings']['profile-mode'],'group')
+            self.assertEqual(row['settings']['source-device'],['any'])
+            spec={k:row[k] for k in ('name','description','enabled','settings')}
+            del spec['settings']['profile-mode'] # older CLI client
+            result=self.mutate('security','update',name='old',rule=spec)
+            self.assertEqual(result.status_code,200,result.text)
+            self.assertIn('<group><member>inspection</member></group>',self.manager.get_candidate())
+        path.write_text(path.read_text(encoding='utf-8').replace('<member>inspection</member>','<member>inspection</member><member>other</member>'),encoding='utf-8',newline='\n')
+        row=self.client.get('/api/config/policies/security').json()['entries'][0]
+        self.assertFalse(row['editable'],'Multiple profile group members cannot be silently discarded')
 
     def test_permissions_running_and_outage(self):
         self.role=None;self.assertEqual(self.client.get('/api/config/policies/security').status_code,401)

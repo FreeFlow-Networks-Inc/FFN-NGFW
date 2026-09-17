@@ -2426,8 +2426,8 @@ async def init_db():
 
         # NOTE: no sample/example user policy rules are seeded. A fresh box
         # starts with an empty user rule set; only the immutable PAN-OS-style
-        # defaults (intrazone/interzone) and the lab-mgmt safety net below are
-        # created. Operators add their own rules.
+        # defaults (intrazone/interzone) are created. MP management access is
+        # configured separately from dataplane policy. Operators add user rules.
 
         # Seed immutable PAN-OS-style default rules. `intrazone-default`
         # permits any traffic within the same zone (hidden implicit); it
@@ -2455,31 +2455,17 @@ async def init_db():
                      name, action, desc, kind, hidden),
                 )
 
-        # Lab / dev safety net: always permit traffic on the lab mgmt
-        # interface (env-overridable). Without this, an operator who
-        # accidentally commits a deny-all policy can lock themselves
-        # out of the box. Rule is immutable and sits at position 0 so
-        # it evaluates before any user rule. Operators can disable it
-        # explicitly via the UI (enabled=0) but cannot delete it.
-        lab_iface = os.getenv("FFN_LAB_MGMT_IFACE", "eno1np0")
-        if lab_iface:
-            cur = await db.execute(
-                "SELECT id FROM policy_rules WHERE kind='lab-mgmt'"
-            )
-            if not await cur.fetchone():
-                await db.execute(
-                    "INSERT INTO policy_rules "
-                    "(position, name, src_ip, dst_ip, src_iface, "
-                    " src_port, dst_port, proto, action, description, "
-                    " kind, immutable, hidden) "
-                    "VALUES (0, ?, '0.0.0.0/0', '0.0.0.0/0', ?, "
-                    " 0, 0, 'any', 'permit', ?, 'lab-mgmt', 1, 0)",
-                    (f"allow-lab-mgmt-{lab_iface}", lab_iface,
-                     f"Lab dev/test: permit any traffic on {lab_iface}"),
-                )
+        # Remove obsolete position-0 management exceptions on upgraded systems.
+        # MP access belongs to the management service configuration, not policy.
+        await _remove_legacy_management_rules(db)
 
         await db.commit()
     logger.info("Database initialized at %s", DB_PATH)
+
+
+async def _remove_legacy_management_rules(db):
+    """Remove only reserved MP-management rows; preserve user/default rules."""
+    await db.execute("DELETE FROM policy_rules WHERE kind IN ('lab-mgmt', 'mgmt')")
 
 
 async def get_db():
@@ -3930,70 +3916,53 @@ async def system_resources(user: dict = Depends(get_current_user)):
 # ==========================================================================
 
 
-# Throughput tracking state (for delta-based rate calculation)
-_prev_counters = {}
-_prev_counter_time = 0
+# A shared sample prevents multiple dashboard clients from shortening deltas.
+from ffn_port_traffic import PortTraffic
+_traffic_sampler = PortTraffic()
+_traffic_lock = asyncio.Lock()
+_traffic_cached = None
+_traffic_sampled = 0.0
 
 
 @app.get("/api/dashboard/throughput")
 async def dashboard_throughput(user: dict = Depends(get_current_user)):
-    global _prev_counters, _prev_counter_time
-
-    now = time.time()
-    ports = []
-
-    if not fpga.sim_mode:
-        # FPGA present — read FPGA port throughput
-        for p in range(NUM_PORTS):
-            tp = fpga.get_throughput_gbps(p)
-            ports.append({
-                "port": p,
-                "name": f"qsfp{p}",
-                "type": "fpga",
-                "rx_gbps": tp["rx_gbps"],
-                "tx_gbps": tp["tx_gbps"],
-            })
-
-    # Always include real CPU interfaces
-    counters = psutil.net_io_counters(pernic=True)
-    stats = psutil.net_if_stats()
-    dt = now - _prev_counter_time if _prev_counter_time > 0 else 1.0
-
-    for iface_name in sorted(counters.keys()):
-        if iface_name == "lo":
-            continue
-        if iface_name not in stats or not stats[iface_name].isup:
-            continue
-
-        cur = counters[iface_name]
-        prev = _prev_counters.get(iface_name)
-
-        if prev and dt > 0.1:
-            rx_bps = (cur.bytes_recv - prev.bytes_recv) * 8 / dt
-            tx_bps = (cur.bytes_sent - prev.bytes_sent) * 8 / dt
+    global _traffic_cached, _traffic_sampled
+    async with _traffic_lock:
+        if _traffic_cached is not None and time.monotonic()-_traffic_sampled < 2:
+            return _traffic_cached
+        provider = getattr(app.state, 'platform_data_port_stats', None)
+        if provider is not None:
+            try:
+                observation = await asyncio.to_thread(provider)
+                result = _traffic_sampler.sample(observation)
+            except Exception:
+                _traffic_sampler.previous = None
+                raise HTTPException(503, 'Front data-port telemetry unavailable')
+        elif _this_is_a_faceplate_chassis():
+            raise HTTPException(503, 'Platform data-port telemetry is not installed')
+        elif not fpga.sim_mode:
+            ports = [dict(name=f'qsfp{p}', type='fpga', link=None,
+                     **fpga.get_throughput_gbps(p)) for p in range(NUM_PORTS)]
+            result = dict(timestamp=time.time(), ports=ports, unit='Gbps', available=True)
         else:
-            rx_bps = 0
-            tx_bps = 0
-
-        # Convert to Gbps (cap at link speed)
-        link_speed = stats[iface_name].speed  # Mbps
-        max_bps = link_speed * 1e6 if link_speed else 100e9
-
-        ports.append({
-            "name": iface_name,
-            "type": "cpu",
-            "rx_gbps": round(min(rx_bps / 1e9, max_bps / 1e9), 4),
-            "tx_gbps": round(min(tx_bps / 1e9, max_bps / 1e9), 4),
-            "rx_bytes_total": cur.bytes_recv,
-            "tx_bytes_total": cur.bytes_sent,
-            "rx_pps": int((cur.packets_recv - (prev.packets_recv if prev else cur.packets_recv)) / dt) if prev and dt > 0.1 else 0,
-            "tx_pps": int((cur.packets_sent - (prev.packets_sent if prev else cur.packets_sent)) / dt) if prev and dt > 0.1 else 0,
-        })
-
-    _prev_counters = counters
-    _prev_counter_time = now
-
-    return {"timestamp": now, "ports": ports}
+            # Only configured data-port aliases, never every PCI/host adapter.
+            counters = psutil.net_io_counters(pernic=True)
+            stats = psutil.net_if_stats()
+            eligible = set(_list_linux_nics()) - {_mgmt_iface()}
+            ports = []
+            for name, netdev in _load_aliases().items():
+                if not re.fullmatch(r'ethernet[0-9]+/[0-9]+', name) or netdev not in eligible or netdev not in counters:
+                    continue
+                cur = counters[netdev]; link = stats.get(netdev)
+                ports.append(dict(name=name, type='data', link=link.isup if link else None,
+                    speed_gbps=max(0,link.speed)/1000 if link else None,
+                    rx_bytes_total=cur.bytes_recv, tx_bytes_total=cur.bytes_sent,
+                    rx_packets_total=cur.packets_recv, tx_packets_total=cur.packets_sent))
+            result = _traffic_sampler.sample(dict(ports=ports, sample_monotonic=time.monotonic(),
+                boot_id='host', unit='Gbps', source='Configured data ports'))
+        _traffic_cached = result
+        _traffic_sampled = time.monotonic()
+        return result
 
 
 @app.get("/api/dashboard/threats")
@@ -5481,13 +5450,12 @@ async def policy_list(show_hidden: bool = True, show_defaults: bool = True, user
         db.row_factory = aiosqlite.Row
         # User rules in position order, then defaults (intrazone before
         # interzone because intrazone is more specific).
-        # Evaluation order: lab-mgmt override → user rules →
+        # Evaluation order: user rules →
         # intrazone-default → interzone-default.
         cursor = await db.execute(
-            "SELECT * FROM policy_rules "
+            "SELECT * FROM policy_rules WHERE COALESCE(kind, 'user') NOT IN ('lab-mgmt', 'mgmt') "
             "ORDER BY "
             "  CASE kind "
-            "    WHEN 'lab-mgmt' THEN 0 "
             "    WHEN 'user' THEN 1 "
             "    WHEN 'intrazone-default' THEN 2 "
             "    WHEN 'interzone-default' THEN 3 "
@@ -8253,6 +8221,54 @@ async def system_setup(cfg: SetupConfig, user: dict = Depends(get_current_user))
     }
 
 
+MP_INTERFACE_XPATH = "devices.entry[@name=localhost.localdomain].deviceconfig.system.mp-interfaces"
+
+
+def _mp_revision(node):
+    return hashlib.sha256(ET.tostring(node) if node is not None else b'').hexdigest()
+
+
+async def _mp_inventory():
+    provider = getattr(app.state, 'platform_mp_interfaces', None)
+    if provider is None: return []
+    try: return (await asyncio.to_thread(provider))['ports']
+    except Exception: raise HTTPException(503, 'External management interface controller unavailable')
+
+
+@app.get('/api/system/mp-interfaces')
+async def mp_interfaces_get(user: dict = Depends(get_current_user)):
+    from ffn_mp_interfaces import decode
+    ports = await _mp_inventory()
+    for port in ports:
+        node = config_mgr.get_xpath(MP_INTERFACE_XPATH+'.entry[@name='+port['name']+']',source='candidate')
+        port['candidate'] = decode(node)
+        port['revision'] = _mp_revision(node)
+    return dict(ports=ports, source='candidate', requires_commit=True)
+
+
+@app.put('/api/system/mp-interfaces/{name}')
+async def mp_interfaces_set(name: str, request: Request, user: dict = Depends(get_current_user)):
+    from ffn_mp_interfaces import encode
+    _require_admin(user)
+    ports = await _mp_inventory()
+    if name not in {port['name'] for port in ports}: raise HTTPException(404, 'External MP interface is not detected')
+    data = await request.json()
+    if not isinstance(data,dict) or set(data)!={'revision','config'}: raise HTTPException(422, 'Expected revision and config')
+    try: settings=encode(data['config'])
+    except (ValueError,TypeError,KeyError): raise HTTPException(422, 'Invalid management interface settings')
+    xpath = MP_INTERFACE_XPATH+'.entry[@name='+name+']'
+    node = config_mgr.get_xpath(xpath, source='candidate')
+    if data['revision'] != _mp_revision(node): raise HTTPException(409, 'Candidate changed; reopen the interface editor')
+    lock = config_mgr.lock_status()
+    if lock['locked'] and lock.get('holder') != user['username']: raise HTTPException(423, 'Candidate is locked by another administrator')
+    if not lock['locked']: config_mgr.acquire_lock(user['username'], 'editing')
+    result=config_mgr.update_candidate(xpath, settings, user['username'])
+    if result.get('status')!='ok': raise HTTPException(500, 'Candidate update failed')
+    async with aiosqlite.connect(DB_PATH) as db:
+        await audit(db,user['username'],'mp_interface_candidate_update',name)
+    return dict(status='candidate-updated',requires_commit=True)
+
+
 class RetrainRequest(BaseModel):
     model_type: str = "anomaly"
     epochs: int = 10
@@ -10464,7 +10480,7 @@ async def zone_delete(vsys: str, name: str, revision: str, user: dict = Depends(
 class InterfaceEntry(BaseModel):
     name: str                                # ethernet1/1 | ae1
     kind: str = "ethernet"                   # ethernet | aggregate-ethernet
-    mode: str = "layer3"                     # layer3 | layer2 | virtual-wire | tap | aggregate-group | decrypt-mirror | ha
+    mode: str = "none"                       # none | layer3 | layer2 | virtual-wire | tap | aggregate-group | decrypt-mirror | ha
     ip_addresses: list = []                  # strings ("192.168.1.1/24") or address-object names
     dhcp_client: bool = False
     dhcp_default_route: bool = True
@@ -10485,7 +10501,7 @@ class InterfaceEntry(BaseModel):
     comment: str = ""
 
 
-MODES = {"layer3", "layer2", "virtual-wire", "tap", "aggregate-group",
+MODES = {"none", "layer3", "layer2", "virtual-wire", "tap", "aggregate-group",
          "decrypt-mirror", "ha"}
 
 
@@ -10879,6 +10895,8 @@ def _ae_to_bond(ae_name: str) -> str:
 
 def _build_iface_payload(i: InterfaceEntry) -> dict:
     """Render an InterfaceEntry to the PAN-OS XML-dict form."""
+    if i.mode in ("default", "off", "disabled", "unconfigured"):
+        i.mode = "none"
     if i.mode not in MODES:
         raise HTTPException(status_code=400, detail=f"mode must be one of {sorted(MODES)}")
 
@@ -10889,6 +10907,12 @@ def _build_iface_payload(i: InterfaceEntry) -> dict:
     if i.dhcp_client and (i.mode != "layer3" or i.ip_addresses):
         raise HTTPException(422, "DHCP requires Layer 3 with no static interface addresses")
     payload: dict = {"comment": i.comment}
+
+    if i.mode == "none":
+        # Unconfigured front ports are physically disabled, including callers
+        # that omit mode or try to combine None with an explicit link-up.
+        payload["link-state"] = "down"
+        return payload
 
     # Link settings (only on ethernet / aggregate-ethernet, not aggregate-group members)
     if i.mode != "aggregate-group":
@@ -11039,7 +11063,7 @@ async def interfaces_list(user: dict = Depends(get_current_user)):
 
     def shape(entry, kind):
         # Detect mode
-        mode = "layer3"
+        mode = "none" if kind in ("ethernet", "aggregate-ethernet") else "layer3"
         for m in ("layer3", "layer2", "virtual-wire", "tap", "ha", "decrypt-mirror"):
             if entry.find(m) is not None:
                 mode = m
@@ -11065,7 +11089,7 @@ async def interfaces_list(user: dict = Depends(get_current_user)):
             "dhcp_default_route": entry.findtext("./layer3/dhcp-client/create-default-route", "yes") == "yes",
             "link_speed": entry.findtext("link-speed", "auto"),
             "link_duplex": entry.findtext("link-duplex", "auto"),
-            "link_state": entry.findtext("link-state", "auto"),
+            "link_state": "down" if mode == "none" else entry.findtext("link-state", "auto"),
             "aggregate_group": entry.findtext("aggregate-group", ""),
             "interface_management_profile": entry.findtext("./layer3/interface-management-profile", ""),
             "lldp_enabled": entry.findtext("./lldp/enable", "no") == "yes",
@@ -11406,7 +11430,7 @@ async def interfaces_enriched(user: dict = Depends(get_current_user)):
             return "tap", "TAP", None
         if entry.find("ha") is not None:
             return "ha", "HA", None
-        return "unconfigured", "", None
+        return "none", "None", None
 
     def _shape_row(entry: ET.Element, parent_name=None, tag=None, kind="ethernet"):
         if parent_name and tag:
@@ -11632,6 +11656,11 @@ async def aggregate_status(user: dict = Depends(get_current_user)):
       - Bonding mode, MII status, AD partner info when available
       - Per-slave LACP state and link status
     """
+    provider=getattr(app.state,'platform_aggregate_status',None)
+    if provider is not None:
+        try:return await asyncio.to_thread(provider)
+        except Exception as error:
+            raise HTTPException(503,'Platform aggregate observations unavailable; refresh to retry') from error
     # Read configured AEs + member assignments from candidate config
     cfg = config_mgr.get_xpath(f"{DEV}.network.interface", source="candidate")
     configured = []

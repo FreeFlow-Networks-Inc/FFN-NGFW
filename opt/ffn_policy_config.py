@@ -42,13 +42,31 @@ def select(key,label,options,default=None,path=None,tab='Actions'):
     return field(key,label,tab,'select',default or options[0],options,path=path)
 
 
+SECURITY_PROFILES={
+    'antivirus':('Antivirus Profile','virus'),
+    'vulnerability':('Vulnerability Protection Profile','vulnerability'),
+    'anti-spyware':('Anti-Spyware','spyware'),
+    'url-filtering':('URL Filtering','url-filtering'),
+    'file-blocking':('File Blocking','file-blocking'),
+    'data-filtering':('Data Filtering','data-filtering'),
+    'crucible-analysis':('Crucible Analysis','crucible-analysis'),
+}
+
+
 SCHEMAS={
  'security':dict(label='Security',fields=FULL+[
+     field('source-device','Source Device','Source',default=['any'],ref='device'),
+     field('destination-device','Destination Device','Destination',default=['any'],ref='device'),
      select('rule-type','Rule Type',['universal','intrazone','interzone'],tab='General'),
      select('action','Action',['allow','deny','drop','reset-client','reset-server','reset-both'],'deny'),
-     select('log-start','Log at Session Start',['no','yes']),
-     select('log-end','Log at Session End',['yes','no']),
-     field('profile-group','Security Profile Group','Actions',mode='text',ref='profile-group',path='profile-setting/group')]),
+     select('icmp-unreachable','Send ICMP Unreachable',['no','yes']),
+     dict(select('profile-mode','Profile Type',['none','group','profiles'],tab='Profiles'),virtual=True),
+     field('profile-group','Security Profile Group','Profiles',mode='member-text',ref='profile-group',path='profile-setting/group'),
+     *[field(key,label,'Profiles',mode='member-text',ref='profiles/'+path,path='profile-setting/profiles/'+path)
+       for key,(label,path) in SECURITY_PROFILES.items()],
+     select('log-start','Log at Session Start',['no','yes'],tab='Logging'),
+     select('log-end','Log at Session End',['yes','no'],tab='Logging'),
+     field('log-setting','Log Forwarding Profile','Logging',mode='text',ref='log-settings/profiles')]),
  'nat':dict(label='NAT',fields=MATCH+[SERVICE,
      select('nat-type','NAT Type',['ipv4'],tab='General'),
      field('to-interface','Destination Interface','Original Packet','text','any',ref='interface'),
@@ -143,6 +161,7 @@ def serialize(kind,spec):
     if spec.get('description'):ET.SubElement(entry,'description').text=spec['description']
     settings=spec['settings']
     for f in SCHEMAS[kind]['fields']:
+        if f.get('virtual'):continue
         value=settings.get(f['key'])
         if value in (None,'',[]):continue
         path=f['path']
@@ -152,6 +171,7 @@ def serialize(kind,spec):
             if value!='none':node_at(entry,path+'/'+value)
         elif f['mode']=='list':
             for item in value:ET.SubElement(node_at(entry,path),'member').text=item
+        elif f['mode']=='member-text':ET.SubElement(node_at(entry,path),'member').text=value
         else:node_at(entry,path).text=value
     return entry
 
@@ -163,20 +183,36 @@ def describe(kind,entry):
             parent=entry.find(f['path']);children=list(parent) if parent is not None else []
             settings[f['key']]=children[0].tag if len(children)==1 else 'none' if not children else 'unsupported'
     for f in fields:
-        if f['mode']=='branch':continue
+        if f['mode']=='branch' or f.get('virtual'):continue
         path=f['path']
         for k,v in settings.items():
             if isinstance(v,str):path=path.replace('{'+k+'}',v)
         node=entry.find(path)
-        if node is not None:settings[f['key']]=[n.text or '' for n in node.findall('member')] if f['mode']=='list' else node.text or ''
+        if node is not None:
+            settings[f['key']]=([n.text or '' for n in node.findall('member')] if f['mode']=='list'
+                               else node.findtext('member','') if f['mode']=='member-text' and len(node)
+                               else node.text or '')
+    if kind=='security':
+        settings['profile-mode']='group' if settings.get('profile-group') else 'profiles' if any(settings.get(k) for k in SECURITY_PROFILES) else 'none'
     spec=dict(name=entry.get('name',''),description=entry.findtext('description',''),enabled=entry.findtext('disabled','no')!='yes',settings=settings)
     expected=serialize(kind,spec)
+    # Older FFN releases stored the group as scalar text. Read it losslessly;
+    # an explicit edit upgrades it to the member representation.
+    if kind=='security':
+        old=entry.find('profile-setting/group');new=expected.find('profile-setting/group')
+        if old is not None and not len(old) and new is not None:
+            new.remove(new.find('member'));new.text=old.text
     # Absent disabled means enabled in imported PAN-style configurations.
     if entry.find('disabled') is None:expected.remove(expected.find('disabled'))
     spec['is_implicit']=kind=='security' and spec['name'].lower() in ('intrazone-default','interzone-default')
     spec['editable']=not spec['is_implicit'] and shape(expected)==shape(entry)
-    for f in fields:settings.setdefault(f['key'],[] if f['mode']=='list' else '')
+    for f in fields:
+        default=f['default'] if kind=='security' and f['default'] is not None else [] if f['mode']=='list' else ''
+        settings.setdefault(f['key'],default.copy() if isinstance(default,list) else default)
     spec['state']='blocked' if spec['enabled'] else 'disabled'
+    if kind=='security':
+        spec['usage']=dict(available=False,hit_count=None,first_hit=None,last_hit=None,
+                           reason='No commissioned Security provider reports per-rule dataplane usage')
     return spec
 
 
@@ -192,8 +228,11 @@ def validate(kind,spec,root,scope):
     if not text_ok(spec.get('description','')) or len(spec.get('description',''))>1024:raise PolicyError('Invalid description')
     s=spec.get('settings');fields={f['key']:f for f in SCHEMAS[kind]['fields']}
     if not isinstance(s,dict) or set(s)-set(fields):raise PolicyError('Unknown rule settings')
+    if kind=='security' and 'profile-mode' not in s:
+        s['profile-mode']='group' if s.get('profile-group') else 'profiles' if any(s.get(k) for k in SECURITY_PROFILES) else 'none'
     for key,f in fields.items():
-        value=s.setdefault(key,f['default'] if f['default'] is not None else '')
+        default=f['default'] if f['default'] is not None else ''
+        value=s.setdefault(key,default.copy() if isinstance(default,list) else default)
         values=value if f['mode']=='list' else [value]
         if f['mode']=='list' and (not isinstance(value,list) or len(value)>256 or any(not isinstance(v,str) for v in value) or len(set(value))!=len(value)):raise PolicyError(f['label']+': expected unique list values')
         if any(not text_ok(v) or len(v)>1024 or (f['mode']=='list' and not v.strip()) for v in values):raise PolicyError('Invalid '+f['label'])
@@ -212,6 +251,13 @@ def validate(kind,spec,root,scope):
                     try:ipaddress.ip_network(v,strict=False);continue
                     except ValueError:pass
                 if v not in choices:raise PolicyError(f['label']+': unknown reference '+v)
+    if kind=='security':
+        mode=s['profile-mode'];group=bool(s['profile-group']);profiles=any(s[k] for k in SECURITY_PROFILES)
+        if mode=='none' and (group or profiles):raise PolicyError('Profile Type None cannot include a group or individual profiles')
+        if mode=='group' and (not group or profiles):raise PolicyError('Select one profile group without individual profiles')
+        if mode=='profiles' and (group or not profiles):raise PolicyError('Select at least one individual profile without a profile group')
+        if s['icmp-unreachable']=='yes' and s['action']=='allow':raise PolicyError('ICMP Unreachable requires a blocking action')
+        if s['rule-type']=='intrazone' and s['to']!=['any']:raise PolicyError('Intrazone rules use the source zone as destination; set Destination Zone to any')
     if kind=='nat':
         mode=s['source-type'];addresses=s['translated-source'];iface=s['source-interface']
         if mode=='none' and (addresses or iface):raise PolicyError('Source translation must be selected')
@@ -243,13 +289,22 @@ def validate(kind,spec,root,scope):
 
 def runtime_report(xml,check_runtime=False):
     """Fail closed until each policy compiler and acknowledged apply are connected."""
-    root=parse(xml);blockers=[];disabled=0;nat_enabled=[]
+    root=parse(xml);blockers=[];disabled=0;nat_enabled=[];plans={}
     for scope,node in owners(root).items():
         for kind in SCHEMAS:
             for rule in node.findall('rulebase/'+kind+'/rules/entry'):
                 if rule.findtext('disabled')=='yes':disabled+=1
                 elif kind=='nat':nat_enabled.append(dict(scope=scope,kind=kind,name=rule.get('name','')))
-                else:blockers.append(dict(scope=scope,kind=kind,name=rule.get('name',''),reason='No commissioned runtime provider for this XML rulebase'))
+                else:
+                    reason='No commissioned runtime provider for this XML rulebase'
+                    if kind in ('qos','pbf','decryption'):
+                        from ffn_policy_plan import compile_policy as compile_plan
+                        key=(scope,kind)
+                        if key not in plans:plans[key]=compile_plan(xml,kind,scope)
+                        plan=plans[key]
+                        errors=[b['reason'] for b in plan['blockers'] if b['name']==rule.get('name','')]
+                        reason+='; '+('; '.join(errors) if errors else '; '.join(plan['runtime_requirements']))
+                    blockers.append(dict(scope=scope,kind=kind,name=rule.get('name',''),reason=reason))
     if nat_enabled:
         from ffn_nat_policy import compile_policy
         compiled=compile_policy(xml)
@@ -304,13 +359,17 @@ class PolicyController:
     def execute(self,args):
         action=args.get('action','list');source=args.get('source','candidate')
         if source not in ('candidate','running'):raise PolicyError('Invalid configuration source')
-        if action not in ('list','report','create','update','delete','move','toggle'):raise PolicyError('Unknown policy operation')
+        if action not in ('list','report','preview','test','create','update','delete','move','toggle'):raise PolicyError('Unknown policy operation')
         path=self.directory/(source+'-config.xml');xml=path.read_bytes();root=parse(xml);rev=revision(xml)
         if action=='report':return runtime_report(xml)
         kind=args.get('kind');scope=args.get('scope','vsys1')
         if kind not in SCHEMAS:raise PolicyError('Unknown policy kind',404)
         scopes=owners(root)
         if scope not in scopes:raise PolicyError('Virtual system not found',404)
+        if action in ('preview','test'):
+            from ffn_policy_plan import compile_policy, test_policy
+            return (compile_policy(xml,kind,scope) if action=='preview' else
+                    test_policy(xml,kind,scope,args.get('packet')))
         rules=scopes[scope].find('rulebase/'+kind+'/rules');rows=list(rules) if rules is not None else []
         names=[e.get('name') for e in rows]
         if len(names)!=len(set(names)):raise PolicyError('Duplicate rule names must be repaired',409)

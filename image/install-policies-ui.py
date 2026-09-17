@@ -86,9 +86,11 @@ def main():
             manager/'static/index.html':merge_html((manager/'static/index.html').read_text(),(root/'static/index.html').read_text()),
             daemon/'ffn_controld.py':merge_control((daemon/'ffn_controld.py').read_text()),
             daemon/'ffn_configd.py':merge_configd((daemon/'ffn_configd.py').read_text()),cli:merge_cli(cli.read_text())}
-    for name in ('ffn_policy_api.py','ffn_policy_config.py','ffn_policy_cli.py','ffn_config_objects.py'):
+    for name in ('ffn_policy_api.py','ffn_policy_config.py','ffn_policy_plan.py','ffn_nat_policy.py','ffn_policy_cli.py','ffn_config_objects.py'):
         writes[manager/name]=(root/'opt'/name).read_text()
     writes[daemon/'ffn_policy_config.py']=(root/'opt/ffn_policy_config.py').read_text()
+    for name in ('ffn_policy_plan.py','ffn_nat_policy.py'):
+        writes[daemon/name]=(root/'opt'/name).read_text()
     for name in ('config-policies.js','config-objects.css'):writes[manager/'static'/name]=(root/'static'/name).read_text()
     backup=manager/('policies-backup-'+str(time.time_ns()));backup.mkdir()
     for i,(path,text) in enumerate(writes.items()):
