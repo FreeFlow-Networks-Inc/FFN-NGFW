@@ -243,9 +243,11 @@ class PolicyTests(unittest.TestCase):
         cls=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='ConfigManager')
         cls.body=[n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name=='commit']
         from typing import Optional
-        namespace=dict(Optional=Optional,CANDIDATE_CONFIG=self.directory/'candidate-config.xml')
+        import xml.etree.ElementTree as ET
+        namespace=dict(Optional=Optional,ET=ET,CANDIDATE_CONFIG=self.directory/'candidate-config.xml')
         exec(compile(ast.Module(body=[cls],type_ignores=[]),'<commit>','exec'),namespace)
         manager=namespace['ConfigManager']();manager.history=Mock();manager.snapshot_save=Mock()
+        manager.prepare_commit=lambda scope:ET.fromstring(self.manager.get_candidate())
         result=manager.commit('tester')
         self.assertEqual(result['status'],'error');self.assertIn('activation blocked',result['message'])
         manager.history.latest_version.assert_not_called();manager.snapshot_save.assert_not_called()

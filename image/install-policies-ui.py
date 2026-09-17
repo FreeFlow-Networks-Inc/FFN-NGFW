@@ -24,15 +24,28 @@ def method_range(source,klass,method):
 
 
 def merge_manager(live,source):
-    for method in ('commit','_collect_paths'):
-        a,b=method_range(live,'ConfigManager',method);x,y=method_range(source,'ConfigManager',method)
-        live=live[:a]+source[x:y]+live[b:]
-    for name in ('_sync_netresources_to_xml','_check_kind'):
+    for method in ('prepare_commit','commit','diff','_collect_paths'):
+        x,y=method_range(source,'ConfigManager',method)
+        try:
+            a,b=method_range(live,'ConfigManager',method)
+        except StopIteration:
+            a,_=method_range(live,'ConfigManager','commit');b=a
+            live=live[:a]+source[x:y]+'\n\n'+live[b:]
+        else:
+            live=live[:a]+source[x:y]+live[b:]
+    for name in ('_sync_netresources_to_xml','_check_kind','config_diff'):
         def span(text):
             node=next(n for n in ast.parse(text).body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and n.name==name)
             lines=text.splitlines(keepends=True)
             return sum(map(len,lines[:node.lineno-1])),sum(map(len,lines[:node.end_lineno]))
         a,b=span(live);x,y=span(source);live=live[:a]+source[x:y]+live[b:]
+    start='async def _prepare_commit_review('
+    a=live.index(start) if start in live else live.index('@app.post("/api/config/commit")')
+    b=live.index('@app.post("/api/config/revert")',a)
+    x=source.index(start);y=source.index('@app.post("/api/config/revert")',x)
+    live=live[:a]+source[x:y]+live[b:]
+    if '    expected_revision: Optional[str] = None  # revision returned by Preview / Validate' not in live:
+        live=replace_once(live,'class CommitRequest(BaseModel):','class CommitRequest(BaseModel):\n    expected_revision: Optional[str] = None  # revision returned by Preview / Validate')
     marker='if __name__ == "__main__":'
     hook='from ffn_policy_api import install as _install_policy_api\n_install_policy_api(app, get_current_user, _require_admin, _extension_audit, config_mgr)\n\n'
     if '_install_policy_api' not in live:live=replace_once(live,marker,hook+marker)
@@ -74,6 +87,18 @@ def merge_cli(live):
 
 
 def merge_html(live,source):
+    for rule in source.splitlines():
+        if rule.startswith(('#modal-commit .diff-table', '#commit-validation{')) and rule not in live:
+            live=replace_once(live,'</style>',rule+'\n</style>')
+    for start,end in [('async function refreshCommitIndicator()', 'function startCommitPolling()'),
+                      ('<div class="modal-overlay" id="modal-commit">','<!-- Commit history modal -->'),
+                      ('async function openCommitModal()', '// ========================================================================\n// Commit history')]:
+        if start=='async function openCommitModal()' and 'let commitReview = null,' in live:
+            start='let commitReview = null,'
+        a=live.index(start);b=live.index(end,a)
+        source_start='let commitReview = null,' if start in ('async function openCommitModal()', 'let commitReview = null,') else start
+        x=source.index(source_start);y=source.index(end,x)
+        live=live[:a]+source[x:y]+live[b:]
     for start,end in [('  policy: [','  objects: ['),('    // Policy tab','    // Objects tab')]:
         if any(s.count(start)!=1 or s.count(end)!=1 for s in (live,source)):raise ValueError('Policy navigation boundaries changed')
         a=live.index(start);b=live.index(end,a);x=source.index(start);y=source.index(end,x)

@@ -147,13 +147,17 @@ const run = code => vm.runInContext(code,context);
   assert.match(element('tasks-body').innerHTML,/unknown/);
   assert(!element('tasks-body').innerHTML.includes('Disabled'),'Failed refresh clears stale successes');
   context.loadCommitDiff=async()=>{};
+  const readyCommit=()=>run("commitReview={scope:null,revision:'r1',validated:true,can_commit:true,validation:{valid:true},diff:{has_changes:true}}; updateCommitButtons()");
+  element('commit-scope').value='';
   for (const overall of ['partial-failure','applied']) {
-    context.fetch=async()=>({ok:true,status:200,json:async()=>({status:'committed',type:'full',snapshot:'v8',apply_status:{overall}})});
+    readyCommit();
+    context.fetch=async()=>({ok:true,status:200,json:async()=>({status:'committed',type:'full',snapshot:'v8',apply_status:{overall},planes:{published:true}})});
     await context.doCommit();
     assert.equal(element('commit-msg').style.color,overall==='applied'?'var(--green)':'var(--orange)');
-    assert.equal(element('commit-msg').textContent.includes('Applied successfully'),overall==='applied');
+    assert.equal(element('commit-msg').textContent.includes('Local apply completed'),overall==='applied');
   }
   context.loadInterfacesFull=()=>{};
+  readyCommit();
   context.fetch=async()=>({ok:true,status:200,json:async()=>({status:'committed',type:'full',snapshot:'v8',apply_status:{overall:'applied',skipped:[{xpath:'zone-reconcile'}]}})});
   await context.doCommit();
   assert.match(element('commit-msg').textContent,/1 settings skipped/);

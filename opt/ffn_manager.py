@@ -1770,10 +1770,10 @@ class ConfigManager:
                 out.update(self._collect_paths(child, path))
         return out
 
-    def diff(self) -> dict:
+    def diff(self, candidate_root=None, running_root=None) -> dict:
         """Return the set of paths that differ between candidate and running."""
-        cand_paths = self._collect_paths(self._load(CANDIDATE_CONFIG))
-        run_paths = self._collect_paths(self._load(RUNNING_CONFIG))
+        cand_paths = self._collect_paths(candidate_root if candidate_root is not None else self._load(CANDIDATE_CONFIG))
+        run_paths = self._collect_paths(running_root if running_root is not None else self._load(RUNNING_CONFIG))
         added, modified, removed = [], [], []
         all_keys = set(cand_paths) | set(run_paths)
         for k in sorted(all_keys):
@@ -1793,103 +1793,57 @@ class ConfigManager:
 
     # -- Commit --
 
-    def commit(self, user: str, description: str = "", partial_xpath: Optional[str] = None,
-               commit_type: Optional[str] = None) -> dict:
-        """
-        Commit candidate → running. If partial_xpath is given, copy only that
-        subtree from candidate into running (partial commit).
-
-        `commit_type` is usually inferred from whether `partial_xpath` is set
-        ("full"/"partial"). Callers may override (e.g., "rollback") so the
-        history entry labels the commit accurately.
-        """
-        # Shared WebUI/CLI/import boundary: do not promote unenforceable policies.
-        from ffn_policy_config import require_supported, PolicyError
-        if partial_xpath is None:
-            try: require_supported(CANDIDATE_CONFIG.read_bytes())
-            except PolicyError as error: return {'status':'error','message':str(error)}
-        parent_version = self.history.latest_version()
-        diff_before = self.diff()
-        diff_counts = {
-            "added": len(diff_before["added"]),
-            "modified": len(diff_before["modified"]),
-            "removed": len(diff_before["removed"]),
-            "total": diff_before["total_changes"],
-        }
-
-        if partial_xpath is None:
-            snapshot_name = f"auto-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
-            self.snapshot_save(snapshot_name, f"Auto-snapshot before commit by {user}")
-            shutil.copy2(CANDIDATE_CONFIG, RUNNING_CONFIG)
-            ctype = commit_type or "full"
-            hist = self.history.record(
-                user=user, description=description, commit_type=ctype,
-                xpath=None, diff_counts=diff_counts,
-                parent_version=parent_version,
-            )
-            return {
-                "status": "committed",
-                "type": ctype,
-                "snapshot": snapshot_name,
-                "version": hist["version"],
-                "parent_version": parent_version,
-                "changes": diff_counts,
-                "user": user,
-                "description": description,
-                "timestamp": datetime.utcnow().isoformat(),
-            }
-
-        # Partial commit — replace only the subtree at xpath in running
-        cand_root = self._load(CANDIDATE_CONFIG)
-        run_root = self._load(RUNNING_CONFIG)
-        parts = self._normalize_xpath(partial_xpath, cand_root)
-        if not parts:
-            return {"status": "error", "message": "Partial commit requires a subtree path"}
-
-        cand_parent, cand_node = cand_root, cand_root
-        for part in parts:
-            nxt = self._find_child(cand_node, part)
-            if nxt is None:
-                return {"status": "error", "message": f"Path '{partial_xpath}' not in candidate"}
-            cand_parent, cand_node = cand_node, nxt
-
-        run_parent, run_node = run_root, run_root
-        for part in parts[:-1]:
-            nxt = self._find_or_create_child(run_node, part)
-            run_parent, run_node = run_node, nxt
-        leaf_name = parts[-1]
-
-        snapshot_name = f"partial-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
-        self.snapshot_save(snapshot_name, f"Partial commit of {partial_xpath} by {user}")
-
-        old = self._find_child(run_node, leaf_name)
-        index = list(run_node).index(old) if old is not None else len(run_node)
-        if old is not None:
-            run_node.remove(old)
+    def prepare_commit(self, partial_xpath=None, candidate_root=None, running_root=None):
+        """Construct the exact promotion in memory; never mutate either source."""
         import copy
-        run_node.insert(index, copy.deepcopy(cand_node))
-        try: require_supported(ET.tostring(run_root,encoding='utf-8'))
-        except PolicyError as error: return {'status':'error','message':str(error)}
-        self._save(run_root, RUNNING_CONFIG)
+        candidate = candidate_root if candidate_root is not None else self._load(CANDIDATE_CONFIG)
+        if partial_xpath is None:
+            return copy.deepcopy(candidate)
+        running = copy.deepcopy(running_root if running_root is not None else self._load(RUNNING_CONFIG))
+        parts = self._normalize_xpath(partial_xpath, candidate)
+        if not parts:
+            raise ValueError('Partial commit requires a subtree path')
+        source = candidate
+        for part in parts:
+            source = self._find_child(source, part)
+            if source is None:
+                raise ValueError(f"Path '{partial_xpath}' not in candidate")
+        parent = running
+        for part in parts[:-1]:
+            parent = self._find_or_create_child(parent, part)
+        previous = self._find_child(parent, parts[-1])
+        index = list(parent).index(previous) if previous is not None else len(parent)
+        if previous is not None:
+            parent.remove(previous)
+        parent.insert(index, copy.deepcopy(source))
+        return running
 
-        ctype = commit_type or "partial"
-        hist = self.history.record(
-            user=user, description=description, commit_type=ctype,
-            xpath=partial_xpath, diff_counts=diff_counts,
-            parent_version=parent_version,
-        )
-        return {
-            "status": "committed",
-            "type": ctype,
-            "xpath": partial_xpath,
-            "snapshot": snapshot_name,
-            "version": hist["version"],
-            "parent_version": parent_version,
-            "changes": diff_counts,
-            "user": user,
-            "description": description,
-            "timestamp": datetime.utcnow().isoformat(),
-        }
+    def commit(self, user: str, description: str = "", partial_xpath: Optional[str] = None,
+               commit_type: Optional[str] = None, prepared_root=None, prevalidated=False) -> dict:
+        """Validate and atomically promote the same in-memory document we reviewed."""
+        from ffn_policy_config import require_supported, PolicyError
+        try:
+            root = prepared_root if prepared_root is not None else self.prepare_commit(partial_xpath)
+            if not prevalidated:
+                require_supported(ET.tostring(root, encoding='utf-8'))
+        except (PolicyError, ValueError) as error:
+            return {'status':'error', 'message':str(error)}
+        diff_before = self.diff(candidate_root=root)
+        if not diff_before['has_changes']:
+            return {'status':'no-changes', 'message':'Selected scope identical to running'}
+        diff_counts = {k:len(diff_before[k]) for k in ('added','modified','removed')}
+        diff_counts['total'] = diff_before['total_changes']
+        parent_version = self.history.latest_version()
+        prefix = 'partial' if partial_xpath is not None else 'auto'
+        snapshot_name = f"{prefix}-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+        self.snapshot_save(snapshot_name, f"Before commit by {user}")
+        self._save(root, RUNNING_CONFIG)
+        ctype = commit_type or ('partial' if partial_xpath is not None else 'full')
+        hist = self.history.record(user=user, description=description, commit_type=ctype,
+                                   xpath=partial_xpath, diff_counts=diff_counts, parent_version=parent_version)
+        return dict(status='committed', type=ctype, xpath=partial_xpath, snapshot=snapshot_name,
+                    version=hist['version'], parent_version=parent_version, changes=diff_counts,
+                    user=user, description=description, timestamp=datetime.utcnow().isoformat())
 
     # -- Rollback --
 
@@ -8725,6 +8679,7 @@ class CommitRequest(BaseModel):
     description: str = ""
     partial_xpath: Optional[str] = None  # None = full commit
     commit_type: Optional[str] = None    # override history type e.g. "rollback"
+    expected_revision: Optional[str] = None  # revision returned by Preview / Validate
 
 
 class LockRequest(BaseModel):
@@ -8775,7 +8730,10 @@ async def config_bulk_update(req: ConfigBulkUpdate, user: dict = Depends(get_cur
 
 @app.get("/api/config/diff")
 async def config_diff(user: dict = Depends(get_current_user)):
-    return config_mgr.diff()
+    try:
+        return _redacted_commit_diff((await _prepare_commit_review())['diff'])
+    except (ValueError, ET.ParseError, DefusedXmlException) as exc:
+        raise HTTPException(422, str(exc))
 
 
 # -- PAN-OS style xpath API --------------------------------------------------
@@ -8934,7 +8892,7 @@ def _apply_running_config():
     return applied
 
 
-async def _sync_netresources_to_xml():
+async def _sync_netresources_to_xml(candidate_root=None, persist=True):
     """
     Mirror the net_resources SQL table into the PAN-OS candidate XML so a
     commit carries every UI-managed resource. Mapping table below.
@@ -8981,14 +8939,14 @@ async def _sync_netresources_to_xml():
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(
-            "SELECT kind, name, enabled, config FROM net_resources")).fetchall()
+            "SELECT kind, name, enabled, config FROM net_resources ORDER BY kind, name")).fetchall()
 
     by_kind: dict = {}
     for r in rows:
         by_kind.setdefault(r["kind"], []).append(r)
 
     # Walk the candidate XML and rewrite each managed subtree
-    root = config_mgr._load(CANDIDATE_CONFIG)
+    root = candidate_root if candidate_root is not None else config_mgr._load(CANDIDATE_CONFIG)
     touched = []
     for kind, xpath in RESOURCE_PATHS.items():
         entries = by_kind.get(kind, [])
@@ -9003,11 +8961,15 @@ async def _sync_netresources_to_xml():
             entry.set("name", r["name"])
             try:
                 cfg = json.loads(r["config"] or "{}")
-            except Exception:
-                cfg = {}
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f"Invalid configuration for {kind}/{r['name']}") from exc
+            if not isinstance(cfg, dict):
+                raise ValueError(f"Invalid configuration for {kind}/{r['name']}")
             cfg["enabled"] = "yes" if r["enabled"] else "no"
             config_mgr._apply_dict(entry, cfg)
         touched.append(f"{kind}:{len(entries)}")
+    if not persist:
+        return root
     config_mgr._save(root, CANDIDATE_CONFIG)
     logger.info("net_resources → XML sync: %s", ", ".join(touched))
     return touched
@@ -9046,49 +9008,122 @@ def _publish_to_planes() -> dict:
         return {"published": False, "error": repr(exc)}
 
 
+async def _prepare_commit_review(partial_xpath=None):
+    """Read XML and the legacy SQL mirror without saving, locking, or applying."""
+    candidate_bytes = CANDIDATE_CONFIG.read_bytes()
+    running_bytes = RUNNING_CONFIG.read_bytes()
+    candidate = SafeET.fromstring(candidate_bytes, forbid_dtd=True)
+    running = SafeET.fromstring(running_bytes, forbid_dtd=True)
+    projected = await _sync_netresources_to_xml(candidate, persist=False)
+    if CANDIDATE_CONFIG.read_bytes() != candidate_bytes or RUNNING_CONFIG.read_bytes() != running_bytes:
+        raise HTTPException(409, 'Configuration changed while reading resource settings. Preview again.')
+    effective = config_mgr.prepare_commit(partial_xpath, projected, running)
+    # Bind the review to all inputs, including order, SQL-derived settings and scope.
+    digest = hashlib.sha256()
+    for value in (candidate_bytes, running_bytes, ET.tostring(projected), (partial_xpath or '').encode()):
+        digest.update(len(value).to_bytes(8, 'big')); digest.update(value)
+    return dict(revision=digest.hexdigest(), projected=projected, effective=effective,
+                diff=config_mgr.diff(effective, running), candidate_bytes=candidate_bytes)
+
+
+def _redacted_commit_diff(diff):
+    # Review never needs credentials. Values can contain markup and are still
+    # escaped by clients; redaction here also protects CLI/API consumers.
+    import copy
+    result = copy.deepcopy(diff)
+    secret = re.compile(r'password|passwd|phash|passphrase|secret|key|psk|token|community|credential', re.I)
+    for kind in ('added', 'modified', 'removed'):
+        for row in result[kind]:
+            if secret.search(row['path']):
+                for key in ('old','new'):
+                    if key in row: row[key] = '[redacted]'
+    return result
+
+
+@app.get('/api/config/review')
+async def config_review(partial_xpath: Optional[str] = None, validate: bool = False,
+                        user: dict = Depends(get_current_user)):
+    from ffn_policy_config import runtime_report
+    try:
+        prepared = await _prepare_commit_review(partial_xpath)
+        report = await asyncio.to_thread(runtime_report, ET.tostring(prepared['effective']), validate)
+        current = await _prepare_commit_review(partial_xpath)
+        if current['revision'] != prepared['revision']:
+            raise HTTPException(409, 'Configuration changed during review. Preview again.')
+    except (ValueError, ET.ParseError, DefusedXmlException) as exc:
+        raise HTTPException(422, str(exc))
+    lock = config_mgr.lock_status()
+    return dict(revision=prepared['revision'], scope=partial_xpath, diff=_redacted_commit_diff(prepared['diff']),
+                validation=report, validated=validate, lock=lock,
+                can_commit=user.get('role') in ('admin','superuser') and
+                    (not lock['locked'] or lock.get('holder') == user['username']),
+                validation_scope='Policy compilation and commissioned policy-provider checks. Other settings are checked by configd during apply.',
+                applied=False)
+
+
+_commit_in_progress = asyncio.Lock()
+
+
 @app.post("/api/config/commit")
 async def config_commit(req: CommitRequest, user: dict = Depends(get_current_user)):
-    """Commit candidate → running. Supports full or partial (xpath-scoped) commits."""
-    # Must hold or acquire lock
+    _require_admin(user)
+    if _commit_in_progress.locked():
+        raise HTTPException(409, 'A commit is already in progress. Check Tasks before retrying.')
+    async with _commit_in_progress:
+        return await _config_commit_serial(req, user)
+
+
+async def _config_commit_serial(req, user):
     st = config_mgr.lock_status()
     if st["locked"] and st.get("holder") != user["username"]:
-        raise HTTPException(status_code=423, detail=f"Config locked by {st['holder']} — wait or request override")
-    if not st["locked"]:
-        if not config_mgr.acquire_lock(user["username"], "commit"):
-            raise HTTPException(status_code=423, detail="Could not acquire commit lock")
-
-    # Fold any UI-managed resources (virtual wires, FFN Protect, profiles,
-    # etc.) from the SQL side-store into the PAN-OS XML before we diff.
+        raise HTTPException(423, f"Config locked by {st['holder']} — wait or request override")
+    if not st['locked'] and not config_mgr.acquire_lock(user['username'], 'commit'):
+        raise HTTPException(423, 'Could not acquire commit lock')
     try:
-        await _sync_netresources_to_xml()
-    except Exception as exc:
-        logger.warning("net_resources→XML sync failed: %s", exc)
-
-    # Check for changes
-    d = config_mgr.diff()
-    if not d["has_changes"]:
-        config_mgr.release_lock(user["username"])
-        return {"status": "no-changes", "message": "Candidate identical to running"}
-
-    logger.info("Commit by %s: type=%s description=%s changes=%d",
-                user["username"], "partial" if req.partial_xpath else "full",
-                req.description, d["total_changes"])
-
-    try:
-        from ffn_policy_barrier import before_commit as _before_policy_commit
+        from ffn_policy_config import require_supported, PolicyError
         try:
-            policy_barrier = await _before_policy_commit(app, CANDIDATE_CONFIG)
-        except Exception as exc:
-            logger.error('Selected platform policy barrier failed: %s', exc)
-            raise HTTPException(409, 'Hardware session invalidation failed; configuration was not committed')
-        result = config_mgr.commit(
-            user=user["username"],
-            description=req.description,
-            partial_xpath=req.partial_xpath,
-            commit_type=req.commit_type,
-        )
-        if result.get("status") != "committed":
-            raise HTTPException(422, result.get("message", "Commit failed"))
+            prepared = await _prepare_commit_review(req.partial_xpath)
+        except (ValueError, ET.ParseError, DefusedXmlException) as exc:
+            raise HTTPException(422, str(exc))
+        if req.expected_revision and req.expected_revision != prepared['revision']:
+            raise HTTPException(409, 'Configuration changed since review. Preview and validate again.')
+        d = prepared['diff']
+        if not d['has_changes']:
+            return dict(status='no-changes', message='Selected scope identical to running')
+        try:
+            await asyncio.to_thread(require_supported, ET.tostring(prepared['effective']))
+        except PolicyError as exc:
+            raise HTTPException(422, str(exc))
+        if (await _prepare_commit_review(req.partial_xpath))['revision'] != prepared['revision']:
+            raise HTTPException(409, 'Configuration changed during validation. Preview again.')
+        # Validate the projected scope BEFORE any hardware invalidation. The
+        # barrier reads a temporary copy of exactly the proposed running config.
+        from ffn_policy_barrier import before_commit as _before_policy_commit
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix='ffn-commit-') as directory:
+            proposal = Path(directory) / 'running-config.xml'
+            proposal.write_bytes(ET.tostring(prepared['effective']))
+            try:
+                policy_barrier = await _before_policy_commit(app, proposal)
+            except Exception as exc:
+                logger.error('Selected platform policy barrier failed: %s', exc)
+                raise HTTPException(409, 'Hardware session invalidation failed; configuration was not committed')
+        current = await _prepare_commit_review(req.partial_xpath)
+        if current['revision'] != prepared['revision']:
+            raise HTTPException(409, 'Configuration changed during commit preparation. Preview again.')
+        result = config_mgr.commit(user=user['username'], description=req.description,
+                                   partial_xpath=req.partial_xpath, commit_type=req.commit_type,
+                                   prepared_root=prepared['effective'], prevalidated=True)
+        if result.get('status') != 'committed':
+            raise HTTPException(422, result.get('message', 'Commit failed'))
+        # Retain concurrent edits from other control processes if they arrived
+        # during provider validation. The promotion still uses the reviewed XML.
+        if CANDIDATE_CONFIG.read_bytes() == prepared['candidate_bytes']:
+            try:
+                config_mgr._save(prepared['projected'], CANDIDATE_CONFIG)
+            except OSError:
+                logger.exception('Committed, but candidate resource synchronization failed')
+                result['warnings'] = ['Running configuration saved; candidate resource synchronization needs review.']
         if policy_barrier is not None:
             result['policy_barrier'] = policy_barrier
         # Apply to live system.

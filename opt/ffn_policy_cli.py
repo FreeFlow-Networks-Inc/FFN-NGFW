@@ -5,7 +5,10 @@ import copy
 from urllib.parse import urlencode
 
 
-HELP='''show policies <kind> [vsys] [candidate|running]
+HELP='''show policies commit-preview [partial-xpath]
+request policies commit-validate [partial-xpath]
+Review the effective configuration, including SQL-backed resource edits. Validation does not apply it.
+show policies <kind> [vsys] [candidate|running]
 request policies <kind> add <name> [field=value ...] [scope=vsys1]
 request policies <kind> edit <name> [field=value ...] [scope=vsys1]
 request policies <kind> clone <name> <new-name> [field=value ...] [scope=vsys1]
@@ -40,6 +43,11 @@ authentication dos sdwan. The same runtime blockers apply in CLI and WebUI.'''
 def handle(tokens,api,token):
     if len(tokens)<2 or tokens[0] not in ('show','request') or tokens[1]!='policies':return False
     if len(tokens)<3:print(HELP);return True
+    if tokens[:3] in (['show','policies','commit-preview'], ['request','policies','commit-validate']):
+        if len(tokens)>4:print(HELP);return True
+        query={'validate':'true' if tokens[0]=='request' else 'false'}
+        if len(tokens)==4:query['partial_xpath']=tokens[3]
+        print(json.dumps(api('/api/config/review?'+urlencode(query),token=token),indent=2));return True
     kind=tokens[2]
     if kind=='profiles':
         try:profile_command(tokens,api,token)
