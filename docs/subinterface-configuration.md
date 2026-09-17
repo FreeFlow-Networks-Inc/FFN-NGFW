@@ -45,12 +45,13 @@ does not yet implement physical faceplate VLAN subinterfaces. Hardware apply
 results must be checked in Tasks; this update does not claim PA-5220 VLAN
 forwarding is operational.
 
-On PA-5200, aggregate subinterfaces no longer block parent LACP activation.
-The aggregate supervisor preserves parent negotiation across parent network and
-subinterface commits. Each child's missing
-dataplane attachment is reported separately by aggregate status and configd.
-Parent DHCP can remain awaiting-address while LACP members are synchronized and
-distributing; that does not make the child's tagged IP address operational.
+On PA-5200, Layer 3 aggregate units have tagged OCTEON attachments with static
+addresses, management profiles and per-child counters. The aggregate supervisor
+preserves LACP across parent network and subinterface commits, including AE None.
+WebUI and CLI status require fresh dataplane acknowledgement for each child.
+Parent DHCP can remain awaiting-address while children are attached. Aggregate
+and child routed transit still default to deny pending security-policy binding;
+Layer 2 units and physical faceplate VLAN attachments remain unsupported.
 
 Validation: `tests/test_config_subinterfaces.py` covers candidate-only edits,
 membership validation and preservation, permissions, locks and revision checks.

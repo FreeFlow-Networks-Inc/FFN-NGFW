@@ -3984,7 +3984,10 @@ function _ifaceSubtitle(r) {
 
 function _ifaceRowHTML(r, isSub) {
   const aggregate=(_ifaceState.aeStatus||[]).find(a=>a.ae_name===r.name&&a.backend==='pa5200-bcm');
-  if (aggregate) r={...r,link_state:aggregate.activation?.fresh?!!aggregate.activation.dataplane?.attachment_ready:aggregate.state==='inactive'?false:null};
+  if (aggregate) r={...r,link_state:aggregate.activation?.fresh?!!aggregate.distributing?.length:aggregate.state==='inactive'?false:null};
+  const parentAggregate=isSub&&(_ifaceState.aeStatus||[]).find(a=>a.ae_name===r.parent&&a.backend==='pa5200-bcm');
+  const aggregateChild=parentAggregate&&(parentAggregate.subinterfaces||[]).find(u=>u.name===r.name);
+  if(parentAggregate) r={...r,link_state:parentAggregate.activation?.fresh?!!aggregateChild?.applied:null};
   const nameCell = isSub
     ? `<td style="padding-left:24px" class="text-dim">└ <span class="mono"><strong>${r.name}</strong></span></td>`
     : `<td>
@@ -4025,7 +4028,7 @@ function _ifaceRowHTML(r, isSub) {
     ${nameCell}
     <td>${typeBadge}</td>
     <td>${r.management_profile || '<span class="text-dim">none</span>'}</td>
-    <td>${_linkStateDot(r.link_state)}</td>
+    <td>${_linkStateDot(r.link_state)}${aggregateChild?'<div class="text-dim" style="font-size:10px">'+_escSP(aggregateChild.reason)+'</div>':''}</td>
     <td>${ipCell}</td>
     <td>${vr}</td>
     <td>${tag}</td>

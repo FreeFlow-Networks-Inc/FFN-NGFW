@@ -50,6 +50,16 @@ const {chromium}=require('playwright'),fs=require('node:fs'),path=require('node:
     assert.equal(calls[0].body.resource,'aggregates');assert.equal(calls[0].body.action,'apply');
     await page.evaluate(()=>{_ifaceState.aeStatus[0].committed=false;_renderConfiguredAE();});
     assert.equal(await page.getByRole('button',{name:'Activate',exact:true}).isDisabled(),true);
+    await page.evaluate(code=>{
+      window._linkStateDot=value=>value===true?'LINK-UP':value===false?'LINK-DOWN':'LINK-UNKNOWN';
+      window.eval(code);
+      const live=_ifaceState.aeStatus[0];live.activation={fresh:true};live.distributing=[23,24];
+      live.subinterfaces=[{name:'ae1.69',applied:true,reason:'Local VLAN ready <img src=x onerror=alert(1)>'}];
+      document.getElementById('iface-ae-body').innerHTML=_ifaceRowHTML({name:'ae1.69',parent:'ae1',type:'Layer3'},true);
+    },html.slice(html.indexOf('function _ifaceSubtitle('),html.indexOf('function _renderConfiguredAE(')));
+    assert.match(await page.locator('table').innerText(),/LINK-UP/);assert.equal(await page.locator('img').count(),0);
+    await page.evaluate(()=>{_ifaceState.aeStatus[0].activation.fresh=false;document.getElementById('iface-ae-body').innerHTML=_ifaceRowHTML({name:'ae1.69',parent:'ae1'},true);});
+    assert.match(await page.locator('table').innerText(),/LINK-UNKNOWN/);
     await page.evaluate(()=>{_ifaceState.aeStatus=[{ae_name:'ae1',bond:'bond1',kernel_exists:false}];_renderConfiguredAE();});
     assert.match(await page.locator('table').innerText(),/NO KERNEL BOND/);
     console.log('Aggregate hardware status, physical members, escaped blockers and generic Linux fallback passed.');

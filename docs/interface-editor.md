@@ -30,7 +30,8 @@ DHCP currently replaces all static interface addresses; the IPv6 editor is hidde
 while DHCP is selected. Switching back to Static before saving retains entered
 rows. Additional imported IPv6 options are preserved. Runtime support remains
 platform-dependent; inspect Commit/Tasks results. This editor does not implement
-PA-5220 VLAN subinterface forwarding or qualify new dataplane features.
+PA-5220 routed transit. The platform supports local Layer 3 aggregate VLAN
+attachments; forwarding between those interfaces still requires policy binding.
 
 Coverage: `test_config_interfaces.py`, `test_interface_defaults_browser.cjs`,
 existing subinterface, link-settings, aggregate and modal-layer tests. Live browser
