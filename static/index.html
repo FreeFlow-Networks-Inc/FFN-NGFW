@@ -1773,7 +1773,7 @@ function renderDataPortTraffic(tp) {
   const cards = document.getElementById('port-cards');
   const marker = document.getElementById('dash-time');
   const valid = tp && Array.isArray(tp.ports);
-  const ports = valid ? tp.ports : [];
+  const ports = valid ? tp.ports.filter(p => p.link === true) : [];
   const unit = tp?.unit === 'pps' ? 'pps' : 'Gbps';
   const field = unit === 'pps' ? 'pps' : 'gbps';
   const heading=document.getElementById('data-port-history');
@@ -1794,7 +1794,7 @@ function renderDataPortTraffic(tp) {
       <div class="tp-row">TX: ${show(tx)} ${unit}</div>
       ${percent!==null?`<div class="gauge-bar"><div class="fill rx" style="width:${percent}%"></div></div>`:''}
       ${p.state==='warming'?'<small class="text-dim">Waiting for counter delta</small>':''}</div>`;
-  }).join('') : `<p class="text-dim">${valid?'No data ports configured.':'Data-port counters unavailable. Retry on the next refresh.'}</p>`;
+  }).join('') : `<p class="text-dim">${valid?'No active data-port links.':'Data-port counters unavailable. Retry on the next refresh.'}</p>`;
   if (charts.throughput) {
     const chart=charts.throughput, old=new Map(chart.data.datasets.map(ds=>[ds.label,ds]));
     if (chart.options.scales.y.title.text !== unit) { chart.data.labels=[]; old.clear(); }

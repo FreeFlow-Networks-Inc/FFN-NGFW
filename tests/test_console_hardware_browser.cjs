@@ -39,15 +39,23 @@ const core=path.resolve(__dirname,'..'),platform=process.env.TEST_PA5200_ROOT||p
   await page.waitForFunction(()=>!document.querySelector('.modal-overlay.show'));
   assert.equal(writes.length,1);assert.equal(writes[0].config.mode,'dhcp');assert.equal(writes[0].config.address,'');
   await page.screenshot({path:process.env.TEST_SCREENSHOT_DIR?path.join(process.env.TEST_SCREENSHOT_DIR,'setup-dark.png'):undefined});
-  // Counter graph removes old host-NIC traces and represents missing samples as gaps.
+  // Cards and graph show linked data ports, including idle links, and discard down/unknown links.
   await page.evaluate(()=>{
    document.getElementById('content-area').innerHTML='<div id="dash-time"></div><div id="port-cards" class="grid grid-4"></div>';
    charts.throughput={data:{labels:['old'],datasets:[{label:'management RX',data:[99]}]},options:{scales:{y:{title:{text:'pps'}}}},update(){}};
-   renderDataPortTraffic({unit:'pps',ports:[{name:'ethernet1/1',rx_pps:34,tx_pps:5,link:true},{name:'ethernet1/2',rx_pps:null,tx_pps:null,link:false,state:'warming'}]});
+   renderDataPortTraffic({unit:'pps',ports:[{name:'ethernet1/1',rx_pps:0,tx_pps:0,link:true},{name:'ethernet1/2',rx_pps:12,tx_pps:7,link:false},{name:'ethernet1/3',rx_pps:8,tx_pps:2,link:null}]});
   });
-  assert.equal(await page.locator('.port-card').count(),2);
-  assert.match(await page.locator('#port-cards').innerText(),/Link down/);
-  assert.deepEqual(await page.evaluate(()=>charts.throughput.data.datasets.map(ds=>ds.label)),['ethernet1/1 RX','ethernet1/1 TX','ethernet1/2 RX','ethernet1/2 TX']);
+  assert.equal(await page.locator('.port-card').count(),1);
+  assert.match(await page.locator('#port-cards').innerText(),/Link up/);
+  assert.deepEqual(await page.evaluate(()=>charts.throughput.data.datasets.map(ds=>ds.label)),['ethernet1/1 RX','ethernet1/1 TX']);
+  assert.equal(await page.evaluate(()=>charts.throughput.data.datasets[0].data.at(-1)),0);
+  await page.evaluate(()=>renderDataPortTraffic({unit:'pps',ports:[{name:'ethernet1/1',rx_pps:4,tx_pps:2,link:false}]}));
+  assert.equal(await page.locator('.port-card').count(),0);
+  assert.match(await page.locator('#port-cards').innerText(),/No active data-port links/);
+  assert.equal(await page.evaluate(()=>charts.throughput.data.datasets.length),0);
+  await page.evaluate(()=>renderDataPortTraffic({unit:'pps',ports:[{name:'ethernet1/1',rx_pps:null,tx_pps:null,link:true,state:'warming'}]}));
+  assert.equal(await page.locator('.port-card').count(),1);
+  assert(await page.evaluate(()=>charts.throughput.data.datasets.every(ds=>ds.data.every(n=>n===null))));
   await page.evaluate(()=>renderDataPortTraffic(null));
   assert.equal(await page.evaluate(()=>charts.throughput.data.datasets.length),0);
   // Real rear view module; a stalled/unknown fan must not spin.
