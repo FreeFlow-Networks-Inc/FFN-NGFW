@@ -24,6 +24,10 @@ class Interfaces(unittest.TestCase):
         self.assertEqual(validate_route(self.route,'default',self.rows),self.route)
         self.assertEqual(validate_route(self.route|{'next_hop':''},'default',self.rows)['dev'],'ethernet1/1')
 
+    def test_link_only_aggregate_exposes_routed_children_only(self):
+        rows=inventory({'aggregate-ethernet':[{'name':'ae1','mode':'none','sub_interfaces':['ae1.69']}]},[],{})
+        self.assertEqual([r['name'] for r in rows],['ae1.69'])
+
     def test_unknown_non_l3_and_other_router_are_rejected(self):
         for dev in ('management0','ethernet1/2','ethernet1/1.100','eth8'):
             with self.assertRaises(ValueError):validate_route(self.route|{'dev':dev},'default',self.rows)

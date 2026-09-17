@@ -67,6 +67,24 @@ class InterfaceEditorTests(unittest.TestCase):
         self.assertEqual(self.save(name='ae1',dhcp_client=True,ip_addresses=[],dhcp_route_metric=23,bond_mode='802.3ad').status_code,200)
         row=self.listing('ae1').json()['entry'];self.assertTrue(row['dhcp_client']);self.assertEqual(row['dhcp_route_metric'],'23')
         self.assertEqual(ET.fromstring(self.manager.xml).findtext('.//lacp/enable'),'yes')
+    def test_link_only_aggregate_keeps_lacp_children_and_admin_control(self):
+        root=ET.fromstring(self.manager.xml);ae=root.find('.//aggregate-ethernet/entry/layer3')
+        ae.append(ET.fromstring('<units><entry name="ae1.69"><tag>69</tag><ip><entry name="192.0.2.1/24"/></ip></entry></units>'))
+        self.manager.xml=ET.tostring(root,encoding='unicode')
+        self.assertEqual(self.save(name='ae1',mode='none',zone='',virtual_router='',ip_addresses=[],bond_mode='802.3ad',link_state='auto',lldp_enabled=True).status_code,200)
+        row=self.listing('ae1').json()['entry'];self.assertEqual((row['mode'],row['link_state'],row['bond_mode']),('none','auto','802.3ad'))
+        self.assertEqual(row['sub_interfaces'],['ae1.69']);self.assertTrue(row['lldp_enabled'])
+        self.assertEqual(ET.fromstring(self.manager.xml).findtext('.//aggregate-ethernet/entry/lacp/enable'),'yes')
+        self.assertEqual(self.save(name='ae1',mode='layer3',bond_mode='802.3ad').status_code,200)
+        self.assertEqual(self.listing('ae1').json()['entry']['sub_interfaces'],['ae1.69'])
+    def test_new_link_only_aggregate_allows_first_subinterface(self):
+        from ffn_config_subinterfaces import SubinterfaceStore,SubinterfaceEdit
+        self.assertEqual(self.save(name='ae2',mode='none',zone='',virtual_router='',ip_addresses=[],bond_mode='802.3ad').status_code,200)
+        store=SubinterfaceStore(self.manager,Path('unused'))
+        self.assertEqual(store.listing('ae2','vsys1')['mode'],'layer3')
+        spec=SubinterfaceEdit(parent='ae2',unit=69,tag=69,revision=digest(self.manager.xml))
+        store.mutate('ae2',69,'vsys1',spec.revision,{'username':'tester','role':'admin'},spec,True)
+        row=self.listing('ae2').json()['entry'];self.assertEqual(row['mode'],'none');self.assertEqual(row['sub_interfaces'],['ae2.69'])
     def test_aggregate_member_link_settings_and_bad_target(self):
         args=dict(name='ethernet1/2',mode='aggregate-group',ip_addresses=[],zone='',virtual_router='',aggregate_group='ae1',link_speed='40000')
         self.assertEqual(self.save(**args).status_code,200)

@@ -36,8 +36,11 @@ const {chromium}=require('playwright'),fs=require('node:fs'),path=require('node:
   await page.locator('#ifm-addressing').selectOption('dhcp');await page.locator('#ifm-dhcp-metric').fill('23');assert.equal(await page.locator('#ifm-tab-ipv6').isVisible(),false);await page.getByRole('button',{name:'OK',exact:true}).click();
   const dhcp=(await page.evaluate(()=>calls))[2].body;assert.equal(dhcp.dhcp_client,true);assert.deepEqual(dhcp.ip_addresses,[]);assert.equal(dhcp.dhcp_route_metric,23);
   await page.evaluate(()=>{snapshot.entry.name='ae1';snapshot.entry.mode='layer3';snapshot.entry.bond_mode='802.3ad';});await page.evaluate(()=>openIfaceModal('ae1'));assert.equal(await page.locator('#ifm-bondmode').inputValue(),'802.3ad');await page.getByRole('tab',{name:'Advanced',exact:true}).click();assert.equal(await page.locator('#ifm-speed').isVisible(),false);assert.equal(await page.locator('#ifm-duplex').isDisabled(),true);
+  await page.locator('#ifm-mode').selectOption('none');assert.equal(await page.locator('#ifm-state').isDisabled(),false);
+  await page.locator('#ifm-state').selectOption('auto');await page.getByRole('tab',{name:'Configuration',exact:true}).click();assert.equal(await page.locator('#ifm-bondmode').isVisible(),true);
+  await page.getByRole('button',{name:'OK',exact:true}).click();const linkOnly=(await page.evaluate(()=>calls))[3];assert.equal(linkOnly.url,'/api/config/interfaces');assert.equal(linkOnly.body.mode,'none');assert.equal(linkOnly.body.link_state,'auto');assert.equal(linkOnly.body.bond_mode,'802.3ad');assert.deepEqual(linkOnly.body.ip_addresses,[]);
   await page.evaluate(()=>{snapshot.can_edit=false;});await page.evaluate(()=>openIfaceModal('ae1'));await page.getByRole('tab',{name:'Advanced',exact:true}).click();assert.equal(await page.locator('#ifm-save').isDisabled(),true);assert.equal(await page.locator('#ifm-state').isDisabled(),true);assert.equal(await page.getByRole('button',{name:'Cancel',exact:true}).isDisabled(),false);
-  assert.equal((await page.evaluate(()=>calls)).length,3,'No immediate VR, commit, or runtime writes');
+  assert.equal((await page.evaluate(()=>calls)).length,4,'No immediate VR, commit, or runtime writes');
   console.log('Parent interface tabs, None/admin-down, IPv4/IPv6 rows, DHCP, atomic candidate save, stale edits, Cancel, read-only and LACP controls passed.');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

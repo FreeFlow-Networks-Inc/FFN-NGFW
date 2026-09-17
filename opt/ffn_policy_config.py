@@ -148,7 +148,8 @@ def layer3_interfaces(root):
         for group in ('ethernet','aggregate-ethernet'):
             for entry in parent.findall(group+'/entry'):
                 if entry.find('layer3') is not None:
-                    routed.add(entry.get('name'));routed.update(e.get('name') for e in entry.findall('layer3/units/entry'))
+                    if entry.findtext('aggregate-only')!='yes':routed.add(entry.get('name'))
+                    routed.update(e.get('name') for e in entry.findall('layer3/units/entry'))
         for group in ('vlan','loopback','tunnel'):routed.update(e.get('name') for e in parent.findall(group+'/units/entry'))
     return {name for name in routed if name}
 

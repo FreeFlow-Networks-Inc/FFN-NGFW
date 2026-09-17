@@ -4196,8 +4196,8 @@ async function openIfaceModal(name) {
       <p class="text-dim">${_escSP(name)} · ${isAE?'Aggregate Ethernet':'Physical interface'} · Virtual system: <strong>${_escSP(snapshot.vsys)}</strong> · Candidate configuration</p>
       <fieldset class="ifm-fields">
       <input id="ifm-name" type="hidden" value="${_escSP(name)}">
-      <div class="form-group"><label for="ifm-mode">Interface Type</label><select id="ifm-mode" onchange="_ifmToggle()">${modes.map(m=>`<option value="${m.value}">${_escSP(m.label)}</option>`).join('')}</select></div>
-      <p class="text-dim">None disables the interface${isAE?'': ' and its physical link'}. Changes take effect after Commit.</p>
+      <div class="form-group"><label for="ifm-mode">Interface Type</label><select id="ifm-mode" onchange="_ifmToggle()">${modes.map(m=>`<option value="${m.value}">${_escSP(isAE&&m.value==='none'?'None (aggregate link only)':m.label)}</option>`).join('')}</select></div>
+      <p class="text-dim">${isAE?'None leaves the aggregate link and LACP enabled for subinterfaces. Use Admin State Down to disable the aggregate.':'None disables the physical link.'} Changes take effect after Commit.</p>
       <div class="setup-tabs" role="tablist" aria-label="Interface settings" onkeydown="consoleTabKey(event)">${tabs.map(([key,label],i)=>`<button id="ifm-tab-${key}" type="button" role="tab" aria-controls="ifm-panel-${key}" aria-selected="${i===0}" tabindex="${i===0?0:-1}" class="${i===0?'active':''}" onclick="switchIfaceEditorTab('${key}')">${label}</button>`).join('')}</div>
       <section id="ifm-panel-config" role="tabpanel" aria-labelledby="ifm-tab-config">
         <div class="form-group"><label for="ifm-comment">Comment</label><textarea id="ifm-comment" rows="2" maxlength="1024">${_escSP(cur.comment)}</textarea></div>
@@ -4239,7 +4239,7 @@ async function openIfaceModal(name) {
       <div class="settings-toolbar"><span id="ifm-msg" role="status"></span><button class="btn" type="button" onclick="closeModal('modal-info')">Cancel</button><button id="ifm-save" class="btn btn-primary" type="submit" ${snapshot.can_edit?'':'disabled'}>OK</button></div>
     </form>`;
     const form=document.getElementById('interface-form');form.snapshot=snapshot;form.cap=cap;
-    const values={'mode':cur.mode,'addressing':cur.dhcp_client?'dhcp':'static','dhcp-route':cur.dhcp_default_route?'yes':'no','ipv6-enabled':cur.ipv6_enabled?'yes':'no','speed':cur.link_speed,'duplex':cur.link_duplex,'state':cur.mode==='none'?'auto':cur.link_state,'lldp':cur.lldp_enabled?'yes':'no','bondmode':cur.bond_mode};
+    const values={'mode':cur.mode,'addressing':cur.dhcp_client?'dhcp':'static','dhcp-route':cur.dhcp_default_route?'yes':'no','ipv6-enabled':cur.ipv6_enabled?'yes':'no','speed':cur.link_speed,'duplex':cur.link_duplex,'state':cur.mode==='none'&&!isAE?'auto':cur.link_state,'lldp':cur.lldp_enabled?'yes':'no','bondmode':cur.bond_mode};
     Object.entries(values).forEach(([id,value])=>document.getElementById('ifm-'+id).value=value);
     cur.ip_addresses.forEach(address=>addIfaceAddress(address.includes(':')?6:4,address));
     form.onsubmit=event=>{event.preventDefault();saveIface();};
@@ -4250,14 +4250,14 @@ function _ifmToggle() {
   const form=document.getElementById('interface-form'),snapshot=form.snapshot,cur=snapshot.entry;
   const mode=document.getElementById('ifm-mode').value,l3=mode==='layer3',isAE=cur.name.startsWith('ae'),dhcp=document.getElementById('ifm-addressing').value==='dhcp';
   const state=document.getElementById('ifm-state');
-  if(mode==='none'){
+  if(mode==='none'&&!isAE){
     if(state.dataset.noneForced!=='true')state.dataset.previousState=state.value;
     state.value='down';state.dataset.noneForced='true';
   }else if(state.dataset.noneForced==='true'){state.value=state.dataset.previousState||'auto';delete state.dataset.noneForced;}
   const zone=document.getElementById('ifm-zone'),choices=snapshot.zone_choices[mode]||[];
   const selected=choices.includes(zone.value)?zone.value:(mode===cur.mode?cur.zone:'');
   zone.innerHTML=subinterfaceOptions(choices,selected);
-  for(const [id,visible] of Object.entries({'l3-block':l3,'l2-block':mode==='layer2','zone-block':['layer3','layer2','tap','virtual-wire'].includes(mode),'ae-block':mode==='aggregate-group','bond-block':isAE&&l3,'ip-advanced':l3,'dhcp-block':l3&&dhcp,'static4':l3&&!dhcp})){
+  for(const [id,visible] of Object.entries({'l3-block':l3,'l2-block':mode==='layer2','zone-block':['layer3','layer2','tap','virtual-wire'].includes(mode),'ae-block':mode==='aggregate-group','bond-block':isAE,'ip-advanced':l3,'dhcp-block':l3&&dhcp,'static4':l3&&!dhcp})){
     const block=document.getElementById('ifm-'+id);block.hidden=!visible;block.querySelectorAll('input,select,button').forEach(el=>el.disabled=!visible||!snapshot.can_edit);
   }
   for(const family of [4,6]){
@@ -4266,7 +4266,7 @@ function _ifmToggle() {
     if(!available&&tab.getAttribute('aria-selected')==='true')switchIfaceEditorTab('config');
     document.getElementById('ifm-panel-ipv'+family).querySelectorAll('input,select,button').forEach(el=>el.disabled=!available||!snapshot.can_edit||(family===4&&(el.closest('#ifm-static4')?dhcp:el.closest('#ifm-dhcp-block')?!dhcp:false)));
   }
-  state.disabled=mode==='none'||!snapshot.can_edit;
+  state.disabled=(mode==='none'&&!isAE)||!snapshot.can_edit;
   document.getElementById('ifm-speed').disabled=isAE||form.cap.configurable===false||!snapshot.can_edit;
   document.getElementById('ifm-duplex').disabled=isAE||form.cap.configurable===false||!snapshot.can_edit;
   if(!snapshot.can_edit)form.querySelectorAll('input,select,textarea,button:not([role="tab"]):not(.settings-toolbar button)').forEach(el=>el.disabled=true);
@@ -4288,8 +4288,8 @@ async function saveIface() {
     dhcp_client:dhcp,dhcp_default_route:get('dhcp-route')==='yes',dhcp_route_metric:Number(get('dhcp-metric')),
     ipv6_enabled:l3&&!dhcp&&get('ipv6-enabled')==='yes',mtu:l3&&get('mtu')?Number(get('mtu')):null,
     interface_management_profile:l3?get('mgmt'):'',aggregate_group:mode==='aggregate-group'?get('agg'):'',
-    link_speed:get('speed'),link_duplex:get('duplex'),link_state:mode==='none'?'down':get('state'),
-    lldp_enabled:mode!=='none'&&get('lldp')==='yes',lldp_profile:get('lldp-profile'),bond_mode:get('bondmode'),bond_miimon_ms:Number(get('bondmiimon'))};
+    link_speed:get('speed'),link_duplex:get('duplex'),link_state:mode==='none'&&!get('name').startsWith('ae')?'down':get('state'),
+    lldp_enabled:(mode!=='none'||get('name').startsWith('ae'))&&get('lldp')==='yes',lldp_profile:get('lldp-profile'),bond_mode:get('bondmode'),bond_miimon_ms:Number(get('bondmiimon'))};
   const button=document.getElementById('ifm-save'),msg=document.getElementById('ifm-msg');
   form.saving=true;button.disabled=true;form.querySelector('fieldset').disabled=true;msg.textContent='Saving…';
   try{

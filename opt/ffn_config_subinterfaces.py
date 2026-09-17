@@ -62,6 +62,8 @@ class SubinterfaceStore(ZoneStore):
         entries = [e for e in dev.findall('network/interface/'+kind+'/entry') if e.get('name')==parent]
         if len(entries)!=1: fail('Parent must be an existing, uniquely configured interface',404)
         modes = [m for m in ('layer2','layer3') if entries[0].find(m) is not None]
+        if not modes and kind=='aggregate-ethernet' and entries[0].findtext('aggregate-only')=='yes':
+            return entries[0],'layer3'
         if len(modes)!=1: fail('Parent must be Layer 2 or Layer 3',409)
         return entries[0],modes[0]
 
@@ -167,7 +169,10 @@ class SubinterfaceStore(ZoneStore):
                 for address in addresses: ET.SubElement(ip,'entry',name=address)
             for tag,value in [('interface-management-profile',spec.interface_management_profile),('mtu',spec.mtu),('comment',spec.comment)]:
                 if value is not None and value!='': ET.SubElement(replacement,tag).text=str(value)
-            if units is None: units=ET.SubElement(node.find(mode),'units')
+            if units is None:
+                container=node.find(mode)
+                if container is None:container=ET.SubElement(node,mode)
+                units=ET.SubElement(container,'units')
             if entry is not None:
                 index=list(units).index(entry);units.remove(entry);units.insert(index,replacement)
             else: units.append(replacement)

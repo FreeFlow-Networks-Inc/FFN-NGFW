@@ -10980,6 +10980,11 @@ def _build_iface_payload(i: InterfaceEntry) -> dict:
     payload: dict = {"comment": i.comment}
 
     if i.mode == "none":
+        if i.name.startswith('ae') and '.' not in i.name:
+            payload['aggregate-only']='yes'
+            payload['bond']={'mode':i.bond_mode,'miimon':i.bond_miimon_ms}
+            if i.link_state!='auto':payload['link-state']=i.link_state
+            return payload
         # Unconfigured front ports are physically disabled, including callers
         # that omit mode or try to combine None with an explicit link-up.
         payload["link-state"] = "down"
@@ -11141,6 +11146,7 @@ async def interfaces_list(user: dict = Depends(get_current_user)):
                 break
         if entry.findtext("aggregate-group"):
             mode = "aggregate-group"
+        if kind=='aggregate-ethernet' and entry.findtext('aggregate-only')=='yes':mode='none'
 
         ips = []
         for ip in entry.findall("./layer3/ip/entry"):
@@ -11160,13 +11166,13 @@ async def interfaces_list(user: dict = Depends(get_current_user)):
             "dhcp_default_route": entry.findtext("./layer3/dhcp-client/create-default-route", "yes") == "yes",
             "link_speed": entry.findtext("link-speed", "auto"),
             "link_duplex": entry.findtext("link-duplex", "auto"),
-            "link_state": "down" if mode == "none" else entry.findtext("link-state", "auto"),
+            "link_state": "down" if mode == "none" and kind!='aggregate-ethernet' else entry.findtext("link-state", "auto"),
             "aggregate_group": entry.findtext("aggregate-group", ""),
             "interface_management_profile": entry.findtext("./layer3/interface-management-profile", ""),
             "lldp_enabled": entry.findtext("./lldp/enable", "no") == "yes",
             "lldp_profile": entry.findtext("./lldp/profile", ""),
-            "bond_mode": entry.findtext("./layer3/bond/mode", "active-backup"),
-            "bond_miimon_ms": int(entry.findtext("./layer3/bond/miimon", "100") or 100),
+            "bond_mode": entry.findtext("bond/mode",entry.findtext("./layer3/bond/mode", "active-backup")),
+            "bond_miimon_ms": int(entry.findtext("bond/miimon",entry.findtext("./layer3/bond/miimon", "100")) or 100),
             "comment": entry.findtext("comment", ""),
             "sub_interfaces": subifs,
         }
@@ -11489,6 +11495,7 @@ async def interfaces_enriched(user: dict = Depends(get_current_user)):
 
     def _mode_and_type(entry: ET.Element):
         """Return (mode-key, pretty-type-label, aggregate-group or None)."""
+        if entry.findtext('aggregate-only')=='yes':return 'none','Aggregate Link',None
         if entry.findtext("aggregate-group"):
             return "aggregate-group", f"Aggregate ({entry.findtext('aggregate-group')})", entry.findtext("aggregate-group")
         if entry.find("layer3") is not None:

@@ -61,8 +61,9 @@ class InterfaceStore(SubinterfaceStore):
         modes=[m for m in MODES if node.find(m) is not None]
         if len(modes)>1: fail('Conflicting interface modes require repair',409)
         mode=modes[0] if modes else 'none'
+        if name.startswith('ae') and node.findtext('aggregate-only')=='yes': mode='none'
         values={'name':name,'mode':mode,'ip_addresses':[e.get('name','') for e in node.findall('layer3/ip/entry')],
-                'sub_interfaces':[e.get('name','') for e in node.findall(mode+'/units/entry')],
+                'sub_interfaces':[e.get('name','') for path in ('layer2/units/entry','layer3/units/entry') for e in node.findall(path)],
                 'dhcp_client':node.findtext('layer3/dhcp-client/enable')=='yes',
                 'dhcp_default_route':node.findtext('layer3/dhcp-client/create-default-route','yes')=='yes',
                 'dhcp_route_metric':node.findtext('layer3/dhcp-client/default-route-metric','10'),
@@ -75,7 +76,10 @@ class InterfaceStore(SubinterfaceStore):
                'lldp_profile':('lldp/profile',''),'bond_mode':('layer3/bond/mode','active-backup'),
                'bond_miimon_ms':('layer3/bond/miimon','100')}
         values.update({key:node.findtext(path,default) for key,(path,default) in paths.items()})
-        if mode=='none': values['link_state']='down'
+        if name.startswith('ae'):
+            values['bond_mode']=node.findtext('bond/mode',values['bond_mode'])
+            values['bond_miimon_ms']=node.findtext('bond/miimon',values['bond_miimon_ms'])
+        if mode=='none' and not name.startswith('ae'): values['link_state']='down'
         return values
 
     def listing(self,name,vsys,source='candidate'):
@@ -111,10 +115,16 @@ class InterfaceStore(SubinterfaceStore):
             if other is not owner and any(m.text==spec.name for m in other.findall('import/network/interface/member')):
                 fail('Interface belongs to another virtual system',409)
         old=self.shape(entry,spec.name)
+        aggregate=kind=='aggregate-ethernet'
+        # A link-only aggregate retains its child container and link protocols.
+        link_only_transition=aggregate and 'none' in (old['mode'],spec.mode)
         if spec.mode!=old['mode'] and entry is not None:
-            if old['sub_interfaces']: fail('Remove subinterfaces before changing the parent mode',409)
+            if old['sub_interfaces'] and not link_only_transition: fail('Remove subinterfaces before changing the parent mode',409)
+            if link_only_transition and spec.mode!='none' and entry.find(('layer2' if spec.mode=='layer3' else 'layer3')+'/units/entry') is not None:
+                fail('Parent mode must match its existing subinterface type',409)
             old_mode=entry.find(old['mode'])
             known={'ip','dhcp-client','ipv6','mtu','interface-management-profile','bond'} if old['mode']=='layer3' else set()
+            if aggregate: known.update(('units','bond','lacp'))
             if old_mode is not None and any(n.tag not in known for n in old_mode):
                 fail('Mode change would discard additional imported settings',409)
             if old['mode']=='layer3' and any(n.text==spec.name for n in root.findall('.//static-route/entry/interface')):
@@ -144,15 +154,28 @@ class InterfaceStore(SubinterfaceStore):
             if any(not(c in '\t\n\r' or 0x20<=ord(c)<=0xD7FF or 0xE000<=ord(c)<=0xFFFD or 0x10000<=ord(c)<=0x10FFFF) for c in value): fail('Invalid XML characters')
         # Work on the parsed snapshot; publish only after every operation validates.
         node=copy.deepcopy(entry) if entry is not None else ET.Element('entry',name=spec.name)
+        if aggregate:
+            # Keep bond/LACP outside network mode, including when no parent L3 exists.
+            for tag in ('bond','lacp'):
+                nested=[(p,n) for p in (node.find('layer2'),node.find('layer3')) if p is not None for n in p.findall(tag)]
+                if len(nested)>1 or nested and node.find(tag) is not None: fail('Duplicate aggregate link settings require repair',409)
+                for p,n in nested:p.remove(n);node.append(n)
+            scalar(node,'aggregate-only','yes' if spec.mode=='none' else None)
         if old['mode']!=spec.mode:
             for mode in MODES:
-                for n in node.findall(mode): node.remove(n)
+                for n in node.findall(mode):
+                    if link_only_transition and mode in ('layer2','layer3'):
+                        # Keep child units; changing to None clears parent addressing only.
+                        for setting in list(n):
+                            if setting.tag!='units':n.remove(setting)
+                        if spec.mode!='none' and mode!=spec.mode and n.find('units/entry') is None:node.remove(n)
+                    else:node.remove(n)
         scalar(node,'comment',spec.comment)
-        scalar(node,'link-state','down' if spec.mode=='none' else (spec.link_state if spec.link_state!='auto' else None))
+        scalar(node,'link-state','down' if spec.mode=='none' and not aggregate else (spec.link_state if spec.link_state!='auto' else None))
         scalar(node,'link-speed',spec.link_speed if spec.link_speed!='auto' else None)
         scalar(node,'link-duplex',spec.link_duplex if spec.link_duplex!='auto' else None)
         lldp=child(node,'lldp')
-        scalar(lldp,'enable','yes' if spec.lldp_enabled and spec.mode!='none' else 'no')
+        scalar(lldp,'enable','yes' if spec.lldp_enabled and (spec.mode!='none' or aggregate) else 'no')
         scalar(lldp,'profile',spec.lldp_profile)
         if spec.mode=='aggregate-group': scalar(node,'aggregate-group',spec.aggregate_group)
         elif spec.mode!='none':
@@ -174,8 +197,8 @@ class InterfaceStore(SubinterfaceStore):
                     scalar(child(mode,'ipv6'),'enabled','yes' if spec.ipv6_enabled else 'no')
                 scalar(mode,'mtu',spec.mtu)
                 scalar(mode,'interface-management-profile',spec.interface_management_profile)
-                if kind=='aggregate-ethernet':
-                    bond=child(mode,'bond');scalar(bond,'mode',spec.bond_mode);scalar(bond,'miimon',spec.bond_miimon_ms)
+        if aggregate:
+            bond=child(node,'bond');scalar(bond,'mode',spec.bond_mode);scalar(bond,'miimon',spec.bond_miimon_ms)
         # Clear former memberships on mode changes, without touching child memberships.
         if old['mode']!=spec.mode:
             for group in self.memberships(dev,owner,old['mode']).values(): self.set_membership(group,spec.name,'','former mode')

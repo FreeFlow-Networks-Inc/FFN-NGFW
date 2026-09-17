@@ -19,7 +19,11 @@ choices use candidate XML; the legacy SQL router store remains separate.
 Parent edits preserve subinterface units, TCP MSS, LACP and other unedited XML.
 Mode changes are rejected if they would discard subinterfaces or additional
 imported mode settings, or invalidate a static-route interface reference.
-Unconfigured interfaces default to None and a disabled link. Opening Add Aggregate
+Unconfigured physical interfaces default to None and a disabled link. AE None
+keeps the aggregate link and LACP available for its subinterfaces; Admin State
+Down disables it explicitly. Transitions between AE None and a compatible parent
+network mode retain child units and LACP settings. Bond/LACP settings are stored
+outside the parent network-mode container. Opening Add Aggregate
 does not insert a temporary entry into the interface inventory.
 
 DHCP currently replaces all static interface addresses; the IPv6 editor is hidden
@@ -31,4 +35,6 @@ PA-5220 VLAN subinterface forwarding or qualify new dataplane features.
 Coverage: `test_config_interfaces.py`, `test_interface_defaults_browser.cjs`,
 existing subinterface, link-settings, aggregate and modal-layer tests. Live browser
 checks exercise current WAN/aggregate settings, drag, themes and Cancel with API
-writes blocked. Deployment does not commit configuration or restart the dataplane.
+writes blocked. On PA-5200, parent addressing and subinterface commits preserve
+LACP negotiation; changes to members, link state or LACP parameters still require
+reconciliation. Network-apply errors remain visible independently of link status.

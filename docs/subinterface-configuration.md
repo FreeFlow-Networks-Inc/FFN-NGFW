@@ -2,7 +2,9 @@
 
 Network > Interfaces now offers Edit for VLAN subinterfaces, in addition to Add
 and Delete. Interface IDs (1–9999) are separate from VLAN tags (1–4094). A parent
-must already be configured as Layer 2 or Layer 3; the child inherits that mode.
+must already be configured as Layer 2 or Layer 3, or be a link-only AE. The child
+inherits the existing child container's mode; a new link-only AE defaults to
+Layer 3 children without enabling parent addressing.
 The movable editor has Configuration, IPv4, IPv6 and Advanced tabs for Layer 3.
 Each address has its own add/remove row; validation brings hidden invalid fields
 into view. Advanced settings include an optional MTU and a candidate management
@@ -44,8 +46,8 @@ results must be checked in Tasks; this update does not claim PA-5220 VLAN
 forwarding is operational.
 
 On PA-5200, aggregate subinterfaces no longer block parent LACP activation.
-The aggregate supervisor preserves parent negotiation across commits limited to
-its unsupported VLAN units and their interface memberships. Each child's missing
+The aggregate supervisor preserves parent negotiation across parent network and
+subinterface commits. Each child's missing
 dataplane attachment is reported separately by aggregate status and configd.
 Parent DHCP can remain awaiting-address while LACP members are synchronized and
 distributing; that does not make the child's tagged IP address operational.
@@ -54,5 +56,6 @@ Validation: `tests/test_config_subinterfaces.py` covers candidate-only edits,
 membership validation and preservation, permissions, locks and revision checks.
 `tests/test_subinterface_browser.cjs` covers tabs, address rows, atomic request
 payloads, read-only controls, hidden-field validation, Cancel and retained edits
-after a rejected save. Deployment verifies candidate/running API reads and
-served frontend assets without committing or modifying appliance configuration.
+after a rejected save. Live verification uses scoped parent/subinterface commits
+and restores each original setting. Owner tokens, process IDs and negotiated
+members must remain unchanged across these commits. Browser checks block API writes.
