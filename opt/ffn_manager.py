@@ -8950,7 +8950,7 @@ async def _sync_netresources_to_xml():
         "virtual-wires":         f"{NET}.virtual-wire",
         "gre-tunnels":           f"{NET}.gre",
         "vxlan-tunnels":         f"{NET}.vxlan-tunnel",
-        "qos-policies":          f"{VSYS}.rulebase.qos.rules",
+        # QoS policies are owned by the controld candidate rulebase.
         # FFN Protect (vsys-scoped in PAN-OS)
         "fp-portals":                 f"{VSYS}.global-protect.global-protect-portal",
         "fp-gateways":                f"{VSYS}.global-protect.global-protect-gateway",
@@ -8970,7 +8970,7 @@ async def _sync_netresources_to_xml():
         "monitor-profiles":           f"{NET}.profiles.monitor-profile",
         "interface-mgmt-profiles":    f"{NET}.profiles.interface-management-profile",
         "zone-protection-profiles":   f"{NET}.profiles.zone-protection-profile",
-        "qos-profiles":               f"{NET}.profiles.qos-profile",
+        # QoS profiles are XML-owned by controld; the legacy SQL mirror must not overwrite them.
         "lldp-profiles":              f"{NET}.profiles.lldp-profile",
         "bfd-profiles":               f"{NET}.profiles.bfd-profile",
         # SD-WAN
@@ -9853,6 +9853,9 @@ class NetResource(BaseModel):
 
 
 def _check_kind(kind: str):
+    if kind in ('qos-profiles', 'qos-policies'):
+        endpoint = '/api/config/policy-profiles/qos' if kind == 'qos-profiles' else '/api/config/policies/qos'
+        raise HTTPException(status_code=409, detail='QoS is managed through ' + endpoint)
     if kind not in NET_RESOURCE_KINDS:
         raise HTTPException(status_code=404, detail=f"Unknown resource kind: {kind}")
 

@@ -27,6 +27,12 @@ def merge_manager(live,source):
     for method in ('commit','_collect_paths'):
         a,b=method_range(live,'ConfigManager',method);x,y=method_range(source,'ConfigManager',method)
         live=live[:a]+source[x:y]+live[b:]
+    for name in ('_sync_netresources_to_xml','_check_kind'):
+        def span(text):
+            node=next(n for n in ast.parse(text).body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and n.name==name)
+            lines=text.splitlines(keepends=True)
+            return sum(map(len,lines[:node.lineno-1])),sum(map(len,lines[:node.end_lineno]))
+        a,b=span(live);x,y=span(source);live=live[:a]+source[x:y]+live[b:]
     marker='if __name__ == "__main__":'
     hook='from ffn_policy_api import install as _install_policy_api\n_install_policy_api(app, get_current_user, _require_admin, _extension_audit, config_mgr)\n\n'
     if '_install_policy_api' not in live:live=replace_once(live,marker,hook+marker)
@@ -72,8 +78,17 @@ def merge_html(live,source):
         if any(s.count(start)!=1 or s.count(end)!=1 for s in (live,source)):raise ValueError('Policy navigation boundaries changed')
         a=live.index(start);b=live.index(end,a);x=source.index(start);y=source.index(end,x)
         live=live[:a]+source[x:y]+live[b:]
-    asset='<script src="/static/config-policies.js"></script>'
-    if asset not in live:live=replace_once(live,'</head>',asset+'\n</head>')
+    for name in ('config-policies.js','policy-profiles.js'):
+        asset='<script src="/static/'+name+'"></script>'
+        if asset not in live:live=replace_once(live,'</head>',asset+'\n</head>')
+    for old,new in [
+        ("  nat:'NAT policy editor', decryption:'Decryption policy', sdwan:'SD-WAN policy',\n  'policy-qos':'Per-application QoS policy', 'access-domain':'Access domains',", "  sdwan:'SD-WAN policy', 'access-domain':'Access domains',"),
+        ("function renderPolicyNAT(c) { renderUnavailable(c, 'Workflow unavailable'); }", "function renderPolicyNAT(c) { renderPolicyWorkspace(c, 'nat'); }"),
+        ("function renderPolicyDecryption(c) { renderUnavailable(c, 'Workflow unavailable'); }", "function renderPolicyDecryption(c) { renderPolicyWorkspace(c, 'decryption'); }"),
+        ("    {id:'security-profiles',label:'Security Profiles'},", "    {id:'security-profiles',label:'Security Profiles'},\n    {id:'decryption-profiles',label:'Decryption Profiles'},"),
+        ("    'security-profiles': renderObjectsSecurityProfiles,", "    'security-profiles': renderObjectsSecurityProfiles,\n    'decryption-profiles': c => renderPolicyProfiles(c, 'decryption'),"),
+        ("function renderNPQoSProfile(c){c.innerHTML=netPageHTML(_CTX_NP_QOS);netRenderList(_CTX_NP_QOS);}", "function renderNPQoSProfile(c){renderPolicyProfiles(c,'qos');}")]:
+        live=replace_once(live,old,new)
     return live
 
 
@@ -86,12 +101,12 @@ def main():
             manager/'static/index.html':merge_html((manager/'static/index.html').read_text(),(root/'static/index.html').read_text()),
             daemon/'ffn_controld.py':merge_control((daemon/'ffn_controld.py').read_text()),
             daemon/'ffn_configd.py':merge_configd((daemon/'ffn_configd.py').read_text()),cli:merge_cli(cli.read_text())}
-    for name in ('ffn_policy_api.py','ffn_policy_config.py','ffn_policy_plan.py','ffn_nat_policy.py','ffn_policy_cli.py','ffn_config_objects.py'):
+    for name in ('ffn_policy_api.py','ffn_policy_config.py','ffn_policy_plan.py','ffn_policy_profiles.py','ffn_nat_policy.py','ffn_policy_cli.py','ffn_config_objects.py'):
         writes[manager/name]=(root/'opt'/name).read_text()
     writes[daemon/'ffn_policy_config.py']=(root/'opt/ffn_policy_config.py').read_text()
-    for name in ('ffn_policy_plan.py','ffn_nat_policy.py'):
+    for name in ('ffn_policy_plan.py','ffn_policy_profiles.py','ffn_nat_policy.py'):
         writes[daemon/name]=(root/'opt'/name).read_text()
-    for name in ('config-policies.js','config-objects.css'):writes[manager/'static'/name]=(root/'static'/name).read_text()
+    for name in ('config-policies.js','policy-profiles.js','config-objects.css'):writes[manager/'static'/name]=(root/'static'/name).read_text()
     backup=manager/('policies-backup-'+str(time.time_ns()));backup.mkdir()
     for i,(path,text) in enumerate(writes.items()):
         mode=path.stat().st_mode & 0o777 if path.exists() else 0o644

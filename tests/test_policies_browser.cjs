@@ -11,6 +11,30 @@ async function main(){
     browser=await chromium.launch({headless:true,...(process.env.TEST_BROWSER?{executablePath:process.env.TEST_BROWSER}:{})});
     const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(url);
     const open=async kind=>{await page.evaluate(k=>renderPolicyWorkspace(document.getElementById('content-area'),k),kind);await page.locator('#pw-add:enabled').waitFor();};
+    for(const kind of ['qos','decryption']){
+      await page.evaluate(k=>renderPolicyProfiles(document.getElementById('content-area'),k),kind);
+      await page.locator('#pp-add:enabled').waitFor();await page.locator('#pp-add').click();
+      await page.locator('#pp-form [name=name]').fill('cancelled');await page.locator('#pp-cancel').click();
+      assert.equal((await (await fetch(url+'/api/config/policy-profiles/'+kind)).json()).entries.length,0);
+      await page.locator('#pp-add').click();await page.locator('#pp-form [name=name]').fill('browser-'+kind);
+      if(kind==='qos'){
+        await page.locator('#pp-form [name="max-mbps"]').fill('10');
+        await page.locator('#pp-form [name="class1.guaranteed-mbps"]').fill('20');
+        await page.locator('#pp-form [name="class1.priority"]').selectOption('real-time');
+      }else{
+        await page.locator('#pp-form [name="min-version"]').selectOption('tls1-3');
+        await page.locator('#pp-form [name="max-version"]').selectOption('tls1-2');
+      }
+      await page.locator('#pp-form [type=submit]').click();await page.waitForFunction(()=>document.getElementById('pp-message')?.textContent.length>0);
+      if(kind==='qos')await page.locator('#pp-form [name="max-mbps"]').fill('100');
+      else await page.locator('#pp-form [name="max-version"]').selectOption('tls1-3');
+      await page.locator('#pp-form [type=submit]').click();await page.locator('#pp-editor').waitFor({state:'hidden'});
+      await page.locator('#pp-list [data-edit]').click();
+      assert.equal(await page.locator('#pp-form [name=name]').inputValue(),'browser-'+kind);
+      await page.locator('#pp-cancel').click();await page.locator('#pp-source').selectOption('running');
+      await page.waitForFunction(()=>document.getElementById('pp-list')?.textContent.includes('No profiles configured'));
+      assert(await page.locator('#pp-add').isDisabled());
+    }
     const fields={
       nat:{'Source Translation':'dynamic-ip-and-port','Source Interface Address':'ethernet1/1','Translated Destination Address':'192.0.2.10','Translated Destination Port':'443'},
       pbf:{Action:'forward','Egress Interface':'ethernet1/1','Next Hop':'192.0.2.1'},
@@ -41,6 +65,7 @@ async function main(){
       await open(kind);await page.locator('#pw-add').click();await page.locator('[name=rule-name]').fill(kind+' rule');
       // Tab changes must retain match values and edit controls.
       for(const [label,value] of Object.entries(fields[kind]||{})){
+        if(kind==='nat'&&label==='Source Interface Address')await page.locator('#pw-nat-method').selectOption('interface');
         const el=page.locator('#pw-form label').filter({hasText:label}).filter({has:page.locator('input,select')}).first();
         const panel=await el.evaluate(e=>e.closest('[data-panel]').dataset.panel);await page.locator('[data-tab="'+panel+'"]').click();
         const control=el.locator('input,select').first();if(await control.evaluate(e=>e.tagName)==='SELECT')await control.selectOption(value);else await control.fill(value);
@@ -58,6 +83,11 @@ async function main(){
       await page.locator('#pw-search').fill('not found');assert.equal(await page.locator('#pw-list tbody tr').count(),0);
       await page.locator('#pw-source').selectOption('running');await page.waitForFunction(()=>document.getElementById('pw-count').textContent==='0 of 0 rules');assert(await page.locator('#pw-add').isDisabled());
     }
+    await open('decryption');await page.locator('#pw-scope').selectOption('vsys2');
+    await page.locator('#pw-profiles').click();await page.locator('#pp-add:enabled').waitFor();
+    assert.match(await page.locator('#pp-status').innerText(),/vsys2/);
+    await page.locator('#pp-back').click();await page.locator('#pw-add:enabled').waitFor();
+    assert.equal(await page.locator('#pw-scope').inputValue(),'vsys2');
     await open('security');await page.locator('[data-rule-edit="0"]').click();
     const reveal=async key=>{
       const control=page.locator('[name="pf-'+key+'"]');

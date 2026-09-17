@@ -265,6 +265,7 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
 <script src="/static/config-objects.js"></script>
 <link rel="stylesheet" href="/static/config-objects.css">
 <script src="/static/config-policies.js"></script>
+<script src="/static/policy-profiles.js"></script>
 <link rel="stylesheet" href="/static/theme.css">
 </head>
 <body>
@@ -671,6 +672,7 @@ const TAB_MENUS = {
     {id:'url-categories',label:'URL Categories'},
     {id:'databases',label:'Databases'},
     {id:'security-profiles',label:'Security Profiles'},
+    {id:'decryption-profiles',label:'Decryption Profiles'},
   ],
   network: [
     {id:'interfaces',label:'Interfaces'},
@@ -1269,14 +1271,13 @@ async function overrideLock() {
 /* ---- Navigation ---- */
 const PAGE_ALIASES = {software:'device-updates', qos:'network-qos', 'log-settings':'sp-syslog'};
 const UNAVAILABLE_PAGES = {
-  nat:'NAT policy editor', decryption:'Decryption policy', sdwan:'SD-WAN policy',
-  'policy-qos':'Per-application QoS policy', 'access-domain':'Access domains',
+  sdwan:'SD-WAN policy', 'access-domain':'Access domains',
   'ssl-tls-profile':'SSL/TLS service profiles', 'master-key':'Master key management',
   'rec-iot':'IoT recommendations', 'rec-saas':'SaaS recommendations'
 };
 const lastTabPages = {};
-function renderPolicyNAT(c) { renderUnavailable(c, 'Workflow unavailable'); }
-function renderPolicyDecryption(c) { renderUnavailable(c, 'Workflow unavailable'); }
+function renderPolicyNAT(c) { renderPolicyWorkspace(c, 'nat'); }
+function renderPolicyDecryption(c) { renderPolicyWorkspace(c, 'decryption'); }
 function renderPolicySDWAN(c) { renderUnavailable(c, 'Workflow unavailable'); }
 function renderDeviceSSLProfile(c) { renderUnavailable(c, 'Workflow unavailable'); }
 function renderDeviceMasterKey(c) { renderUnavailable(c, 'Workflow unavailable'); }
@@ -1573,6 +1574,7 @@ function renderPage(pageId) {
     'url-categories': renderObjectsURLCategories,
     'databases': renderObjectsDatabases,
     'security-profiles': renderObjectsSecurityProfiles,
+    'decryption-profiles': c => renderPolicyProfiles(c, 'decryption'),
     // Network tab
     'interfaces': renderNetworkInterfaces,
     'zones': renderNetworkZones,
@@ -6381,7 +6383,7 @@ const _CTX_NP_QOS = netRegister({
     {key:'classes', label:'Per-Class Bandwidth (JSON)', type:'textarea', placeholder:'{"1":{"priority":"real-time","max":50},"2":{"priority":"high","max":200}}'},
   ],
 });
-function renderNPQoSProfile(c){c.innerHTML=netPageHTML(_CTX_NP_QOS);netRenderList(_CTX_NP_QOS);}
+function renderNPQoSProfile(c){renderPolicyProfiles(c,'qos');}
 
 const _CTX_NP_LLDP = netRegister({
   kind:'lldp-profiles',

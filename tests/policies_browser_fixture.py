@@ -17,7 +17,7 @@ def fast_path_empty():
 
 @app.get('/')
 def policy_page():
-    return HTMLResponse(page().body.decode().replace('</body>','<script src="/static/config-policies.js"></script></body>'))
+    return HTMLResponse(page().body.decode().replace('</body>','<script src="/static/config-policies.js"></script><script src="/static/policy-profiles.js"></script></body>'))
 
 
 if __name__=='__main__':

@@ -69,18 +69,18 @@ SCHEMAS={
      field('log-setting','Log Forwarding Profile','Logging',mode='text',ref='log-settings/profiles')]),
  'nat':dict(label='NAT',fields=MATCH+[SERVICE,
      select('nat-type','NAT Type',['ipv4'],tab='General'),
-     field('to-interface','Destination Interface','Original Packet','text','any',ref='interface'),
+     field('to-interface','Destination Interface','Original Packet','text','any',ref='layer3-interface'),
      field('source-type','Source Translation','Translated Packet','branch','none',
            ['none','static-ip','dynamic-ip','dynamic-ip-and-port'],path='source-translation'),
      field('translated-source','Translated Source Addresses','Translated Packet',default=[],ref='address',path='source-translation/{source-type}/translated-address'),
-     field('source-interface','Source Interface Address','Translated Packet','text',ref='interface',path='source-translation/dynamic-ip-and-port/interface-address/interface'),
+     field('source-interface','Source Interface Address','Translated Packet','text',ref='layer3-interface',path='source-translation/dynamic-ip-and-port/interface-address/interface'),
      field('translated-destination','Translated Destination Address','Translated Packet','text',ref='address',path='destination-translation/translated-address'),
      field('translated-port','Translated Destination Port','Translated Packet','text',path='destination-translation/translated-port')]),
  'qos':dict(label='QoS',fields=FULL+[
      select('class','Class',[str(i) for i in range(1,9)],path='action/class')]),
  'pbf':dict(label='Policy Based Forwarding',fields=FULL+[
      field('action','Action','Forwarding','branch','no-pbf',['forward','discard','no-pbf'],path='action'),
-     field('egress-interface','Egress Interface','Forwarding','text',ref='interface',path='action/forward/egress-interface'),
+     field('egress-interface','Egress Interface','Forwarding','text',ref='layer3-interface',path='action/forward/egress-interface'),
      field('next-hop','Next Hop','Forwarding','text',path='action/forward/nexthop/ip-address')]),
  'decryption':dict(label='Decryption',fields=MATCH+[USER,SERVICE,
      select('action','Action',['no-decrypt','decrypt']),
@@ -142,12 +142,24 @@ def shape(node):
 def named(node,path): return {e.get('name') for e in node.findall(path+'/entry')} if node is not None else set()
 
 
+def layer3_interfaces(root):
+    parent=root.find("./devices/entry[@name='localhost.localdomain']/network/interface");routed=set()
+    if parent is not None:
+        for group in ('ethernet','aggregate-ethernet'):
+            for entry in parent.findall(group+'/entry'):
+                if entry.find('layer3') is not None:
+                    routed.add(entry.get('name'));routed.update(e.get('name') for e in entry.findall('layer3/units/entry'))
+        for group in ('vlan','loopback','tunnel'):routed.update(e.get('name') for e in parent.findall(group+'/units/entry'))
+    return {name for name in routed if name}
+
+
 def inventory(root,scope,ref):
     local=owners(root)[scope];shared=root.find('shared')
     paths={'address':['address','address-group','region','external-list'],
            'application':['application','application-group','application-filter'],
            'service':['service','service-group']}.get(ref,[ref])
     if ref=='zone': return named(local,'zone')
+    if ref=='layer3-interface':return layer3_interfaces(root)
     if ref=='interface':
         parent=root.find("./devices/entry[@name='localhost.localdomain']/network/interface")
         if parent is None:return set()
@@ -274,6 +286,7 @@ def validate(kind,spec,root,scope):
                 except ValueError:raise PolicyError('Invalid next hop')
         elif s['egress-interface'] or s['next-hop']:raise PolicyError('Forwarding fields require Forward')
     if kind=='decryption':
+        if s['action']=='no-decrypt' and s['certificate']:raise PolicyError('Server certificate requires Decrypt')
         if s['type']=='ssl-inbound-inspection' and s['action']=='decrypt' and not s['certificate']:raise PolicyError('Inbound TLS inspection requires a certificate')
         if s['certificate'] and s['type']!='ssl-inbound-inspection':raise PolicyError('Server certificate requires inbound TLS inspection')
     if kind=='application-override':
@@ -347,6 +360,17 @@ def replace_candidate(temp,path,original):
             time.sleep(0.02*(attempt+1))
 
 
+def save_candidate(path,original,root):
+    raw=ET.tostring(root,encoding='utf-8',xml_declaration=True)
+    fd,temp=tempfile.mkstemp(prefix='.policy-',dir=path.parent)
+    try:
+        with os.fdopen(fd,'wb') as stream:stream.write(raw);stream.flush();os.fsync(stream.fileno())
+        os.chmod(temp,path.stat().st_mode & 0o777);replace_candidate(temp,path,original)
+    finally:
+        if os.path.exists(temp):os.unlink(temp)
+    return dict(status='candidate-updated',revision=revision(raw),requires_commit=True,applied=False)
+
+
 class PolicyController:
     def __init__(self,directory,commit=None):
         self.directory=Path(directory);self.commit=commit;self.lock=threading.RLock()
@@ -357,6 +381,9 @@ class PolicyController:
         except PolicyError as error:return dict(ok=False,error=str(error),code=error.code)
 
     def execute(self,args):
+        if args.get('action','').startswith('profile-'):
+            from ffn_policy_profiles import request
+            return request(self,args)
         action=args.get('action','list');source=args.get('source','candidate')
         if source not in ('candidate','running'):raise PolicyError('Invalid configuration source')
         if action not in ('list','report','preview','test','create','update','delete','move','toggle'):raise PolicyError('Unknown policy operation')
@@ -413,11 +440,4 @@ class PolicyController:
                 rules.remove(entry);rules.insert(position-1,entry)
         # Candidate writes are optimistic and atomic. Never write running here.
         if path.read_bytes()!=xml:raise PolicyError('Candidate changed during this edit',409)
-        raw=ET.tostring(root,encoding='utf-8',xml_declaration=True)
-        fd,temp=tempfile.mkstemp(prefix='.policy-',dir=self.directory)
-        try:
-            with os.fdopen(fd,'wb') as stream:stream.write(raw);stream.flush();os.fsync(stream.fileno())
-            os.chmod(temp,path.stat().st_mode & 0o777);replace_candidate(temp,path,xml)
-        finally:
-            if os.path.exists(temp):os.unlink(temp)
-        return dict(status='candidate-updated',revision=revision(raw),requires_commit=True,applied=False)
+        return save_candidate(path,xml,root)
