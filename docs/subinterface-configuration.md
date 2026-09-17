@@ -43,6 +43,13 @@ does not yet implement physical faceplate VLAN subinterfaces. Hardware apply
 results must be checked in Tasks; this update does not claim PA-5220 VLAN
 forwarding is operational.
 
+On PA-5200, aggregate subinterfaces no longer block parent LACP activation.
+The aggregate supervisor preserves parent negotiation across commits limited to
+its unsupported VLAN units and their interface memberships. Each child's missing
+dataplane attachment is reported separately by aggregate status and configd.
+Parent DHCP can remain awaiting-address while LACP members are synchronized and
+distributing; that does not make the child's tagged IP address operational.
+
 Validation: `tests/test_config_subinterfaces.py` covers candidate-only edits,
 membership validation and preservation, permissions, locks and revision checks.
 `tests/test_subinterface_browser.cjs` covers tabs, address rows, atomic request
