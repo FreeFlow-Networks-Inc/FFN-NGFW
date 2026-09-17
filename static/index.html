@@ -2401,7 +2401,7 @@ async function loadHardware(refresh) {
 
   const accelRows = accel.map(a => `<tr><td><strong>${_escSP(a.role || a.kind || 'Unknown')}</strong><div class="text-dim">${_escSP(a.model || '')}</div></td>
       <td>${a.bus === 'control-plane' ? 'Behind control plane' : a.bus === 'platform' ? 'Platform / SoC' : 'Host PCI'}<div class="mono">${_escSP(a.address || a.pci || '')}</div></td>
-      <td>${_escSP(a.driver || 'Unknown')}</td><td>${Number.isInteger(a.numa_node) && a.numa_node >= 0 ? a.numa_node : 'Unknown'}</td>
+      <td>${a.model === 'FE100' && a.bus === 'control-plane' && d.fe100_driver ? '<a href="#fe100-driver-status">See FE100 driver status</a>' : _escSP(a.driver || 'Unknown')}</td><td>${Number.isInteger(a.numa_node) && a.numa_node >= 0 ? a.numa_node : 'Unknown'}</td>
       <td>Detected${a.family === 'FE1xx' ? '<div class="text-dim">Forwarding readiness not reported by this inventory</div>' : ''}</td>
       ${showManager ? `<td>${(a.managers || []).length ? a.managers.map(m => `<div>${_escSP(m.name || 'FPGA Manager')}: ${_escSP(m.state || 'Unknown')}</div>`).join('') : a.kind === 'fpga' ? 'Unavailable' : '&mdash;'}</td>` : ''}</tr>`).join('');
   const pciRows = ((d.pci || {}).devices || []).map(p => `<tr><td class="mono">${_escSP(p.address)}</td><td class="mono">${_escSP(p.vendor_id || '????')}:${_escSP(p.device_id || '????')}</td><td>${_escSP(p.class_id || 'Unknown')}</td><td>${_escSP(p.driver || 'Unbound / unknown')}</td><td>${p.identity_complete === false ? 'Incomplete identity' : _escSP(p.source || 'Unknown')}</td></tr>`).join('');
@@ -2418,7 +2418,7 @@ async function loadHardware(refresh) {
       ${(octeon.evidence || []).map(e => `<div>${_escSP(e.value)} <span class="text-dim">${_escSP(e.source)}</span></div>`).join('')}
       ${(octeon.pci_functions || []).map(f => `<div>${_escSP(f.model)} <span class="mono">${_escSP(f.address)}</span></div>`).join('')}
       <div class="text-dim">Hardware presence does not establish firmware or forwarding readiness.</div></div>` : '';
-  el.innerHTML = `<div class="text-dim" style="margin-bottom:12px">Last collected: ${_escSP(updated)} &middot; PCI source: ${_escSP((d.pci || {}).source || 'Unknown')}</div>${app.family && app.family !== 'unknown' ? '<div class="text-dim">Hardware family: '+_escSP(app.family)+'</div>' : ''}${d.platform_status === 'unavailable' ? '<div role="status">Hardware family information unavailable; showing detected components.</div>' : ''}${probeNotice}${roleSummary}${octeonCard}
+  el.innerHTML = `<div class="text-dim" style="margin-bottom:12px">Last collected: ${_escSP(updated)} &middot; PCI source: ${_escSP((d.pci || {}).source || 'Unknown')}</div>${app.family && app.family !== 'unknown' ? '<div class="text-dim">Hardware family: '+_escSP(app.family)+'</div>' : ''}${d.platform_status === 'unavailable' ? '<div role="status">Hardware family information unavailable; showing detected components.</div>' : ''}${probeNotice}${roleSummary}${d.fe100_driver ? hardwareDriverHTML(d.fe100_driver) : ''}${octeonCard}
   <div class="grid grid-3">
     <div class="card"><div class="section-title">System</div><div style="font-size:12px;line-height:1.9">
       <div><strong>${_escSP(sys.vendor)}</strong> ${_escSP(sys.product)}</div>
@@ -2460,6 +2460,38 @@ async function loadHardware(refresh) {
   <div class="card"><div class="section-title">Storage</div>
     <div class="table-wrap"><table><thead><tr><th>Device</th><th>Size</th><th>Model</th><th>Type</th></tr></thead><tbody>${diskRows || '<tr><td colspan="4" class="text-dim">No storage devices reported</td></tr>'}</tbody></table></div></div>
     <details class="card"><summary>All PCI functions (${hwNumber((d.pci || {}).device_count)})</summary><div class="table-wrap"><table><thead><tr><th>Address</th><th>Vendor:device</th><th>Class</th><th>Driver</th><th>Source / status</th></tr></thead><tbody>${pciRows || '<tr><td colspan="5" class="text-dim">No PCI functions reported</td></tr>'}</tbody></table></div></details>`;
+  const driverCard = document.getElementById('fe100-driver-status');
+  const expiry = d.fe100_driver?.expires_in_seconds;
+  if (driverCard && d.fe100_driver?.fresh && Number.isFinite(expiry) && expiry > 0 && typeof setTimeout === 'function') {
+    setTimeout(() => {
+      if (document.getElementById('fe100-driver-status') === driverCard)
+        driverCard.innerHTML = '<div class="section-title">FE100 driver</div><div role="status">Driver observation expired. Re-detect hardware to refresh.</div>';
+    }, expiry * 1000);
+  }
+
+}
+
+function hardwareDriverHTML(observation) {
+  const heading = '<div class="section-title">FE100 driver</div>';
+  if (!observation.fresh || observation.state !== 'current')
+    return '<div class="card" id="fe100-driver-status">'+heading+'<div role="status">'+
+      (observation.state === 'stale' ? 'CP driver observation is stale. Re-detect hardware to refresh.' : 'CP driver observation unavailable.')+'</div></div>';
+  const driver = observation.userspace || {};
+  const bool = value => value === true ? 'Yes' : value === false ? 'No' : 'Unknown';
+  const rows = (observation.devices || []).map(d => `<tr><td class="mono">${_escSP(d.pci)}</td>
+    <td>${d.kernel_state === 'bound' ? _escSP(d.kernel_driver || 'Bound; name unavailable') : d.kernel_state === 'unbound' ? 'Unbound (userspace access)' : 'Unknown'}
+    ${d.kernel_module ? '<div>Module: '+_escSP(d.kernel_module)+'</div>' : ''}${d.kernel_version ? '<div>Version: '+_escSP(d.kernel_version)+'</div>' : ''}</td>
+    <td>${bool(d.memory_decode)}</td><td>${hwNumber(d.bar0_bytes, ' bytes')}</td></tr>`).join('');
+  return `<div class="card" id="fe100-driver-status">${heading}
+    <div class="text-dim">Source: CP agent ${_escSP(observation.agent || '')} via ffn-controld; ${Number.isFinite(observation.age_seconds) ? Math.floor(observation.age_seconds) : 'Unknown'} seconds old</div>
+    ${observation.available === false ? '<div role="status">PCI driver observation incomplete</div>' : ''}
+    <div class="table-wrap"><table><thead><tr><th>PCI device</th><th>Kernel driver</th><th>Memory decoding enabled</th><th>BAR0</th></tr></thead><tbody>${rows || '<tr><td colspan="4">No FE100 device reported by this observation</td></tr>'}</tbody></table></div>
+    <div>Userspace driver: <strong>ffn_fe100.py</strong> (${driver.installed === true ? 'Installed' : driver.installed === false ? 'Unavailable' : 'Unknown'})</div>
+    <div>Register access: <strong>${driver.state === 'responding' ? 'Responding (non-clearing register probe)' : 'Unverified'}</strong></div>
+    <div>Reader installed: ${bool(driver.reader_installed)} &middot; Register map installed: ${bool(driver.register_map_installed)} &middot; Memory device present: ${bool(driver.memory_device_present)}</div>
+    ${driver.sha256 ? '<details><summary>Driver fingerprint</summary><span class="mono">SHA-256: '+_escSP(driver.sha256)+'</span></details>' : ''}
+    <div class="text-dim">Register access confirms driver communication. It does not establish hardware flow offload or forwarding readiness.</div>
+  </div>`;
 }
 
 function hwNumber(value, suffix = '') {

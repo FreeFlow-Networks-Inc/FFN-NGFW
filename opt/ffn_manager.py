@@ -4444,6 +4444,14 @@ async def system_hardware(refresh: int = 0, user: dict = Depends(get_current_use
     inv["cpu_role"] = classify_cpu_role(inv, inv["platform"])
     inv["cpu"] = dict(inv.get("cpu") or {}, role=inv["cpu_role"]["role"])
     inv["applicability"] = inventory_applicability(inv, inv["platform"])
+    if inv["applicability"]["family"] == "pa5200":
+        from ffn_control_plane import control_rpc
+        from ffn_hwdetect import fe100_driver_observation
+        try:
+            control = await control_rpc('state/control', timeout=3)
+        except (OSError, ValueError, asyncio.TimeoutError, ConnectionError):
+            control = {}
+        inv["fe100_driver"] = fe100_driver_observation(control)
     return inv
 
 

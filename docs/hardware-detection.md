@@ -181,3 +181,20 @@ controller's availability flag, not a claim that FE100 uses that controller.
 
 This inventory does not load bitstreams, program registers or claim forwarding
 readiness. Missing drivers and unavailable telemetry do not erase detected chips.
+
+
+### FE100 driver observations
+
+On PA-5200, `fe100_driver` in the hardware API is a filtered observation from the
+selected CP agent through `ffn-controld`. It reports PCI kernel binding separately
+from the installed `ffn_fe100.py` userspace MMIO driver, its SHA-256 fingerprint,
+PCI memory decoding, BAR0 size, reader and register-map installation, and access
+verification. No raw agent configuration is exposed to inventory readers.
+
+An unbound PCI driver is normal for the commissioned userspace path. Register
+access is marked responding only when the existing non-clearing CSR reader
+succeeds in the same agent observation and its configured PCI target and BAR
+prerequisites match. Installation alone is unverified. This does not qualify
+packet forwarding or hardware flow offload. Disconnected, expired, ambiguous or
+missing observations never produce a current driver health claim; the WebUI
+expires the displayed sample using the daemon's remaining freshness interval.
