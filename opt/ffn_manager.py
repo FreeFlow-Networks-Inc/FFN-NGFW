@@ -12198,10 +12198,21 @@ if __name__ == "__main__":
         print("ffn-manager: bind resolver unavailable (%s); binding %s"
               % (_exc, _host))
 
+    # 443, so `python3 ffn_manager.py` reaches the same place the service does.
+    # FFN_MGMT_PORT is the single source of truth, set in the systemd drop-in
+    # next to the --port it passes uvicorn; ffn_updated.py's health check reads
+    # the same variable, and that check decides commit vs rollback.
+    try:
+        _port = int(os.environ.get("FFN_MGMT_PORT", "443"))
+        if not 1 <= _port <= 65535:
+            _port = 443
+    except ValueError:
+        _port = 443
+
     uvicorn.run(
         "ffn_manager:app",
         host=_host,
-        port=8443,
+        port=_port,
         reload=False,
         log_level="info",
         workers=workers,

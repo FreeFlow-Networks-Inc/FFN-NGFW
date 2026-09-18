@@ -269,6 +269,25 @@ def inactive_slot_entry():
 
 
 # ---------------------------------------------------------------- health ----
+def mgmt_port():
+    """The port the manager answers on.
+
+    NOT a literal, because this one decides commit vs rollback. When the manager
+    moved from 8443 to 443, a hardcoded 8443 here would have made api_responds
+    permanently False -- so health() would fail after every unattended update
+    and the updater would roll back a perfectly good image, forever, for a
+    reason nothing in its output would explain.
+
+    FFN_MGMT_PORT is set in the manager's own systemd drop-in alongside the
+    --port it passes uvicorn, so the two cannot drift apart.
+    """
+    try:
+        port = int(os.environ.get("FFN_MGMT_PORT", "443"))
+    except ValueError:
+        return 443
+    return port if 1 <= port <= 65535 else 443
+
+
 def health(timeout=20):
     """Is this appliance actually working? Used to decide commit vs rollback.
 
@@ -286,7 +305,8 @@ def health(timeout=20):
         ctx = _ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = _ssl.CERT_NONE
-        req = urllib.request.Request("https://127.0.0.1:8443/api/system/status")
+        req = urllib.request.Request(
+            "https://127.0.0.1:%d/api/system/status" % mgmt_port())
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
             api = r.status in (200, 401, 403)   # answering at all is the point
     except Exception:
