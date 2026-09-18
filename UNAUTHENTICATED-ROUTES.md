@@ -33,7 +33,7 @@ The two that stay open, and why they must:
 
 > **Ports below are historical.** The manager moved to **443** on 2026-09-18, and
 > `ffn-bmfw` is now active with an input chain of `policy drop` plus
-> `iifname { enp15s0, enp16s0, enp17s0, ztbtov4b2k } tcp dport { 22, 443, 8443 } accept`
+> `iifname { <management interfaces> } tcp dport { 22, 443, 8443 } accept`
 > — so the "no rule at all" measurement below no longer describes the box. The
 > route-by-route findings still stand; only the port and the firewall state have
 > changed. Read `nft list ruleset`, not `iptables -S`: the policy lives in nftables
