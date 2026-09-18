@@ -180,6 +180,11 @@ jobs:
       - name: NFS export scope (no_root_squash names one host)
         run: cd tests && python3 -m unittest test_nfs_export_scope
 
+      - name: session key rotation (nobody is logged out)
+        run: |
+          python3 opt/ffn_jwt_keys.py selftest
+          cd tests && python3 -m unittest test_jwt_rotation
+
       # crucible is included: without it the submodule's ~5600 lines are never
       # syntax-checked by either repository's compile step on this path.
       - name: every python file compiles

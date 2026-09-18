@@ -199,6 +199,38 @@ def _load_jwt_secret() -> str:
 JWT_SECRET = _load_jwt_secret()
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = 480
+
+# Optional signing keyring. Absent by default, so a deployment that has not run
+# `ffn_jwt_keys.py init` behaves exactly as before: one secret, no keyring file,
+# nothing to go wrong. Where it exists it lets the key be rotated on a timer
+# without logging anybody out -- see ffn_jwt_keys for why that needs two keys.
+try:
+    import ffn_jwt_keys as _jwt_keys
+except ImportError:                     # keyring module not deployed
+    _jwt_keys = None
+
+
+def _signing_secret() -> str:
+    """The key new tokens are signed with."""
+    if _jwt_keys is not None:
+        doc = _jwt_keys.load_cached()
+        if doc:
+            return _jwt_keys.signing_secret(doc)
+    return JWT_SECRET
+
+
+def _verification_secrets() -> list:
+    """Every key a presented token may legitimately have been signed with.
+
+    Current first, so the overwhelmingly common case costs one attempt. The
+    others are keys retired within the last token lifetime; without them a
+    rotation would invalidate every session that was open when it ran.
+    """
+    if _jwt_keys is not None:
+        doc = _jwt_keys.load_cached()
+        if doc:
+            return _jwt_keys.verification_secrets(doc)
+    return [JWT_SECRET]
 DB_PATH = os.getenv("FFN_DB_PATH", "/var/lib/ffn-ngfw/config.db")
 DEV_PATH = os.getenv("FFN_NGFW_DEV", "/dev/ngfw0")
 LOG_PATH = "/var/log/ffn-ngfw"
@@ -2453,7 +2485,7 @@ def create_token(username: str, role: str, pw_change_only: bool = False) -> str:
         # the client -- which trusts whoever holds the token to volunteer for a
         # restriction. An attacker will not volunteer.
         claims["pwc"] = True
-    return jwt.encode(claims, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return jwt.encode(claims, _signing_secret(), algorithm=JWT_ALGORITHM)
 
 
 # The only endpoints a password-change-only token may reach: changing the
@@ -2479,8 +2511,22 @@ async def get_current_user(
 async def _authenticate_token(token_str: str, path: str):
     """Share token and current-account checks between HTTP and WebSocket clients."""
     try:
-        payload = jwt.decode(token_str, JWT_SECRET, algorithms=[JWT_ALGORITHM],
-                             options={"require_exp": True, "require_sub": True})
+        # Try each key the keyring still accepts, current first. With no
+        # keyring this is exactly the single-secret decode it replaces. Every
+        # candidate must satisfy the SAME options -- a retired key is a key
+        # that is still trusted, not a weaker check.
+        payload = None
+        last_error = None
+        for _secret in _verification_secrets():
+            try:
+                payload = jwt.decode(
+                    token_str, _secret, algorithms=[JWT_ALGORITHM],
+                    options={"require_exp": True, "require_sub": True})
+                break
+            except JWTError as exc:
+                last_error = exc
+        if payload is None:
+            raise last_error or JWTError("no signing key accepted the token")
         username = payload.get("sub")
         if not isinstance(username, str) or not username:
             raise HTTPException(status_code=401, detail="Invalid token")
