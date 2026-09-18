@@ -219,15 +219,28 @@ fi
 mkdir -p /opt/dpfs /opt/var.cp /opt/var.dp0 /opt/var.dp1 /opt/var.dp2
 cat > /etc/exports <<'EOF'
 # FFN: NFS root for the OCTEON control/data planes.
-# Restricted to the CP/DP address space, as PAN-OS does. NFS must never be
-# reachable from the management network -- rpc.nfsd binds 0.0.0.0:2049 and
-# rpcbind 0.0.0.0:111, so the nft ruleset must refuse 111/2049 on every mgmt
-# interface. The client scoping below is what actually gates mounting.
-/opt/dpfs    127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check)
-/opt/var.cp  127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check)
-/opt/var.dp0 127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check)
-/opt/var.dp1 127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check)
-/opt/var.dp2 127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check)
+# NFS must never be reachable from the management network -- rpc.nfsd binds
+# 0.0.0.0:2049 and rpcbind 0.0.0.0:111, so the nft ruleset must refuse
+# 111/2049 on every mgmt interface. The client scoping below is what actually
+# gates mounting.
+#
+# 127.1.1.2 -- the CP, and only the CP. NOT the /16 this used to be: that range
+# contains the DP at 127.1.2.2, these exports are rw,no_root_squash, and they
+# include the CP's live root filesystems -- so a /16 lets the DP mount and
+# rewrite the CP's root. The PCIe ingress filters do not close it either: both
+# ends deliberately admit DP traffic addressed to the MP, because the CP has to
+# route it, and neither looks at protocol or port.
+#
+# The DP needs nothing from the MP; it roots on the CP's own NFS server at
+# 127.1.2.1:/opt/dproot. If a legacy DP boot path that roots from the MP is
+# ever revived, add 127.1.2.2 to /opt/dpfs DELIBERATELY rather than widening
+# every line back to a /16. Same scoping as tools/ffn_nfsd.sh in
+# ffn-platform-pa5200, which carries the full reasoning.
+/opt/dpfs    127.1.1.2(rw,sync,no_root_squash,no_subtree_check)
+/opt/var.cp  127.1.1.2(rw,sync,no_root_squash,no_subtree_check)
+/opt/var.dp0 127.1.1.2(rw,sync,no_root_squash,no_subtree_check)
+/opt/var.dp1 127.1.1.2(rw,sync,no_root_squash,no_subtree_check)
+/opt/var.dp2 127.1.1.2(rw,sync,no_root_squash,no_subtree_check)
 EOF
 # Pin nfsd to the PCIC subnet. Not a substitute for the firewall rule -- if the
 # PCIC interface is absent at boot nfsd falls back to all addresses, which is
