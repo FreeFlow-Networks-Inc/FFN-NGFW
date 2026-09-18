@@ -177,6 +177,9 @@ jobs:
       - name: ffn_threatdb selftest
         run: python3 opt/ffn_threatdb.py selftest
 
+      - name: NFS export scope (no_root_squash names one host)
+        run: cd tests && python3 -m unittest test_nfs_export_scope
+
       - name: session key rotation (nobody is logged out)
         run: |
           python3 opt/ffn_jwt_keys.py selftest
