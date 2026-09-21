@@ -1,0 +1,18 @@
+[Unit]
+Description=FFN shared management backend owned by the control plane
+After=local-fs.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=45
+WorkingDirectory=/opt/ffn-ngfw-v2
+EnvironmentFile=/etc/ffn-ngfw/management-backend.env
+Environment=FFN_MANAGER_FRONTEND=0
+ExecStart=/opt/ffn-ngfw-v2/venv/bin/python /opt/ffn-ngfw-v2/ffn_management_ipc.py
+Restart=on-failure
+RestartSec=2
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

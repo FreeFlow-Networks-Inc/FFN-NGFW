@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""FFN-CLI command extension using the same authenticated API as the WebUI."""
+"""FFN-CLI commands using shared management operations through its request adapter."""
 import json
 import copy
 from urllib.parse import urlencode

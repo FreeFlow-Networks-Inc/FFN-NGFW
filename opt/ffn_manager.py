@@ -3314,6 +3314,7 @@ async def _cli_auth_conn(reader, writer):
 
 @app.on_event("startup")
 async def _cli_auth_start():
+    if os.getenv('FFN_MANAGER_FRONTEND') == '1': return
     try:
         os.makedirs(os.path.dirname(CLI_AUTH_SOCK), exist_ok=True)
         if os.path.exists(CLI_AUTH_SOCK):
@@ -3328,6 +3329,7 @@ async def _cli_auth_start():
 
 @app.on_event("startup")
 async def startup():
+    if os.getenv('FFN_MANAGER_FRONTEND') == '1': return
     await init_db()
     logger.info("FFN NGFW Manager started — FPGA device %s", DEV_PATH)
     # Make sure every detected Linux NIC has a PAN-OS alias (ens33 → ethernet1/1 …)
@@ -3461,6 +3463,10 @@ async def list_users(user: dict = Depends(get_current_user)):
 async def create_user(req: AdminUserCreate, user: dict = Depends(get_current_user)):
     _require_admin(user)
     uname = (req.username or "").strip()
+    if os.getenv('FFN_CONSOLE_IDENTITIES') == '1':
+        from ffn_console_accounts import validate_username
+        try: validate_username(uname)
+        except ValueError as error: raise HTTPException(422, str(error))
     if not uname:
         raise HTTPException(status_code=400, detail="username is required")
     if req.role not in VALID_ROLES:
@@ -9227,8 +9233,7 @@ async def config_lock_release(user: dict = Depends(get_current_user)):
 @app.post("/api/config/lock/override")
 async def config_lock_override(user: dict = Depends(get_current_user)):
     """Admin-only lock override — forcibly release any active lock."""
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin role required")
+    _require_admin(user)
     prev_holder = config_mgr._lock_holder
     config_mgr._lock_holder = None
     config_mgr._lock_reason = ""
@@ -12187,6 +12192,11 @@ _install_policy_api(app, get_current_user, _require_admin, _extension_audit, con
 
 from ffn_plane_api import install as _install_plane_api
 _install_plane_api(app, get_current_user, _require_admin, _extension_audit)
+
+
+if os.getenv('FFN_MANAGER_FRONTEND') == '1':
+    from ffn_management_ipc import WebGateway
+    app.add_middleware(WebGateway)
 
 
 if __name__ == "__main__":

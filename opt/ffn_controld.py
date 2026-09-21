@@ -21,8 +21,9 @@ Responsibilities:
 Transport:
   - Unix domain socket at /var/run/ffn-ngfw/controld.sock (NEWLINE-
     delimited JSON, request/response). Permissions 660, group ffn-mgmt.
-  - Callers: ffn_manager.py (HTTP API), ffn-cli (optional fast path),
-    ffn-wildfire-agent, ffn-route-agent.
+  - Callers: shared management handlers and trusted daemon clients,
+    ffn-wildfire-agent, ffn-route-agent. The console uses a separate socket
+    accepting only management RPC with kernel-verified caller identity.
 
 Why a separate daemon?
   - The HTTP manager runs as a non-root sandboxed user. Many control
@@ -857,6 +858,10 @@ async def amain():
     ipc = IPCServer(state, commit, planes)
 
     server = await ipc.start()
+    console_server = None
+    if os.getenv('FFN_CONSOLE_ENABLED') == '1':
+        from ffn_management_ipc import start_console
+        console_server = await start_console()
     planes.start()
 
     stop_event = asyncio.Event()
@@ -877,6 +882,9 @@ async def amain():
     logger.info("shutting down")
     server.close()
     await server.wait_closed()
+    if console_server:
+        console_server.close()
+        await console_server.wait_closed()
     await planes.close()
     state.fpga.close()
     try:
