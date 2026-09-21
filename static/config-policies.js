@@ -2,10 +2,12 @@
 const policyKinds={security:'Security',nat:'NAT',qos:'QoS',pbf:'Policy Based Forwarding',decryption:'Decryption',
   'tunnel-inspect':'Tunnel Inspection','application-override':'Application Override',authentication:'Authentication',dos:'DoS Protection',sdwan:'SD-WAN'};
 let policyWorkspaceGeneration=0;
+let policyEditorGeneration=0;
 function policySpec(row){return {name:row.name,description:row.description||'',enabled:row.enabled,settings:structuredClone(row.settings)};}
 const policyOptionLabels={'universal':'Universal','intrazone':'Intrazone','interzone':'Interzone',
   allow:'Allow',deny:'Deny',drop:'Drop','reset-client':'Reset Client','reset-server':'Reset Server',
-  'reset-both':'Reset Both Client and Server',none:'None',group:'Group',profiles:'Profiles',yes:'Yes',no:'No'};
+  'reset-both':'Reset Both Client and Server',none:'None',group:'Group',profiles:'Profiles',yes:'Yes',no:'No',
+  'static-ip':'Static IP','dynamic-ip':'Dynamic IP','dynamic-ip-and-port':'Dynamic IP and Port'};
 const securityProfileKeys=['antivirus','vulnerability','anti-spyware','url-filtering','file-blocking','data-filtering','crucible-analysis'];
 function policyUsage(r,fast=false){
   // Stored SQL counters have no agent identity, configuration generation or
@@ -173,19 +175,68 @@ async function loadPolicyWorkspace(c,kind){
     document.getElementById('pw-search').oninput=draw;draw();
   }catch(e){if(table.isConnected&&generation===policyWorkspaceGeneration){status.textContent=e.message;table.textContent='Rulebase unavailable. Editing is disabled.';}}
 }
-function policyFieldHTML(f,value,choices){
+function policyFieldHTML(f,value,choices,kind){
   const id='pf-'+f.key,text=v=>_escSP(v??''),options=f.options;
+  if(f.mode==='list'&&f.ref){
+    const builtins=[...(f.default?.includes('any')?['any']:[]),...(kind==='security'&&f.key==='service'?['application-default']:[])];
+    const refs=[...new Set([...builtins,...(choices||[]),...options])];
+    return `<label class="policy-reference">${text(f.label)}<input type="hidden" name="${id}" value="${text((value||[]).join('\n'))}">
+      <span class="policy-selected" aria-label="Selected ${text(f.label)}"></span>
+      <select data-reference="${id}" aria-label="Add ${text(f.label)}"><option value="">Select ${text(f.label.toLowerCase())}…</option>${refs.map(v=>`<option value="${text(v)}">${text(v==='any'?'Any':v==='application-default'?'Application Default':v)}</option>`).join('')}</select>
+      ${f.ref==='address'?`<span class="policy-literal"><input aria-label="${text(f.label)} IP address or subnet" placeholder="IP address or subnet"><button type="button" class="btn" data-literal-add>Add</button></span>`:''}
+      <span class="text-dim">${choices?.length?(f.ref==='zone'?'Configured zones in this virtual system.':'Configured objects from this scope and Shared.'):f.ref==='zone'?'No zones configured in this virtual system.':'No configured objects available.'}</span></label>`;
+  }
   if(f.mode==='list'){
     const refs=[...new Set([...(choices||[]),...options])];
     return `<label>${text(f.label)}<textarea name="${id}" placeholder="One value per line">${text((value||[]).join('\n'))}</textarea>${refs.length?`<select data-add-to="${id}" aria-label="Add ${text(f.label)}"><option value="">Add configured value…</option>${refs.map(v=>`<option>${text(v)}</option>`).join('')}</select>`:''}</label>`;
   }
   if(options.length)return `<label>${text(f.label)}<select name="${id}">${options.map(v=>`<option value="${text(v)}" ${v===value?'selected':''}>${text(policyOptionLabels[v]||v)}</option>`).join('')}</select></label>`;
-  if(['layer3-interface','certificate','profiles/decryption'].includes(f.ref)){
+  if(f.ref==='address'){
+    const custom=!!value&&!(choices||[]).includes(value);
+    return `<label>${text(f.label)}<input type="hidden" name="${id}" value="${text(value)}"><select data-reference-single="${id}" aria-label="${text(f.label)}"><option value="">None</option>${(choices||[]).map(v=>`<option value="${text(v)}" ${v===value?'selected':''}>${text(v)}</option>`).join('')}<option value="__literal__" ${custom?'selected':''}>IP address or subnet…</option></select><input data-reference-literal aria-label="${text(f.label)} IP address or subnet" value="${custom?text(value):''}" ${custom?'':'hidden'}></label>`;
+  }
+  if(f.ref&&f.ref!=='address'){
     const allowed=[...new Set([...(f.key==='to-interface'?['any']:['']),...(choices||[]),...(value?[value]:[])])];
     return `<label>${text(f.label)}<select name="${id}">${allowed.map(v=>`<option value="${text(v)}" ${v===value?'selected':''}>${text(v||'None')}</option>`).join('')}</select></label>`;
   }
   if(f.mode==='member-text'||f.key==='log-setting')return `<label>${text(f.label)}<select name="${id}"><option value="">None</option>${[...new Set([...(choices||[]),...(value?[value]:[])])].map(v=>`<option value="${text(v)}" ${v===value?'selected':''}>${text(v)}</option>`).join('')}</select></label>`;
   return `<label>${text(f.label)}<input name="${id}" value="${text(value)}" maxlength="1024" ${choices?.length?`list="${id}-choices"`:''}>${choices?.length?`<datalist id="${id}-choices">${choices.map(v=>`<option value="${text(v)}">`).join('')}</datalist>`:''}</label>`;
+}
+function bindPolicyReferences(form,editable){
+  form.querySelectorAll('[data-reference-single]').forEach(select=>{
+    const input=select.closest('label').querySelector('[data-reference-literal]'),target=form.elements[select.dataset.referenceSingle];
+    const sync=()=>{input.hidden=select.value!=='__literal__';target.value=input.hidden?select.value:input.value.trim();};
+    select.onchange=sync;input.oninput=sync;sync();
+  });
+  form.querySelectorAll('[data-reference]').forEach(select=>{
+    const container=select.closest('label'),target=form.elements[select.dataset.reference],chips=container.querySelector('.policy-selected');
+    let values=target.value.split(/\r?\n/).filter(Boolean);
+    const draw=()=>{
+      target.value=values.join('\n');chips.replaceChildren();
+      for(const value of values){
+        const chip=document.createElement('span');chip.className='policy-chip';
+        const name=document.createElement('span');name.textContent=value==='any'?'Any':value==='application-default'?'Application Default':value;chip.append(name);
+        const remove=document.createElement('button');remove.type='button';remove.textContent='×';remove.disabled=!editable;remove.setAttribute('aria-label','Remove '+value);
+        remove.onclick=()=>{values=values.filter(v=>v!==value);draw();};chip.append(remove);chips.append(chip);
+      }
+      for(const option of select.options)option.disabled=!!option.value&&values.includes(option.value);
+      select.value='';
+    };
+    const add=value=>{
+      if(!editable||!value)return;
+      if(['any','application-default'].includes(value))values=[value];
+      else values=[...new Set([...values.filter(v=>!['any','application-default'].includes(v)),value])];
+      draw();
+    };
+    select.onchange=()=>add(select.value);
+    const literal=container.querySelector('.policy-literal input'),button=container.querySelector('[data-literal-add]');
+    if(button){
+      button.disabled=!editable;
+      button.onclick=()=>{add(literal.value.trim());literal.value='';};
+      literal.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();button.click();}};
+    }
+    draw();
+  });
 }
 function policyPlanAction(kind,action){
   if(!action)return 'Unavailable';
@@ -258,8 +309,16 @@ async function previewNatWorkspace(){
     }).join('')+'</ul>';
   }catch(e){if(target.isConnected)target.textContent=e.message;}
 }
-function editPolicyWorkspace(snapshot,url,existing,reload,clone=false){
+async function editPolicyWorkspace(snapshot,url,existing,reload,clone=false){
   const box=document.getElementById('pw-editor'),generation=policyWorkspaceGeneration;
+  const editorGeneration=++policyEditorGeneration;
+  // Resolve references and permissions at dialog open, not from a stale rule list.
+  objectDialog(box,'Loading '+snapshot.label+' Rule','<p role="status">Loading configured objects…</p>');
+  try{
+    snapshot=await consoleRequest(url+'&source='+(snapshot.can_edit?'candidate':document.getElementById('pw-source').value));
+    if(!box.isConnected||generation!==policyWorkspaceGeneration||editorGeneration!==policyEditorGeneration||!box.classList.contains('show'))return;
+    if(existing){existing=snapshot.entries.find(r=>r.name===existing.name);if(!existing)throw new Error('This rule no longer exists. Refresh the rule list.');}
+  }catch(e){if(box.isConnected&&generation===policyWorkspaceGeneration&&editorGeneration===policyEditorGeneration){const status=box.querySelector('[role=status]');if(status)status.textContent='Unable to load configured objects: '+e.message;}return;}
   const row=existing?policySpec(existing):{name:'',description:'',enabled:false,settings:Object.fromEntries(snapshot.schema.fields.map(f=>[f.key,f.default??'']))};
   if(clone){row.name='';row.enabled=false;}
   const editable=snapshot.can_edit&&(!existing||existing.editable),tabs=[...new Set(['General',...snapshot.schema.fields.map(f=>f.tab)])];
@@ -270,14 +329,23 @@ function editPolicyWorkspace(snapshot,url,existing,reload,clone=false){
       ${tab==='General'?`<label>Name<input name="rule-name" required maxlength="63" ${existing&&!clone?'readonly':''} value="${_escSP(row.name)}"></label>
       <label>Description<textarea name="rule-description" maxlength="1024">${_escSP(row.description)}</textarea></label>
       <label>Enabled<select name="rule-enabled"><option value="false" ${row.enabled?'':'selected'}>No</option><option value="true" ${row.enabled?'selected':''}>Yes</option></select></label>`:''}
-      ${snapshot.schema.fields.filter(f=>f.tab===tab).map(f=>policyFieldHTML(f,row.settings[f.key]??f.default??'',snapshot.choices[f.key])).join('')}
+      ${snapshot.schema.fields.filter(f=>f.tab===tab).map(f=>policyFieldHTML(f,row.settings[f.key]??f.default??'',snapshot.choices[f.key],snapshot.kind)).join('')}
       ${tab==='Rule Usage'?`<dl><dt>Hit Count</dt><dd>${_escSP(String(usage.count))}</dd><dt>Last Hit</dt><dd>${_escSP(usage.last)}</dd><dt>First Hit</dt><dd>${_escSP(usage.first)}</dd></dl><p>${_escSP(usage.reason)}</p><p>Usage is read only and is not copied when cloning a rule.</p>`:''}</div>`).join('')}
     <p class="text-dim">The control daemon stores this rule in candidate configuration. Activation requires a commissioned runtime provider; unsupported enabled rules block Commit.</p>
     <p id="pw-message" role="alert"></p><div class="modal-footer"><button type="submit" class="btn btn-primary" ${editable?'':'disabled'}>OK</button><button type="button" class="btn" id="pw-cancel">${editable?'Cancel':'Close'}</button></div></form>`;
   objectDialog(box,(clone?'Clone ':existing?(editable?'Edit ':'View '):'Add ')+snapshot.label+' Rule',body);
   const form=document.getElementById('pw-form');
+  bindPolicyReferences(form,editable);
   const show=(key,visible)=>{form.elements['pf-'+key].closest('label').hidden=!visible;};
   if(snapshot.kind==='nat'){
+    box.querySelector('.object-dialog').classList.add('nat-dialog');
+    const original=form.elements['pf-from'].closest('.policy-panel');original.classList.add('nat-original');
+    for(const key of ['from','to','source','destination','service','to-interface'])form.elements['pf-'+key].closest('label').dataset.natField=key;
+    const translated=form.elements['pf-source-type'].closest('.policy-panel');translated.classList.add('nat-translated');
+    for(const [title,keys] of [['Source Address Translation',['source-type','source-interface','translated-source']],['Destination Address Translation',['translated-destination','translated-port']]]){
+      const group=document.createElement('fieldset'),legend=document.createElement('legend');legend.textContent=title;group.append(legend);
+      for(const key of keys)group.append(form.elements['pf-'+key].closest('label'));translated.append(group);
+    }
     const mode=form.elements['pf-source-type'],iface=form.elements['pf-source-interface'];
     const method=document.createElement('label');method.innerHTML='Source Address Method<select id="pw-nat-method"><option value="pool">Translated address</option><option value="interface">Interface address</option></select>';
     mode.closest('label').after(method);const choice=method.querySelector('select');choice.value=iface.value?'interface':'pool';
