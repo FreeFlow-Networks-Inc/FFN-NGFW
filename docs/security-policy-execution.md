@@ -53,11 +53,13 @@ allow/reply, unsolicited deny, rule order, live revocation, service matching,
 interface-local input and a following default-deny transit guard. This compiler
 does not install rules or commission an execution provider.
 
-The requested session-end logging needs a conntrack event collector. The current
-DP kernel lacks its netlink interface, and a matching external module could not
-resolve a required kernel symbol. An isolated kernel candidate has been built;
-it has not been selected or booted. A kernel/DP restart alone will not complete
-the remaining session collector and coordinated apply integration.
+The requested session-end logging needs a conntrack event collector. The
+previous DP kernel lacked its netlink interface, and a matching external module
+could not resolve a required kernel symbol. The replacement kernel and matching
+drivers were subsequently booted at the operator's request. Conntrack NEW and
+DESTROY events, both packet suites, LACP recovery and candidate NAT preflight
+passed after that restart. The session collector and coordinated apply
+integration remain unfinished; Security Commit is still blocked.
 
 Validation: Security matching tests cover ordering, disabled rules, zone types,
 implicit rules, unknown fields, missing identity and application-default. The
