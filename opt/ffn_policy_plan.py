@@ -11,8 +11,11 @@ import ipaddress
 from ffn_nat_policy import Resolver, NatError, compile_rule as compile_nat, digest
 from ffn_policy_config import PolicyError, describe, owners, parse, revision, validate
 
-KINDS=('nat','qos','pbf','decryption')
+KINDS=('security','nat','qos','pbf','decryption')
 REQUIREMENTS={
+    'security':['Security enforcement provider with ordered rules, connection tracking and acknowledged apply',
+                'Zone-to-dataplane interface bindings, including aggregate VLAN transit gates',
+                'Requested identity, inspection, reset and session logging capabilities'],
     'nat':['Commissioned NAT provider, logical interface bindings and dataplane validation'],
     'qos':['Dataplane classifier and egress scheduler with class-to-queue bindings and rate profiles'],
     'pbf':['Dataplane policy routing provider with next-hop validation and return-path handling',
@@ -44,11 +47,22 @@ def compile_entry(root,owner,kind,spec,position):
     checked={k:copy.deepcopy(spec[k]) for k in ('name','description','enabled','settings')}
     validate(kind,checked,root,owner.get('name'))
     s=checked['settings']
+    # Application-default is a semantic constraint, not the same as service any.
+    services=None if kind=='security' and s['service']==['application-default'] else resolver.services(s['service'])
     match={'from':s['from'],'to':s['to'],'source':resolver.addresses(s['source']),
-           'destination':resolver.addresses(s['destination']),'services':resolver.services(s['service']),
+           'destination':resolver.addresses(s['destination']),'services':services,
            'source-user':s.get('source-user',['any']),
            'application':applications(resolver,s.get('application',['any']))}
-    if kind=='nat':
+    if kind=='security':
+        from ffn_policy_config import SECURITY_PROFILES
+        match.update({'rule-type':s['rule-type'],'source-device':s['source-device'],
+                      'destination-device':s['destination-device']})
+        action={'type':s['action'],'icmp_unreachable':s['icmp-unreachable']=='yes',
+                'profiles':{'mode':s['profile-mode'],'group':s['profile-group'] or None,
+                            'individual':{k:s[k] for k in SECURITY_PROFILES if s[k]}},
+                'logging':{'start':s['log-start']=='yes','end':s['log-end']=='yes',
+                           'forwarding_profile':s['log-setting'] or None}}
+    elif kind=='nat':
         native=compile_nat(root,owner,dict(spec,settings=s),position)
         match['egress-interface']=s.get('to-interface') or 'any'
         action={'source_translation':native['snat'],'destination_translation':native['dnat']}
@@ -77,7 +91,7 @@ def compile_entry(root,owner,kind,spec,position):
 
 
 def compile_policy(xml,kind,scope='vsys1'):
-    if kind not in KINDS:raise PolicyError('Policy planning is available for NAT, QoS, PBF and Decryption',404)
+    if kind not in KINDS:raise PolicyError('Policy planning is available for Security, NAT, QoS, PBF and Decryption',404)
     root=parse(xml);owner=owners(root).get(scope)
     if owner is None:raise PolicyError('Virtual system not found',404)
     rows=[];blockers=[];disabled=0
@@ -105,7 +119,7 @@ def compile_policy(xml,kind,scope='vsys1'):
 
 def validate_packet(packet,root,scope):
     allowed={'source','destination','from_zone','to_zone','protocol','source_port','destination_port',
-             'application','source_user','egress_interface'}
+           'application','source_user','source_device','destination_device','egress_interface'}
     if not isinstance(packet,dict) or set(packet)-allowed:raise PolicyError('Unknown packet fields')
     p=dict(packet)
     for key in ('source','destination'):
@@ -117,7 +131,7 @@ def validate_packet(packet,root,scope):
     if p.get('protocol') not in ('tcp','udp','icmp','other'):raise PolicyError('Packet protocol must be tcp, udp, icmp or other')
     for key in ('source_port','destination_port'):
         if key in p and (type(p[key]) is not int or not 1<=p[key]<=65535 or p['protocol'] not in ('tcp','udp')):raise PolicyError('Packet ports require TCP/UDP and values 1–65535')
-    for key in ('application','source_user','egress_interface'):
+    for key in ('application','source_user','source_device','destination_device','egress_interface'):
         if key in p and (not isinstance(p[key],str) or not 1<=len(p[key])<=1024):raise PolicyError('Invalid packet '+key)
     return p
 
@@ -145,14 +159,19 @@ def all_matches(values):
 def match_packet(match,packet):
     if match is None:return None
     results=[]
-    for key,packet_key in (('from','from_zone'),('to','to_zone'),('source-user','source_user'),('application','application')):
+    for key,packet_key in (('from','from_zone'),('to','to_zone'),('source-user','source_user'),('application','application'),
+                           ('source-device','source_device'),('destination-device','destination_device')):
+        if key not in match:continue
         values=match[key]
         results.append(True if values==['any'] else packet[packet_key] in values if packet_key in packet else None)
+    if match.get('rule-type') in ('intrazone','interzone'):
+        results.append((packet['from_zone']==packet['to_zone'])==(match['rule-type']=='intrazone'))
     for key in ('source','destination'):results.append(address_match(packet[key],match[key]))
     egress=match.get('egress-interface','any')
     results.append(True if egress=='any' else packet['egress_interface']==egress if 'egress_interface' in packet else None)
     services=[]
-    for service in match['services']:
+    if match['services'] is None:services.append(None) # No App-ID default-service resolver.
+    for service in match['services'] or []:
         if service['protocol']=='any':services.append(True);continue
         services.append(all_matches([service['protocol']==packet['protocol'],
             port_match(packet.get('source_port'),service['source_ports']),
@@ -167,9 +186,15 @@ def test_policy(xml,kind,scope,packet):
     for row in report['plan']['rules']:
         matched=match_packet(row['match'],packet)
         trace.append({'name':row['name'],'position':row['position'],'result':'indeterminate' if matched is None else 'match' if matched else 'no-match',
-                      'reason':row.get('error') or ('Supply missing ports, user, application or egress interface' if matched is None else '')})
+                      'reason':row.get('error') or ('Application-default requires an App-ID default-service resolver' if matched is None and row['match']['services'] is None else 'Supply missing ports, user, device, application or egress interface' if matched is None else '')})
         if matched is None:status='indeterminate';break
         if matched:selected=row;status='matched';break
+    if kind=='security' and status=='no-match':
+        same=packet['from_zone']==packet['to_zone']
+        selected={'name':'intrazone-default' if same else 'interzone-default',
+                  'scope':scope,'implicit':True,'action':{'type':'allow' if same else 'deny'}}
+        status='matched'
+        trace.append({'name':selected['name'],'position':None,'result':'match','reason':'Implicit policy intent; no runtime enforcement acknowledgment'})
     return {'kind':kind,'scope':scope,'configuration_revision':report['configuration_revision'],'digest':report['digest'],
             'status':status,'selected':selected,'trace':trace,'applied':False,'simulation':True,
             'runtime_requirements':report['runtime_requirements'],'enforcement':report['enforcement'],

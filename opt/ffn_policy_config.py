@@ -333,13 +333,18 @@ def runtime_report(xml,check_runtime=False):
                 elif kind=='nat':nat_enabled.append(dict(scope=scope,kind=kind,name=rule.get('name','')))
                 else:
                     reason='No commissioned runtime provider for this XML rulebase'
-                    if kind in ('qos','pbf','decryption'):
+                    if kind in ('security','qos','pbf','decryption'):
                         from ffn_policy_plan import compile_policy as compile_plan
                         key=(scope,kind)
                         if key not in plans:plans[key]=compile_plan(xml,kind,scope)
                         plan=plans[key]
                         errors=[b['reason'] for b in plan['blockers'] if b['name']==rule.get('name','')]
-                        reason+='; '+('; '.join(errors) if errors else '; '.join(plan['runtime_requirements']))
+                        if kind=='security':
+                            reason=('Security plan compilation failed: '+ '; '.join(errors) if errors else
+                                    'Security plan compiled, but dataplane enforcement is not connected. '+
+                                    'Required: ordered stateful rules, zone/interface bindings and requested inspection/logging. '+
+                                    'Aggregate transit remains default-deny; no rule has been activated')
+                        else:reason+='; '+('; '.join(errors) if errors else '; '.join(plan['runtime_requirements']))
                     blockers.append(dict(scope=scope,kind=kind,name=rule.get('name',''),reason=reason))
     if nat_enabled:
         from ffn_nat_policy import compile_policy

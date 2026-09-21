@@ -5,7 +5,7 @@ ADMIN_ROLES = frozenset({'admin', 'superuser'})
 ROLES = ADMIN_ROLES | {'operator', 'read-only'}
 # These POST handlers inspect supplied data; they never change configuration.
 READ_POSTS = frozenset('/api/config/policies/' + kind + '/test'
-                       for kind in ('nat', 'qos', 'pbf', 'decryption'))
+                       for kind in ('security', 'nat', 'qos', 'pbf', 'decryption'))
 
 
 def authorize(request, user):

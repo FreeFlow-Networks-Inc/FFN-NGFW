@@ -25,8 +25,8 @@ Rules start disabled. Friendly commands fetch the current candidate revision;
 concurrent edits are rejected. enabled=yes|no and description= are supported.
 QoS profile fields include max-mbps, guaranteed-mbps and class1.priority,
 class1.max-mbps, class1.guaranteed-mbps (class1 through class8).
-show policies preview <nat|qos|pbf|decryption> [vsys] [candidate|running]
-request policies <nat|qos|pbf|decryption> test <packet-JSON> [vsys] [candidate|running]
+show policies preview <security|nat|qos|pbf|decryption> [vsys] [candidate|running]
+request policies <security|nat|qos|pbf|decryption> test <packet-JSON> [vsys] [candidate|running]
 show policies nat-preview [candidate|running]
 show policies nat-tools
 show policies status [candidate|running]

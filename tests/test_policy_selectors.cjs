@@ -35,3 +35,5 @@ assert.match(ctx.natModeNotice('none','dynamic-ip','round-robin',null),/unverifi
 assert.match(ctx.natModeNotice('none','dynamic-ip','round-robin',{destination_distribution:{'round-robin':{supported:true}}}),/is available/);
 assert.match(ctx.natModeNotice('none','dynamic-ip','least-sessions',{destination_distribution:{'least-sessions':{supported:false,reason:'Allocator missing'}}}),/Allocator missing/);
 assert.match(ctx.natModeNotice('persistent-dynamic-ip-and-port','none','',{}),/not supported/);
+assert.match(ctx.policyPlanAction('security',{type:'allow',logging:{start:false,end:true},profiles:{mode:'none',individual:{}}}),/session end/);
+assert.equal(ctx.policyPlanAction('security',{type:'deny'}),'Deny');

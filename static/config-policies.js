@@ -85,7 +85,7 @@ function renderPolicyWorkspace(c,kind,initialScope='vsys1'){
     <p id="pw-status" role="status">Loading rulebase from control daemon…</p><div id="pw-list" class="card"></div>
     <div class="workflow-actions"><button class="btn btn-primary" id="pw-add" disabled>Add</button>
     <button class="btn" id="pw-validate">Validate activation</button>
-    ${['nat','qos','pbf','decryption'].includes(kind)?'<button class="btn" id="pw-plan" disabled>Preview policy plan</button><button class="btn" id="pw-test" disabled>Test policy match</button>':''}
+    ${['security','nat','qos','pbf','decryption'].includes(kind)?'<button class="btn" id="pw-plan" disabled>Preview policy plan</button><button class="btn" id="pw-test" disabled>Test policy match</button>':''}
     ${kind==='nat'?'<button class="btn" id="pw-nat-preview">NAT translation preview</button>':''}
     ${['qos','decryption'].includes(kind)?'<button class="btn" id="pw-profiles">Manage profiles</button>':''}
     ${kind==='dos'?'<button class="btn" id="pw-dos">DoS engine controls</button>':''}
@@ -251,6 +251,12 @@ function bindPolicyReferences(form,editable){
 }
 function policyPlanAction(kind,action){
   if(!action)return 'Unavailable';
+  if(kind==='security'){
+    const profiles=action.profiles,logging=action.logging;
+    return (policyOptionLabels[action.type]||action.type)+(action.icmp_unreachable?' · ICMP Unreachable':'')+
+      (profiles?' · Profiles: '+(profiles.group||Object.values(profiles.individual||{}).join(', ')||'None'):'')+
+      (logging?' · Log: '+([logging.start?'session start':'',logging.end?'session end':''].filter(Boolean).join(', ')||'none')+(logging.forwarding_profile?' · Forward: '+logging.forwarding_profile:''):'');
+  }
   if(kind==='qos')return 'Assign class '+action.class;
   if(kind==='pbf')return action.type==='forward'?'Forward via '+action.interface+' · Next hop '+(action.next_hop||'directly connected'):action.type==='discard'?'Discard':'Use normal routing';
   if(kind==='decryption')return action.type==='no-decrypt'?'Do not decrypt':'Decrypt · '+action.inspection+(action.certificate?' · Certificate '+action.certificate:'')+(action.profile?' · Profile '+action.profile:'');
@@ -268,6 +274,7 @@ async function inspectPolicyWorkspace(snapshot,kind,source,scope,test){
     <label>Protocol<select name="protocol"><option>tcp</option><option>udp</option><option>icmp</option><option>other</option></select></label>
     <label>Source Port<input name="source_port" type="number" min="1" max="65535"></label><label>Destination Port<input name="destination_port" type="number" min="1" max="65535"></label>
     <label>Application (optional)<input name="application"></label><label>Source User (optional)<input name="source_user"></label>
+    ${kind==='security'?'<label>Source Device (optional)<input name="source_device"></label><label>Destination Device (optional)<input name="destination_device"></label>':''}
     <label>Egress Interface (optional)<input name="egress_interface"></label>
     <div class="modal-footer"><button type="submit" class="btn btn-primary">Test Match</button><button type="button" class="btn" id="pw-test-close">Close</button></div></form>`:'';
   objectDialog(box,title,form+'<div id="pw-plan-result" role="status">'+(test?'No traffic is sent and no configuration is changed.':'Compiling policy…')+'</div>');
