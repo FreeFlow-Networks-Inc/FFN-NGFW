@@ -33,6 +33,8 @@ def preflight(xml):
 
 def reconcile(path,status):
     """Configd hook. Apply only running XML; disabled/removal yields an empty plan."""
+    from ffn_security_control import commissioned as security_commissioned, reconcile as reconcile_security
+    if security_commissioned():return reconcile_security(path,status)
     if not commissioned():return
     try:
         report=compile_policy(Path(path).read_bytes())

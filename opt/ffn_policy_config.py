@@ -323,7 +323,9 @@ def validate(kind,spec,root,scope):
 
 def runtime_report(xml,check_runtime=False):
     """Fail closed until each policy compiler and acknowledged apply are connected."""
-    root=parse(xml);blockers=[];disabled=0;nat_enabled=[];plans={}
+    root=parse(xml);blockers=[];disabled=0;nat_enabled=[];security_enabled=[];plans={}
+    from ffn_security_control import commissioned as security_commissioned, preflight as security_preflight
+    coordinated=security_commissioned()
     from ffn_qos_config import activation_blockers
     blockers.extend(activation_blockers(root))
     for scope,node in owners(root).items():
@@ -331,6 +333,8 @@ def runtime_report(xml,check_runtime=False):
             for rule in node.findall('rulebase/'+kind+'/rules/entry'):
                 if rule.findtext('disabled')=='yes':disabled+=1
                 elif kind=='nat':nat_enabled.append(dict(scope=scope,kind=kind,name=rule.get('name','')))
+                elif kind=='security' and coordinated:
+                    security_enabled.append(dict(scope=scope,kind=kind,name=rule.get('name','')))
                 else:
                     reason='No commissioned runtime provider for this XML rulebase'
                     if kind in ('security','qos','pbf','decryption'):
@@ -346,7 +350,13 @@ def runtime_report(xml,check_runtime=False):
                                     'Aggregate transit remains default-deny; no rule has been activated')
                         else:reason+='; '+('; '.join(errors) if errors else '; '.join(plan['runtime_requirements']))
                     blockers.append(dict(scope=scope,kind=kind,name=rule.get('name',''),reason=reason))
-    if nat_enabled:
+    if coordinated:
+        try:
+            if check_runtime:security_preflight(xml)
+        except Exception as error:
+            affected=security_enabled+nat_enabled or [dict(scope='shared',kind='security',name='policy-runtime')]
+            blockers.extend(dict(row,reason=str(error)) for row in affected)
+    elif nat_enabled:
         from ffn_nat_policy import compile_policy
         compiled=compile_policy(xml)
         if compiled['blockers']:blockers.extend(compiled['blockers'])
@@ -358,7 +368,7 @@ def runtime_report(xml,check_runtime=False):
             except Exception as error:blockers.extend(dict(r,reason=str(error)) for r in nat_enabled)
     return dict(valid=not blockers,blockers=blockers,disabled_rules=disabled,
                 revision=revision(xml),applied=False,owner='ffn-controld',
-                runtime_state='blocked' if blockers else 'validated' if nat_enabled and check_runtime else 'requires-dataplane-validation' if nat_enabled else 'no-enabled-rules')
+                runtime_state='blocked' if blockers else 'validated' if (nat_enabled or coordinated) and check_runtime else 'requires-dataplane-validation' if nat_enabled or coordinated else 'no-enabled-rules')
 
 
 def require_supported(xml):

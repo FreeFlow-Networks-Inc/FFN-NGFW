@@ -18,7 +18,7 @@ PERMIT=0x80000000
 def elements(values):return '{ '+', '.join(str(v) for v in values)+' }'
 
 
-def render(xml,bindings):
+def render(xml,bindings,session_tokens=None):
     """Bindings are logical interface -> verified current kernel ifindex.
 
     Use numeric ifindexes so a newly recreated aggregate cannot inherit an old
@@ -49,7 +49,10 @@ def render(xml,bindings):
             if action['profiles']['mode']!='none':raise NatError(row['name']+': requested inspection profiles require a commissioned engine')
             if action['type'] not in ('allow','drop') or action['icmp_unreachable']:
                 raise NatError(row['name']+': reject/reset action requires a commissioned response provider')
-            if any(action['logging'].values()):
+            logging=action['logging']
+            if logging['forwarding_profile']:
+                raise NatError(row['name']+': log forwarding requires a commissioned forwarding provider')
+            if any(logging.values()) and (session_tokens is None or action['type']!='allow'):
                 raise NatError(row['name']+': session logging requires a commissioned conntrack event collector')
             pairs=[]
             for (s,source),incoming in zones.items():
@@ -67,7 +70,7 @@ def render(xml,bindings):
            '  meta mark set meta mark & 0x7fffffff',
            '  meta nfproto != ipv4 drop','  ct state invalid drop',
            '  ct direction reply ct state != established drop',
-           '  ct direction reply ct label & 0x1 == 0 drop']
+           '  ct direction reply ct label & 0 != 0 drop']
     for i,rule in enumerate(rules):
         m=rule['match']
         for incoming,outgoing in rule['pairs']:
@@ -84,10 +87,19 @@ def render(xml,bindings):
     for indices in zones.values():
         lines.append('  iif '+elements(indices)+' oif '+elements(indices)+' goto implicit_allow')
     lines+=['  counter drop',' }']
+    def label(identity):
+        if session_tokens is None:return ''
+        token=session_tokens.get(identity)
+        if type(token) is not int or not 1<=token<0x40000000:raise NatError('Missing or invalid durable Security session token')
+        # ct_label is a symbolic bitmask datatype: each number names a bit,
+        # including zero. Hexadecimal does not turn it into a raw integer.
+        bits=[0]+[i+1 for i in range(30) if token & (1<<i)]
+        return 'ct direction original ct label & 0 != 0 ct label set '+' | '.join(map(str,bits))+'; '
     for i,rule in enumerate(rules):
-        lines.append(' chain r'+str(i)+' { counter comment '+json.dumps(rule['scope']+'/'+rule['name'])+'; '+('goto grant' if rule['action']['type']=='allow' else 'drop')+'; }')
-    lines+=[' chain implicit_allow { counter; goto grant; }',
-            ' chain grant { ct direction original ct label set ct label | 0x1; meta mark set meta mark | 0x80000000; accept; }','}']
+        decision=(label((rule['scope'],rule['name']))+'goto grant') if rule['action']['type']=='allow' else 'drop'
+        lines.append(' chain r'+str(i)+' { counter comment '+json.dumps(rule['scope']+'/'+rule['name'])+'; '+decision+'; }')
+    lines+=[' chain implicit_allow { counter; '+label(('implicit','intrazone-default'))+'goto grant; }',
+            ' chain grant { ct direction original ct label set ct label | 0; meta mark set meta mark | 0x80000000; accept; }','}']
     script='\n'.join(lines)+'\n'
     if len(script.encode())>65536:raise NatError('Expanded Security policy exceeds 64 KiB')
     return dict(script=script,digest=plan_digest,applied=False,
