@@ -301,17 +301,48 @@ def delete_vrf(name, table):
 def exists():
     return any(x['name'] == NS for x in json.loads(run('ip', '-j', 'netns', 'list') or '[]'))
 
+def remember_tap_mac(name, current):
+    """Preserve the first real TAP identity across namespace/DP recreation.
+
+    Call under the network owner lock. This is per-appliance runtime identity,
+    never a site address or a MAC copied from a development appliance.
+    """
+    def valid(value):
+        return (isinstance(value,str) and re.fullmatch(r'(?:[0-9a-f]{2}:){5}[0-9a-f]{2}',value)
+                and value!='00:00:00:00:00:00' and not int(value[:2],16)&1)
+    if not re.fullmatch(r'p[1-9][0-9]*',name) or not valid(current):raise ValueError('Invalid TAP identity')
+    path=STATE.with_name('port-macs.json')
+    saved=json.loads(path.read_text()) if path.exists() else {}
+    if not isinstance(saved,dict) or any(not re.fullmatch(r'p[1-9][0-9]*',key) or not valid(value) for key,value in saved.items()):
+        raise ValueError('Invalid persisted TAP identities')
+    if name in saved:return saved[name]
+    saved[name]=current;path.parent.mkdir(parents=True,exist_ok=True)
+    temp=path.with_name(path.name+'.'+str(os.getpid())+'.tmp')
+    with temp.open('w') as stream:
+        os.chmod(temp,0o600);json.dump(saved,stream);stream.flush();os.fsync(stream.fileno())
+    temp.replace(path)
+    fd=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY)
+    try:os.fsync(fd)
+    finally:os.close(fd)
+    return current
+
+
 def configure_port(name, settings, create=False):
     if create:
         if PORT_BACKEND == 'native':
             ip('-j', 'link', 'show', 'dev', name)  # Must already be provisioned in the data namespace.
         else:
             run('ip', 'netns', 'exec', NS, 'ip', 'tuntap', 'add', 'dev', name, 'mode', 'tap')
+    current = json.loads(ip('-j', 'link', 'show', 'dev', name))[0]
+    if PORT_BACKEND == 'tap':
+        identity=remember_tap_mac(name,current['address'])
+        if current['address']!=identity:
+            if not create:raise RuntimeError('TAP MAC changed outside the network owner; refusing live identity replacement')
+            ip('link','set',name,'address',identity)
     ip('link', 'set', name, 'down')
     if 'management' in settings:
         from ffn_interface_management import apply as apply_management
         apply_management(NS, name, settings)
-    current = json.loads(ip('-j', 'link', 'show', 'dev', name))[0]
     if 'master' in current:
         if current['master'] == 'br-data':
             run('ip', 'netns', 'exec', NS, 'bridge', 'vlan', 'del', 'dev', name, 'vid', '1-4094')

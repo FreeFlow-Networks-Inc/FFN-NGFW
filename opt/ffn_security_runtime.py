@@ -254,6 +254,7 @@ def apply(request,replay=False):
 
 def status():
     state=saved();result=dict(available=False,applied=False,revision=state['revision'] if state else 0,provider='linux-stateful-nftables')
+    data={'nftables':[]}
     try:
         result['collector']=health();result['available']=True
         if state:
@@ -262,6 +263,11 @@ def status():
                 fingerprint(data,{tuple(k) for k in state['tables']})==state['kernel_digest'] and
                 result['collector'].get('forwarding_revision')==state['revision'])
     except (NatError,OSError,ValueError) as error:result['error']=str(error)
+    result['processing']=dict(acknowledged=result['applied'],execution='dataplane-kernel',
+        machine=os.uname().machine,hardware_offload=False)
+    if state:
+        result['nat']=dict(acknowledged=result['applied'],revision=state['nat']['revision'],
+            digest=state['nat']['digest'],usage=nat.rule_usage(state['nat'],data,result['applied']))
     return result
 
 

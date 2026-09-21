@@ -35,6 +35,13 @@ previous kernel generation with a closed gate. Failed or ambiguous rollback is
 latched as a fault. NAT cannot be changed through its standalone worker after
 coordinated ownership is established.
 
+Status exposes `processing.acknowledged` and `nat.acknowledged` only when the
+boot, interface bindings, kernel tables and live collector generation agree.
+It identifies kernel dataplane execution separately from hardware offload.
+NAT usage counters describe initial rule matches, not successful translation
+or return traffic; verify original/reply conntrack tuples and interface packet
+observations for an end-to-end check.
+
 Binding changes and DP boot replay recompile the stored policy only after all
 required owners are available. The PA5200 aggregate owner always starts with
 its default-deny guard. Policy reconciliation exchanges that guard only when
