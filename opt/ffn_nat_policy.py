@@ -105,6 +105,8 @@ def compile_rule(root,owner,spec,position):
     s=spec['settings'];r=Resolver(root,owner)
     if not spec['editable']:raise NatError('Imported NAT rule contains unsupported XML fields')
     if s.get('nat-type') not in ('','ipv4'):raise NatError('Only IPv4 NAT is supported')
+    if s.get('source-type')=='persistent-dynamic-ip-and-port':raise NatError('Persistent Dynamic IP and Port requires a dataplane persistent-binding allocator; activation is not supported by this provider')
+    if s.get('destination-type')=='dynamic-ip' or s.get('session-distribution'):raise NatError('Dynamic destination NAT requires a dataplane session-distribution provider; activation is not supported by this provider')
     source=r.addresses(s['source']);destination=r.addresses(s['destination'])
     ingress=r.interfaces(s['from']);egress=r.interfaces(s['to'])
     if s.get('to-interface') and s['to-interface']!='any':

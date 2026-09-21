@@ -7,7 +7,9 @@ function policySpec(row){return {name:row.name,description:row.description||'',e
 const policyOptionLabels={'universal':'Universal','intrazone':'Intrazone','interzone':'Interzone',
   allow:'Allow',deny:'Deny',drop:'Drop','reset-client':'Reset Client','reset-server':'Reset Server',
   'reset-both':'Reset Both Client and Server',none:'None',group:'Group',profiles:'Profiles',yes:'Yes',no:'No',
-  'static-ip':'Static IP','dynamic-ip':'Dynamic IP','dynamic-ip-and-port':'Dynamic IP and Port'};
+  'static-ip':'Static IP','dynamic-ip':'Dynamic IP','dynamic-ip-and-port':'Dynamic IP and Port',
+  'persistent-dynamic-ip-and-port':'Persistent Dynamic IP and Port',
+  'round-robin':'Round Robin','source-ip-hash':'Source IP Hash','ip-modulo':'IP Modulo','ip-hash':'IP Hash','least-sessions':'Least Sessions'};
 const securityProfileKeys=['antivirus','vulnerability','anti-spyware','url-filtering','file-blocking','data-filtering','crucible-analysis'];
 function policyUsage(r,fast=false){
   // Stored SQL counters have no agent identity, configuration generation or
@@ -190,7 +192,7 @@ function policyFieldHTML(f,value,choices,kind){
     const refs=[...new Set([...(choices||[]),...options])];
     return `<label>${text(f.label)}<textarea name="${id}" placeholder="One value per line">${text((value||[]).join('\n'))}</textarea>${refs.length?`<select data-add-to="${id}" aria-label="Add ${text(f.label)}"><option value="">Add configured value…</option>${refs.map(v=>`<option>${text(v)}</option>`).join('')}</select>`:''}</label>`;
   }
-  if(options.length)return `<label>${text(f.label)}<select name="${id}">${options.map(v=>`<option value="${text(v)}" ${v===value?'selected':''}>${text(policyOptionLabels[v]||v)}</option>`).join('')}</select></label>`;
+  if(options.length)return `<label>${text(f.label)}<select name="${id}">${options.map(v=>`<option value="${text(v)}" ${v===value?'selected':''}>${text(f.key==='destination-type'&&v==='dynamic-ip'?'Dynamic IP (with session distribution)':policyOptionLabels[v]||v||'Select…')}</option>`).join('')}</select></label>`;
   if(f.ref==='address'){
     const custom=!!value&&!(choices||[]).includes(value);
     return `<label>${text(f.label)}<input type="hidden" name="${id}" value="${text(value)}"><select data-reference-single="${id}" aria-label="${text(f.label)}"><option value="">None</option>${(choices||[]).map(v=>`<option value="${text(v)}" ${v===value?'selected':''}>${text(v)}</option>`).join('')}<option value="__literal__" ${custom?'selected':''}>IP address or subnet…</option></select><input data-reference-literal aria-label="${text(f.label)} IP address or subnet" value="${custom?text(value):''}" ${custom?'':'hidden'}></label>`;
@@ -342,15 +344,23 @@ async function editPolicyWorkspace(snapshot,url,existing,reload,clone=false){
     const original=form.elements['pf-from'].closest('.policy-panel');original.classList.add('nat-original');
     for(const key of ['from','to','source','destination','service','to-interface'])form.elements['pf-'+key].closest('label').dataset.natField=key;
     const translated=form.elements['pf-source-type'].closest('.policy-panel');translated.classList.add('nat-translated');
-    for(const [title,keys] of [['Source Address Translation',['source-type','source-interface','translated-source']],['Destination Address Translation',['translated-destination','translated-port']]]){
+    for(const [title,keys] of [['Source Address Translation',['source-type','source-interface','translated-source']],['Destination Address Translation',['destination-type','translated-destination','translated-port','session-distribution']]]){
       const group=document.createElement('fieldset'),legend=document.createElement('legend');legend.textContent=title;group.append(legend);
       for(const key of keys)group.append(form.elements['pf-'+key].closest('label'));translated.append(group);
     }
     const mode=form.elements['pf-source-type'],iface=form.elements['pf-source-interface'];
-    const method=document.createElement('label');method.innerHTML='Source Address Method<select id="pw-nat-method"><option value="pool">Translated address</option><option value="interface">Interface address</option></select>';
+    const method=document.createElement('label');method.innerHTML='Address Type<select id="pw-nat-method"><option value="pool">Translated Address</option><option value="interface">Interface Address</option></select>';
     mode.closest('label').after(method);const choice=method.querySelector('select');choice.value=iface.value?'interface':'pool';
-    const sync=()=>{method.hidden=mode.value!=='dynamic-ip-and-port';show('source-interface',mode.value==='dynamic-ip-and-port'&&choice.value==='interface');show('translated-source',mode.value!=='none'&&(mode.value!=='dynamic-ip-and-port'||choice.value==='pool'));};
-    mode.onchange=choice.onchange=sync;sync();
+    const warning=document.createElement('p');warning.className='text-dim';warning.setAttribute('role','status');translated.after(warning);
+    const destination=form.elements['pf-destination-type'],distribution=form.elements['pf-session-distribution'];
+    const sync=()=>{
+      const dipp=['dynamic-ip-and-port','persistent-dynamic-ip-and-port'].includes(mode.value);
+      method.hidden=!dipp;show('source-interface',dipp&&choice.value==='interface');show('translated-source',mode.value!=='none'&&(!dipp||choice.value==='pool'));
+      show('translated-destination',destination.value!=='none');show('translated-port',destination.value!=='none');show('session-distribution',destination.value==='dynamic-ip');
+      if(destination.value==='dynamic-ip'&&!distribution.value)distribution.value='round-robin';
+      warning.textContent=mode.value==='persistent-dynamic-ip-and-port'||destination.value==='dynamic-ip'?'This mode can be saved as a disabled rule. Activation is blocked until the dataplane supports persistent bindings or destination session distribution.':'';warning.hidden=!warning.textContent;
+    };
+    mode.onchange=choice.onchange=destination.onchange=sync;sync();
   }
   if(snapshot.kind==='pbf'){
     const action=form.elements['pf-action'],sync=()=>{show('egress-interface',action.value==='forward');show('next-hop',action.value==='forward');};action.onchange=sync;sync();
@@ -386,8 +396,10 @@ async function editPolicyWorkspace(snapshot,url,existing,reload,clone=false){
     const settings=rule.settings;
     if(snapshot.kind==='nat'){
       if(settings['source-type']==='none'){settings['translated-source']=[];settings['source-interface']='';}
-      else if(settings['source-type']==='dynamic-ip-and-port'&&document.getElementById('pw-nat-method').value==='interface')settings['translated-source']=[];
+      else if(['dynamic-ip-and-port','persistent-dynamic-ip-and-port'].includes(settings['source-type'])&&document.getElementById('pw-nat-method').value==='interface')settings['translated-source']=[];
       else settings['source-interface']='';
+      if(settings['destination-type']==='none'){settings['translated-destination']='';settings['translated-port']='';}
+      if(settings['destination-type']!=='dynamic-ip')settings['session-distribution']='';
     }
     if(snapshot.kind==='pbf'&&settings.action!=='forward'){settings['egress-interface']='';settings['next-hop']='';}
     if(snapshot.kind==='decryption'&&(settings.action!=='decrypt'||settings.type!=='ssl-inbound-inspection'))settings.certificate='';
