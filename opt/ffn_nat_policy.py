@@ -92,11 +92,20 @@ class Resolver:
     def interfaces(self,zones):
         # ANY is bounded to the virtual system's Layer 3 zone membership.
         out=[]
+        # An unaddressed aggregate can carry addressed VLAN units without being
+        # a routed endpoint itself. Do not require NAT on that transport parent.
+        containers=set()
+        for entry in self.root.findall('./devices/entry/network/interface/aggregate-ethernet/entry'):
+            layer=entry.find('layer3')
+            if layer is not None and (entry.findtext('aggregate-only')=='yes' or
+                (layer.find('units/entry') is not None and not layer.findall('ip/entry') and
+                 layer.findtext('dhcp-client/enable','no')!='yes')):
+                containers.add(entry.get('name'))
         for zone in self.owner.findall('zone/entry'):
             if zones!=['any'] and zone.get('name') not in zones:continue
             members=zone.findall('network/layer3/member')
             if not members and zones!=['any']:raise NatError('NAT requires a nonempty Layer 3 zone: '+str(zone.get('name')))
-            out.extend(m.text or '' for m in members)
+            out.extend(m.text or '' for m in members if m.text not in containers)
         if not out:raise NatError('Assign Layer 3 interfaces to the selected zones before activating NAT')
         return sorted(set(out))
 

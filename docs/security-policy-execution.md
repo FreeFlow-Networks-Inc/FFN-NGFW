@@ -37,9 +37,27 @@ Execution still needs all of the following before commissioning:
   satisfy session-end logging.
 
 The current PA5200 aggregate path has a default-deny transit guard. Its legacy
-NAT binding file contains physical VIF mappings and does not automatically include
-aggregate VLANs. Merely adding a Security provider selection file, removing the
+NAT binding file contains physical VIF mappings. The optional platform binding
+adapter now supplements these with verified live aggregate/VLAN owners; an
+unaddressed aggregate transport parent is excluded from NAT interface matches.
+The candidate NAT plan passed native DP validation with this adapter.
+Merely adding a Security provider selection file, removing the
 guard or accepting a syntactically valid plan would not establish enforcement.
+
+`ffn_security_nft.py` now lowers a restricted IPv4 rule set to stateful nftables
+rules. It uses current kernel interface IDs, checks a conntrack grant on replies,
+rechecks both directions against current policy, preserves ordered rules and
+keeps INPUT/OUTPUT separate. It rejects unimplemented logging, identity,
+inspection and response requests. Native OCTEON namespace tests passed for
+allow/reply, unsolicited deny, rule order, live revocation, service matching,
+interface-local input and a following default-deny transit guard. This compiler
+does not install rules or commission an execution provider.
+
+The requested session-end logging needs a conntrack event collector. The current
+DP kernel lacks its netlink interface, and a matching external module could not
+resolve a required kernel symbol. An isolated kernel candidate has been built;
+it has not been selected or booted. A kernel/DP restart alone will not complete
+the remaining session collector and coordinated apply integration.
 
 Validation: Security matching tests cover ordering, disabled rules, zone types,
 implicit rules, unknown fields, missing identity and application-default. The

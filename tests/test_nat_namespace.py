@@ -26,6 +26,7 @@ def main():
         run('ip','netns','exec',dp,sys.executable,'-c',"from pathlib import Path;Path('/proc/sys/net/ipv4/ip_forward').write_text('1')")
         with tempfile.TemporaryDirectory() as temp:
             nat.NS=dp;nat.STATE=Path(temp)/'nat.json';nat.BINDINGS=Path(temp)/'interfaces.json'
+            nat.PLATFORM_BINDINGS=Path(temp)/'platform-bindings.json'
             nat.BINDINGS.write_text(json.dumps({'ethernet1/1':'p1','ethernet1/2':'p2'}))
             def apply(rows):return nat.apply({'revision':nat.saved()['revision'],'plan':{'version':1,'rules':rows}})
             assert not ping(1100),'WAN has no return route before source NAT'

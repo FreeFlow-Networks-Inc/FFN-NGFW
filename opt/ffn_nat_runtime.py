@@ -22,6 +22,7 @@ NS='ffn-data'
 TABLE='ffn_nat'
 STATE=Path('/etc/ffn/nat.json')
 BINDINGS=Path('/etc/ffn/nat-interfaces.json')
+PLATFORM_BINDINGS=Path('/etc/ffn/policy-bindings.json')
 LOCK=Path('/run/ffn-network.lock')
 MARK=0xf1000000
 
@@ -56,6 +57,18 @@ def bindings():
     data=json.loads(BINDINGS.read_text())
     if not isinstance(data,dict) or not data or any(not isinstance(k,str) or not isinstance(v,str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,15}',v) or v=='lo' for k,v in data.items()):raise NatError('Invalid NAT interface map')
     if len(set(data.values()))!=len(data):raise NatError('Ambiguous NAT interface map')
+    selection=PLATFORM_BINDINGS
+    if selection.exists():
+        st=selection.stat()
+        if st.st_uid!=0 or st.st_mode & 0o022:raise NatError('Policy binding provider must be root-owned')
+        if json.loads(selection.read_text())!={'provider':'platform'}:raise NatError('Unknown policy binding provider')
+        try:from ffn_platform_policy_bindings import discover
+        except ImportError as error:raise NatError('Selected platform binding provider is not installed') from error
+        links={x['ifname']:x for x in json.loads(run(['ip','-n',NS,'-d','-j','link']))}
+        for logical,device in discover(links).items():
+            if logical in data and data[logical]!=device:raise NatError('Conflicting platform interface binding: '+logical)
+            if device in data.values() and data.get(logical)!=device:raise NatError('Ambiguous platform interface binding')
+            data[logical]=device
     return data
 
 
