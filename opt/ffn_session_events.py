@@ -103,6 +103,14 @@ def decode(raw, byteorder=sys.byteorder):
             # DESTROY need not include CTA_LABELS. The durable NEW record
             # supplies its token, keyed by boot + CT ID + original tuple.
             counters = {}
+            state = dict(status=integer(data[3],4) if 3 in data else None,
+                         timeout=integer(data[7],4) if 7 in data else None,
+                         zone=integer(data[18],2) if 18 in data else 0, tcp_state=None)
+            if 4 in data:
+                info=attributes(data[4],byteorder)
+                if 1 in info:
+                    tcp=attributes(info[1],byteorder)
+                    if 1 in tcp:state['tcp_state']=integer(tcp[1],1)
             for key, direction in ((9, 'original'), (10, 'reply')):
                 if key in data:
                     nested = attributes(data[key], byteorder, padding=(5,))
@@ -111,7 +119,7 @@ def decode(raw, byteorder=sys.byteorder):
             result.append(dict(event='end' if kind == 0x102 else 'start' if flags & 0x600 else 'update',
                                id=integer(data[12], 4), token=labels >> 1 if labels & 1 else None,
                                original=tuple_data(data[1], byteorder),
-                               reply=tuple_data(data[2], byteorder), counters=counters))
+                               reply=tuple_data(data[2], byteorder), counters=counters, **state))
         except (KeyError, ValueError, struct.error) as error:
             raise EventError('Malformed owned conntrack event: ' + str(error)) from error
     if offset != len(raw):
@@ -146,7 +154,7 @@ def receive(stream):
     return decode(receive_raw(stream))
 
 
-def snapshot(stream, timeout=15):
+def snapshot(stream, timeout=15, capacity=524288):
     """Dump on the subscribed socket so no events are lost between the two.
 
     Keep multicast changes in receive order and replay them after the dump.
@@ -176,7 +184,7 @@ def snapshot(stream, timeout=15):
             elif seq==0:changes.extend(decode(message+b'\0'*((-size)%4)))
             else:raise EventError('Unexpected conntrack snapshot sequence')
         if offset!=len(raw):raise EventError('Truncated snapshot padding')
-        if len(rows)+len(changes)>524288:raise EventGap('Conntrack snapshot capacity exceeded')
+        if len(rows)+len(changes)>capacity:raise EventGap('Conntrack snapshot capacity exceeded')
     raise EventGap('Conntrack snapshot did not complete and drain')
 
 

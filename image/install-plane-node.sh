@@ -21,7 +21,7 @@ install -m 0644 "$root/opt/ffn_planed.py" "$root/opt/ffn_linux_network.py" \
                 "$root/opt/ffn_dp_tools.py" "$root/opt/ffn_kernel_capabilities.py" "$root/opt/ffn_nat_runtime.py" \
                 "$root/opt/ffn_nat_policy.py" "$root/opt/ffn_interface_management.py" /usr/local/lib/ffn/
 install -m 0644 "$root/opt/ffn_security_runtime.py" "$root/opt/ffn_security_nft.py" \
-                "$root/opt/ffn_session_events.py" "$root/opt/ffn_policy_config.py" \
+                "$root/opt/ffn_session_events.py" "$root/opt/ffn_session_feed.py" "$root/opt/ffn_policy_config.py" \
                 "$root/opt/ffn_policy_plan.py" "$root/opt/ffn_policy_profiles.py" \
                 "$root/opt/ffn_qos_config.py" "$root/opt/ffn_security_control.py" \
                 "$root/opt/ffn_nat_control.py" /usr/local/lib/ffn/

@@ -9,7 +9,7 @@ from ffn_session_events import decode, EventError, Journal, Collector, snapshot,
 from unittest.mock import patch
 
 
-def message(order, end=False, label=0x123456789):
+def message(order, end=False, label=0x123456789, state=False):
     endian='<' if order=='little' else '>'
     def attr(kind, data):
         raw=struct.pack(endian+'HH',len(data)+4,kind)+data
@@ -22,10 +22,20 @@ def message(order, end=False, label=0x123456789):
         attr(2,tup([198,51,100,2],[192,0,2,2]))+attr(12,(123).to_bytes(4,'big'))+
         attr(22,label.to_bytes(16,order))+
         attr(9,counter(2,120))+attr(10,counter(1,60)))
+    if state:
+        payload+=attr(3,(14).to_bytes(4,'big'))+attr(7,(300).to_bytes(4,'big'))+attr(18,(7).to_bytes(2,'big'))
+        payload+=attr(4,attr(1,attr(1,b'\x03')))
     return struct.pack(endian+'IHHII',len(payload)+16,0x102 if end else 0x100,0 if end else 0x600,0,0)+payload
 
 
 class EventsTests(unittest.TestCase):
+    def test_session_state_is_network_order_on_both_architectures(self):
+        for order in ('little','big'):
+            row=decode(message(order,state=True),order)[0]
+            self.assertEqual([row[k] for k in ('status','timeout','zone','tcp_state')],[14,300,7,3])
+            row=decode(message(order),order)[0]
+            self.assertEqual([row[k] for k in ('status','timeout','zone','tcp_state')],[None,None,0,None])
+
     def test_batch_failure_rolls_back_every_record(self):
         with tempfile.TemporaryDirectory() as directory:
             j=Journal(Path(directory)/'sessions.db','boot')
