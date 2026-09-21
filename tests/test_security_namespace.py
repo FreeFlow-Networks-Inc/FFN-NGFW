@@ -41,6 +41,23 @@ def main():
         assert not ping(lan,'198.51.100.2',3201),'Explicit drop allowed transit'
         apply({'action':'allow'})
         assert ping(lan,'198.51.100.2',3202),'Stateful allow or reply grant failed'
+        # A pre-existing conntrack is not proof of a Security grant. Seed an
+        # unlabelled UDP session whose reply matches the current rule tuple.
+        run('ip','netns','exec',dp,executable('conntrack'),'-I','-p','udp',
+            '--orig-src','192.0.2.2','--orig-dst','198.51.100.2',
+            '--sport','45678','--dport','45679','--timeout','30','--status','SEEN_REPLY')
+        listener=S.Popen(['ip','netns','exec',lan,'python3','-u','-c',
+            "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.bind(('192.0.2.2',45678)); s.settimeout(2); print('ready',flush=True);\ntry:s.recv(64);print('received')\nexcept TimeoutError:print('blocked')"],stdout=S.PIPE,stderr=S.PIPE,text=True)
+        try:
+            import select
+            assert select.select([listener.stdout],[],[],5)[0],'Reply test listener did not start'
+            assert listener.stdout.readline().strip()=='ready'
+            run('ip','netns','exec',wan,'python3','-c',
+                "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.bind(('198.51.100.2',45679)); s.sendto(b'no-grant',('192.0.2.2',45678))")
+            stdout,stderr=listener.communicate(timeout=5)
+            assert listener.returncode==0 and stdout.strip()=='blocked',(stdout,stderr)
+        finally:
+            if listener.poll() is None:listener.kill();listener.communicate()
         assert not ping(wan,'192.0.2.2',3203),'Reverse unsolicited traffic bypassed policy'
         assert ping(lan,'192.0.2.1',3204),'Transit policy affected interface-local input'
         apply({'action':'drop'},{'action':'allow'})

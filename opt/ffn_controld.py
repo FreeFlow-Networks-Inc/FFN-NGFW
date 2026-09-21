@@ -628,6 +628,8 @@ class IPCServer:
         self.policy = PolicyController(os.getenv('FFN_CONFIG_DIR','/var/lib/ffn-ngfw/config'), commit)
         from ffn_nat_control import NatGateway
         self.nat = NatGateway(self.planes, os.getenv('FFN_CONFIG_DIR','/var/lib/ffn-ngfw/config'))
+        from ffn_security_control import SecurityGateway
+        self.security = SecurityGateway(self.planes, os.getenv('FFN_CONFIG_DIR','/var/lib/ffn-ngfw/config'))
         self._register_handlers()
 
     def _register_handlers(self):
@@ -636,6 +638,9 @@ class IPCServer:
             "nat/preview":              self.nat.preview,
             "nat/validate":             self.nat.validate,
             "nat/apply":                self.nat.apply,
+            "security/status":          self.security.status,
+            "security/validate":        self.security.validate,
+            "security/apply":           self.security.apply,
             "nat/tools":                self.nat.tools,
             "plane/request":            self.planes.request,
             "state/control":            self.planes.status,

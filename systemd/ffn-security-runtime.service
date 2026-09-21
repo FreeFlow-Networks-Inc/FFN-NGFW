@@ -1,0 +1,15 @@
+[Unit]
+Description=FFN supervised Security/NAT and session accounting
+After=network.target ffn-network-restore.service
+
+[Service]
+Type=simple
+User=root
+UMask=0077
+ExecStart=/usr/sbin/ip netns exec ffn-data /usr/bin/python3 /usr/local/lib/ffn/ffn_security_runtime.py serve
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

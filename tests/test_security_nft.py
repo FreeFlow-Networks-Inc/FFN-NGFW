@@ -12,7 +12,7 @@ class SecurityNftTests(unittest.TestCase):
         xml=configuration('security',{'action':'allow','log-end':'no'})
         report=render(xml,{'ethernet1/1':10,'ethernet1/2':11})
         self.assertFalse(report['applied'])
-        self.assertIn('ct direction reply ct label & 0x1 == 0 drop',report['script'])
+        self.assertIn('ct direction reply ct label & 0 != 0 drop',report['script'])
         self.assertIn('iif { 10 } oif { 11 }',report['script'])
         self.assertIn('iif { 11 } oif { 10 }',report['script'])
         self.assertNotIn('hook input',report['script']);self.assertNotIn('hook output',report['script'])

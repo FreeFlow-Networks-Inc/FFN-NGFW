@@ -23,6 +23,7 @@ TABLE='ffn_nat'
 STATE=Path('/etc/ffn/nat.json')
 BINDINGS=Path('/etc/ffn/nat-interfaces.json')
 PLATFORM_BINDINGS=Path('/etc/ffn/policy-bindings.json')
+COORDINATED=Path('/etc/ffn/policy-runtime.json')
 LOCK=Path('/run/ffn-network.lock')
 MARK=0xf1000000
 
@@ -47,6 +48,7 @@ def nft(args,text=None):
 
 
 def saved():
+    if COORDINATED.exists():return json.loads(COORDINATED.read_text())['nat']
     return json.loads(STATE.read_text()) if STATE.exists() else {'revision':0,'plan':{'version':1,'rules':[]},'digest':None,'script':None}
 
 
@@ -186,7 +188,11 @@ def inspect():
         chain=item.get('chain',{})
         if chain.get('table')!=TABLE and chain.get('type')=='nat':raise NatError('Another NAT owner exists in the data namespace')
         rule=item.get('rule',{})
-        if rule.get('table')!=TABLE and '"mark"' in json.dumps(rule):raise NatError('Another rule owns connection marks in the data namespace')
+        def connection_mark(value):
+            if isinstance(value,dict):
+                return value.get('ct',{}).get('key')=='mark' or any(connection_mark(v) for v in value.values())
+            return isinstance(value,list) and any(connection_mark(v) for v in value)
+        if rule.get('table')!=TABLE and connection_mark(rule):raise NatError('Another rule owns connection marks in the data namespace')
     return table,data
 
 
@@ -234,7 +240,7 @@ def rule_usage(state,data,applied):
     return usage
 
 
-def prepare(request):
+def prepare(request,allow_restore=False):
     if not isinstance(request,dict) or set(request)!={'revision','plan'}:raise NatError('NAT request requires revision and plan')
     validate_plan(request['plan'])
     dynamic=[r['dnat'] for r in request['plan']['rules'] if r['dnat'] and r['dnat'].get('type')=='dynamic']
@@ -249,7 +255,7 @@ def prepare(request):
     if type(request['revision']) is not int or request['revision']!=state['revision']:raise NatError('NAT revision changed; refresh before retrying')
     table,data=inspect()
     if table and not state['script']:raise NatError('Unmanaged NAT table; explicit reconciliation required')
-    if state['script'] and (not table or table.get('comment')!='ffn-nat:'+state['digest'] or state.get('kernel_digest')!=kernel_digest(data)):raise NatError('NAT table drift; explicit reconciliation required')
+    if state['script'] and not (allow_restore and not table) and (not table or table.get('comment')!='ffn-nat:'+state['digest'] or state.get('kernel_digest')!=kernel_digest(data)):raise NatError('NAT table drift; explicit reconciliation required')
     links={x['ifname']:x for x in json.loads(run(['ip','-n',NS,'-j','address']))}
     if request['plan'].get('rules'):
         policies=json.loads(run(['ip','-n',NS,'-4','-j','rule','show']))
@@ -273,6 +279,7 @@ def write_state(state):
 
 
 def apply(request):
+    if COORDINATED.exists():raise NatError('Security owns coordinated NAT activation; use the policy Commit path')
     old,script,batch=prepare(request)
     if digest(request['plan'])==old['digest']:return dict(revision=old['revision'],digest=old['digest'],applied=True,unchanged=True)
     nft(['-f','-'],batch)
@@ -292,6 +299,7 @@ def apply(request):
 
 def restore():
     """Boot replay after the platform restores its isolated network namespace."""
+    if COORDINATED.exists():return {'restored':False,'reason':'Security supervisor owns coordinated policy replay'}
     state=saved()
     if not state['script']:return {'restored':False,'reason':'No saved NAT configuration'}
     table,data=inspect()
