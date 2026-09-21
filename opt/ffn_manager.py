@@ -1441,44 +1441,19 @@ class ConfigManager:
         logger.info("Config loaded: running-config at v%s (%d history entries)",
                     latest, len(self.history.list_entries()))
 
-        self._lock_holder: Optional[str] = None
-        self._lock_acquired_at: float = 0
-        self._lock_reason: str = ""
+        from ffn_config_lock import ConfigLock
+        self._config_lock = ConfigLock(CONFIG_DIR / 'config-lock.sqlite3', COMMIT_LOCK_TIMEOUT)
 
     # -- Lock management --
 
     def lock_status(self) -> dict:
-        if self._lock_holder:
-            age = time.time() - self._lock_acquired_at
-            if age > COMMIT_LOCK_TIMEOUT:
-                self._lock_holder = None
-                self._lock_reason = ""
-                return {"locked": False, "message": "Lock expired"}
-            return {
-                "locked": True,
-                "holder": self._lock_holder,
-                "acquired_at": datetime.fromtimestamp(self._lock_acquired_at).isoformat(),
-                "age_seconds": int(age),
-                "expires_in": int(COMMIT_LOCK_TIMEOUT - age),
-                "reason": self._lock_reason,
-            }
-        return {"locked": False}
+        return self._config_lock.status()
 
     def acquire_lock(self, user: str, reason: str = "commit") -> bool:
-        st = self.lock_status()
-        if st["locked"] and st["holder"] != user:
-            return False
-        self._lock_holder = user
-        self._lock_acquired_at = time.time()
-        self._lock_reason = reason
-        return True
+        return self._config_lock.acquire(user, reason)
 
     def release_lock(self, user: str) -> bool:
-        if self._lock_holder == user:
-            self._lock_holder = None
-            self._lock_reason = ""
-            return True
-        return False
+        return self._config_lock.release(user)
 
     # -- XML parsing --
 
@@ -2473,7 +2448,8 @@ async def get_current_user(
         token_str = authorization[7:]
     else:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return await _authenticate_token(token_str, request.url.path)
+    from ffn_authorization import authorize
+    return authorize(request, await _authenticate_token(token_str, request.url.path))
 
 
 async def _authenticate_token(token_str: str, path: str):
@@ -9234,9 +9210,7 @@ async def config_lock_release(user: dict = Depends(get_current_user)):
 async def config_lock_override(user: dict = Depends(get_current_user)):
     """Admin-only lock override — forcibly release any active lock."""
     _require_admin(user)
-    prev_holder = config_mgr._lock_holder
-    config_mgr._lock_holder = None
-    config_mgr._lock_reason = ""
+    prev_holder = config_mgr._config_lock.override()
     async with aiosqlite.connect(DB_PATH) as db:
         await audit(db, user["username"], "lock_override", f"previous={prev_holder}")
     return {"status": "overridden", "previous_holder": prev_holder}
@@ -12201,8 +12175,8 @@ if os.getenv('FFN_MANAGER_FRONTEND') == '1':
 
 if __name__ == "__main__":
     # Concurrency model: one uvicorn worker with asyncio event loop.
-    # The ConfigManager, commit lock, and runtime-state cache all live in
-    # process memory and must stay consistent, so we keep one worker.
+    # Commit serialization and the runtime-state cache still live in process
+    # memory; keep one writer. Edit leases are backed by shared SQLite storage.
     # FastAPI serves thousands of concurrent API requests from one loop;
     # any CPU-bound or blocking subprocess work is off-loaded to a thread
     # pool via asyncio.to_thread() inside the individual handlers.

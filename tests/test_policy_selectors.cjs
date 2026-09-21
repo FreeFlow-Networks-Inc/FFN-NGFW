@@ -31,3 +31,7 @@ f.add('any');assert.equal(f.target.value,'any','Any replaces all specific select
 f.add('application-default');assert.equal(f.target.value,'application-default');f.add('tenant-blue');assert.equal(f.target.value,'tenant-blue');
 const readonly=fixture(false);readonly.add('tenant-blue');assert.equal(readonly.target.value,'any');assert(readonly.chips.children[0].children[1].disabled);
 console.log('Dynamic inventories, escaped names, Any exclusivity, multi-selection serialization, removal and read-only controls passed');
+assert.match(ctx.natModeNotice('none','dynamic-ip','round-robin',null),/unverified/);
+assert.match(ctx.natModeNotice('none','dynamic-ip','round-robin',{destination_distribution:{'round-robin':{supported:true}}}),/is available/);
+assert.match(ctx.natModeNotice('none','dynamic-ip','least-sessions',{destination_distribution:{'least-sessions':{supported:false,reason:'Allocator missing'}}}),/Allocator missing/);
+assert.match(ctx.natModeNotice('persistent-dynamic-ip-and-port','none','',{}),/not supported/);

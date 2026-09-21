@@ -22,6 +22,7 @@ async def console_user(uid, path, manager):
 def install_identity(manager):
     async def current(request:Request, authorization:Optional[str]=Header(None)):
         if 'ffn.console_uid' in request.scope:
-            return await console_user(request.scope['ffn.console_uid'],request.url.path,manager)
+            from ffn_authorization import authorize
+            return authorize(request, await console_user(request.scope['ffn.console_uid'],request.url.path,manager))
         return await manager.get_current_user(request,authorization)
     manager.app.dependency_overrides[manager.get_current_user]=current

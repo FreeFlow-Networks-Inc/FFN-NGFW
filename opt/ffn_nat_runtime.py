@@ -93,8 +93,16 @@ def validate_plan(plan):
         if snat['type']=='static' and (len(rule['source'])!=1 or '/' not in rule['source'][0] or ipaddress.ip_network(rule['source'][0]).prefixlen!=32):raise NatError('Static NAT needs one original host')
         if snat['type']=='masquerade' and (not isinstance(snat['interface'],str) or not re.fullmatch(r'(?:ethernet[0-9]+/[0-9]+|ae[0-9]+|vlan|tunnel|loopback)(?:\.[0-9]+)?',snat['interface'])):raise NatError('Invalid source translation interface')
         if dnat is not None:
-            if not isinstance(dnat,dict) or set(dnat)-{'address','port'} or 'address' not in dnat:raise NatError('Invalid destination translation')
-            ipv4(dnat['address'],host=True)
+            if not isinstance(dnat,dict):raise NatError('Invalid destination translation')
+            if dnat.get('type')=='dynamic':
+                if set(dnat)-{'type','addresses','method','port'} or not {'addresses','method'}<=set(dnat):raise NatError('Invalid dynamic destination fields')
+                pool=dnat['addresses']
+                if not isinstance(pool,list) or not 1<=len(pool)<=256 or any(not isinstance(a,str) for a in pool) or len(set(pool))!=len(pool):raise NatError('Invalid dynamic destination pool')
+                for addr in pool:ipv4(addr,host=True)
+                if dnat['method'] not in ('round-robin','source-ip-hash','ip-hash'):raise NatError('Unsupported session-distribution method')
+            else:
+                if set(dnat)-{'address','port'} or 'address' not in dnat:raise NatError('Invalid destination translation')
+                ipv4(dnat['address'],host=True)
             if 'port' in dnat and (type(dnat['port']) is not int or not 1<=dnat['port']<=65535 or any(s['protocol']=='any' for s in rule['services'])):raise NatError('Port forwarding requires TCP/UDP and a valid port')
     return plan
 
@@ -129,7 +137,18 @@ def render(plan,mapping,links,revision):
             for condition in conditions:lines.append('  '+match+' '+condition+' goto '+chain)
         action='accept'
         if r['dnat']:
-            action='dnat to '+r['dnat']['address']
+            dnat=r['dnat']
+            if dnat.get('type')=='dynamic':
+                count=len(dnat['addresses'])
+                selector='numgen inc mod '+str(count)
+                if dnat['method']!='round-robin':
+                    fields='ip saddr' if dnat['method']=='source-ip-hash' else 'ip saddr . ip daddr'
+                    # Stable per-rule seed avoids reshuffling new flows after replay.
+                    seed='0x'+digest({'scope':r['scope'],'name':r['name']})[:8]
+                    selector='jhash '+fields+' mod '+str(count)+' seed '+seed
+                targets=' map { '+', '.join(str(n)+' : '+address for n,address in enumerate(dnat['addresses']))+' }'
+                action='dnat ip to '+selector+targets
+            else:action='dnat to '+dnat['address']
             if 'port' in r['dnat']:
                 action='; '.join('meta l4proto '+proto+' '+action+':'+str(r['dnat']['port']) for proto in sorted({s['protocol'] for s in r['services']}))+'; drop'
         chains.append(' chain '+chain+' { counter comment '+json.dumps('NAT '+r['scope']+'/'+r['name'])+'; ct mark set '+str(mark)+'; '+action+'; }')
@@ -168,7 +187,16 @@ def kernel_digest(data):
 
 
 def status():
-    state=saved();result={'revision':state['revision'],'digest':state['digest'],'available':False,'applied':False,'provider':'linux-nftables','byteorder':sys.byteorder,'machine':os.uname().machine,'rules':[]}
+    from ffn_kernel_capabilities import inspect as inspect_kernel
+    kernel=inspect_kernel()
+    distribution={}
+    for method in ('round-robin','source-ip-hash','ip-hash','ip-modulo','least-sessions'):
+        feature='nat-round-robin' if method=='round-robin' else 'nat-address-hash'
+        supported=method in ('round-robin','source-ip-hash','ip-hash') and kernel['features'][feature]['compiled'] is True
+        distribution[method]=dict(supported=supported,reason='Commit validates the current dataplane' if supported else
+            'Dataplane allocator is not implemented' if method in ('ip-modulo','least-sessions') else 'Required kernel feature is unavailable or unverified')
+    state=saved();result={'revision':state['revision'],'digest':state['digest'],'available':False,'applied':False,'provider':'linux-nftables','byteorder':sys.byteorder,'machine':os.uname().machine,'rules':[],
+        'capabilities':{'destination_distribution':distribution,'persistent_source_binding':False},'kernel':kernel}
     try:
         mapping=bindings();table,data=inspect()
         result.update(available=True,interfaces=mapping,applied=bool(table and table.get('comment')=='ffn-nat:'+str(state['digest']) and state.get('kernel_digest')==kernel_digest(data)))
@@ -196,6 +224,14 @@ def rule_usage(state,data,applied):
 def prepare(request):
     if not isinstance(request,dict) or set(request)!={'revision','plan'}:raise NatError('NAT request requires revision and plan')
     validate_plan(request['plan'])
+    dynamic=[r['dnat'] for r in request['plan']['rules'] if r['dnat'] and r['dnat'].get('type')=='dynamic']
+    if dynamic:
+        from ffn_kernel_capabilities import inspect as inspect_kernel
+        features=inspect_kernel()['features']
+        for translation in dynamic:
+            name='nat-round-robin' if translation['method']=='round-robin' else 'nat-address-hash'
+            if features[name]['compiled'] is False:
+                raise NatError('Running dataplane kernel lacks '+name+' support; a matching kernel/module build and packet validation are required')
     state=saved()
     if type(request['revision']) is not int or request['revision']!=state['revision']:raise NatError('NAT revision changed; refresh before retrying')
     table,data=inspect()

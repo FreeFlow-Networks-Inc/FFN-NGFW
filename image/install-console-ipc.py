@@ -88,6 +88,15 @@ def merge_controld(source):
 
 
 def merge_manager(source):
+    # Keep upgrades on an older appliance on the same authorization/lock model.
+    from pathlib import Path
+    import importlib.util
+    sibling = Path(__file__).with_name('install-control-hardening.py')
+    canonical = Path(__file__).resolve().parents[1] / 'opt/ffn_manager.py'
+    if sibling.exists() and canonical.exists():
+        spec = importlib.util.spec_from_file_location('ffn_control_hardening', sibling)
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        source = module.merge_manager(source, canonical.read_text())
     if 'from ffn_console_accounts import validate_username' not in source:
         anchor='    uname = (req.username or "").strip()\n'
         if source.count(anchor)!=1:raise ValueError('Manager user creation changed')
@@ -134,7 +143,7 @@ def main():
             '[Unit]\nWants=ffn-managementd.service\nAfter=ffn-managementd.service\n[Service]\nEnvironment=FFN_CONSOLE_ENABLED=1\n',
         '/etc/systemd/system/ffn-manager-v2.service.d/50-backend.conf':
             '[Unit]\nWants=ffn-managementd.service\nAfter=ffn-managementd.service\n[Service]\nEnvironment=FFN_MANAGER_FRONTEND=1\n'}
-    for name in ('ffn_management_ipc.py','ffn_cli_transport.py','ffn_console_identity.py','ffn_console_accounts.py','ffn_pam_console.py'):
+    for name in ('ffn_management_ipc.py','ffn_cli_transport.py','ffn_console_identity.py','ffn_console_accounts.py','ffn_pam_console.py','ffn_authorization.py','ffn_config_lock.py'):
         for base in ('/opt/ffn-ngfw','/opt/ffn-ngfw-v2'):updates[base+'/'+name]=(root/'opt'/name).read_text()
     for name,body in updates.items():
         if name.endswith('.py') or name.endswith('/ffn-cli'):compile(body,name,'exec')

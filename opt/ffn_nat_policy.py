@@ -106,7 +106,11 @@ def compile_rule(root,owner,spec,position):
     if not spec['editable']:raise NatError('Imported NAT rule contains unsupported XML fields')
     if s.get('nat-type') not in ('','ipv4'):raise NatError('Only IPv4 NAT is supported')
     if s.get('source-type')=='persistent-dynamic-ip-and-port':raise NatError('Persistent Dynamic IP and Port requires a dataplane persistent-binding allocator; activation is not supported by this provider')
-    if s.get('destination-type')=='dynamic-ip' or s.get('session-distribution'):raise NatError('Dynamic destination NAT requires a dataplane session-distribution provider; activation is not supported by this provider')
+    dynamic=s.get('destination-type')=='dynamic-ip'
+    if dynamic and s.get('session-distribution') not in ('round-robin','source-ip-hash','ip-hash'):
+        raise NatError('This session-distribution method requires a different dataplane allocator')
+    if not dynamic and s.get('session-distribution'):
+        raise NatError('Session distribution requires dynamic destination translation')
     source=r.addresses(s['source']);destination=r.addresses(s['destination'])
     ingress=r.interfaces(s['from']);egress=r.interfaces(s['to'])
     if s.get('to-interface') and s['to-interface']!='any':
@@ -130,8 +134,21 @@ def compile_rule(root,owner,spec,position):
     dnat=None
     if s.get('translated-destination'):
         addresses=r.addresses([s['translated-destination']])
-        if len(addresses)!=1:raise NatError('Destination translation requires one IPv4 host')
-        dnat={'address':ipv4(addresses[0],host=True)}
+        if dynamic:
+            pool=set()
+            for value in addresses:
+                if '-' in value:
+                    first,last=value.split('-');start,end=int(ipaddress.IPv4Address(first)),int(ipaddress.IPv4Address(last))
+                else:
+                    network=ipaddress.IPv4Network(value);start,end=int(network.network_address),int(network.broadcast_address)
+                if end-start+1>256:raise NatError('Dynamic destination pool exceeds 256 hosts')
+                for number in range(start,end+1):pool.add(ipv4(str(ipaddress.IPv4Address(number)),host=True))
+                if len(pool)>256:raise NatError('Dynamic destination pool exceeds 256 hosts')
+            if not pool:raise NatError('Dynamic destination pool is empty')
+            dnat={'type':'dynamic','addresses':sorted(pool,key=ipaddress.IPv4Address),'method':s['session-distribution']}
+        else:
+            if len(addresses)!=1:raise NatError('Destination translation requires one IPv4 host')
+            dnat={'address':ipv4(addresses[0],host=True)}
         if s.get('translated-port'):
             if any(x['protocol']=='any' for x in services):raise NatError('Port forwarding requires a TCP or UDP service')
             n=int(s['translated-port'])

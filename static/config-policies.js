@@ -11,6 +11,15 @@ const policyOptionLabels={'universal':'Universal','intrazone':'Intrazone','inter
   'persistent-dynamic-ip-and-port':'Persistent Dynamic IP and Port',
   'round-robin':'Round Robin','source-ip-hash':'Source IP Hash','ip-modulo':'IP Modulo','ip-hash':'IP Hash','least-sessions':'Least Sessions'};
 const securityProfileKeys=['antivirus','vulnerability','anti-spyware','url-filtering','file-blocking','data-filtering','crucible-analysis'];
+function natModeNotice(source,destination,distribution,capabilities){
+  if(source==='persistent-dynamic-ip-and-port'&&capabilities?.persistent_source_binding!==true)
+    return 'Persistent source bindings are not supported by the current dataplane. Save this rule disabled until a provider is available.';
+  if(destination!=='dynamic-ip')return '';
+  const support=capabilities?.destination_distribution?.[distribution];
+  if(!support)return 'Destination distribution availability is unverified. Commit will validate the current dataplane.';
+  return support.supported?'Destination distribution is available. Commit validates and applies this rule.':
+    (support.reason||'Destination distribution is unavailable')+'. Save this rule disabled until support is available.';
+}
 function policyUsage(r,fast=false){
   // Stored SQL counters have no agent identity, configuration generation or
   // observation time. Never present them as measured dataplane usage.
@@ -246,7 +255,7 @@ function policyPlanAction(kind,action){
   if(kind==='pbf')return action.type==='forward'?'Forward via '+action.interface+' · Next hop '+(action.next_hop||'directly connected'):action.type==='discard'?'Discard':'Use normal routing';
   if(kind==='decryption')return action.type==='no-decrypt'?'Do not decrypt':'Decrypt · '+action.inspection+(action.certificate?' · Certificate '+action.certificate:'')+(action.profile?' · Profile '+action.profile:'');
   const s=action.source_translation,d=action.destination_translation;
-  return 'Source: '+(s.interface?'Interface '+s.interface:s.address?s.type+' '+s.address:'unchanged')+'; Destination: '+(d?d.address+(d.port?':'+d.port:''):'unchanged');
+  return 'Source: '+(s.interface?'Interface '+s.interface:s.address?s.type+' '+s.address:'unchanged')+'; Destination: '+(d?(d.address||d.addresses?.join(', ')||'unresolved')+(d.port?':'+d.port:'')+(d.method?' · '+(policyOptionLabels[d.method]||d.method):''):'unchanged');
 }
 async function inspectPolicyWorkspace(snapshot,kind,source,scope,test){
   const box=document.getElementById('pw-editor'),text=v=>_escSP(v??''),base='/api/config/policies/'+kind;
@@ -353,14 +362,18 @@ async function editPolicyWorkspace(snapshot,url,existing,reload,clone=false){
     mode.closest('label').after(method);const choice=method.querySelector('select');choice.value=iface.value?'interface':'pool';
     const warning=document.createElement('p');warning.className='text-dim';warning.setAttribute('role','status');translated.after(warning);
     const destination=form.elements['pf-destination-type'],distribution=form.elements['pf-session-distribution'];
+    let capabilities=null;
     const sync=()=>{
       const dipp=['dynamic-ip-and-port','persistent-dynamic-ip-and-port'].includes(mode.value);
       method.hidden=!dipp;show('source-interface',dipp&&choice.value==='interface');show('translated-source',mode.value!=='none'&&(!dipp||choice.value==='pool'));
       show('translated-destination',destination.value!=='none');show('translated-port',destination.value!=='none');show('session-distribution',destination.value==='dynamic-ip');
       if(destination.value==='dynamic-ip'&&!distribution.value)distribution.value='round-robin';
-      warning.textContent=mode.value==='persistent-dynamic-ip-and-port'||destination.value==='dynamic-ip'?'This mode can be saved as a disabled rule. Activation is blocked until the dataplane supports persistent bindings or destination session distribution.':'';warning.hidden=!warning.textContent;
+      warning.textContent=natModeNotice(mode.value,destination.value,distribution.value,capabilities);warning.hidden=!warning.textContent;
     };
-    mode.onchange=choice.onchange=destination.onchange=sync;sync();
+    mode.onchange=choice.onchange=destination.onchange=distribution.onchange=sync;sync();
+    consoleRequest('/api/config/nat/preview?source=candidate').then(report=>{
+      if(form.isConnected&&editorGeneration===policyEditorGeneration){capabilities=report.runtime?.capabilities;sync();}
+    }).catch(()=>{});
   }
   if(snapshot.kind==='pbf'){
     const action=form.elements['pf-action'],sync=()=>{show('egress-interface',action.value==='forward');show('next-hop',action.value==='forward');};action.onchange=sync;sync();
