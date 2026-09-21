@@ -55,6 +55,15 @@ def main():
                 setup+='nat.'+name+'=Path('+repr(str(getattr(nat,name)))+')\n'
             for name in ('STATE','HEALTH','DATABASE'):
                 setup+='runtime.'+name+'=Path('+repr(str(getattr(runtime,name)))+')\n'
+            inject=path/'inject-overflow'
+            setup+=('import ffn_session_events as events, errno\noriginal_receive=events.receive\n'
+                    'def injected_receive(stream):\n'
+                    ' marker=Path('+repr(str(inject))+')\n'
+                    ' if marker.exists():\n'
+                    '  marker.unlink()\n'
+                    '  raise OSError(errno.ENOBUFS,"No buffer space available")\n'
+                    ' return original_receive(stream)\n'
+                    'events.receive=injected_receive\n')
             service=S.Popen(['ip','netns','exec',dp,'python3','-u','-c',setup+'runtime.serve()'],text=True,stdout=S.PIPE,stderr=S.PIPE)
             wait_for(lambda:runtime.status()['available'])
             assert not ping(),'Unconfigured provider admitted transit'
@@ -62,6 +71,25 @@ def main():
             with runtime.lock():runtime.apply(dict(revision=0,xml=policy()))
             wait_for(lambda:runtime.status()['applied'])
             assert ping(),'Coordinated Security/NAT did not pass traffic'
+            # Restart with live kernel grants; no conntrack flush or fake end.
+            service.terminate();out,err=service.communicate(timeout=20)
+            assert service.returncode==0,(out,err)
+            service=S.Popen(['ip','netns','exec',dp,'python3','-u','-c',setup+'runtime.serve()'],text=True,stdout=S.PIPE,stderr=S.PIPE)
+            wait_for(lambda:runtime.status()['applied'])
+            assert ping(),'Collector restart did not reconcile live NAT sessions'
+            assert json.loads(runtime.HEALTH.read_text())['events']['reconciled_sessions']>=1
+            previous=json.loads(runtime.HEALTH.read_text())['events']['recoveries']
+            inject.touch();ping(ident=3440)
+            wait_for(lambda:json.loads(runtime.HEALTH.read_text()).get('events',{}).get('recoveries',0)>previous)
+            wait_for(lambda:runtime.status()['applied'])
+            assert ping(),'ENOBUFS recovery did not restore policy forwarding'
+            # Exercise batched durable writes while the supervisor also runs
+            # nftables/ownership readback. This is an isolated namespace.
+            recoveries=json.loads(runtime.HEALTH.read_text())['events']['recoveries']
+            burst=run('ip','netns','exec',lan,nat.executable('ping'),'-f','-q','-c','2000','-w','15','198.51.100.2')
+            assert ', 0% packet loss' in burst,burst
+            assert runtime.status()['applied'],'Event burst expired the forwarding lease'
+            assert json.loads(runtime.HEALTH.read_text())['events']['recoveries']==recoveries
             run('ip','netns','exec',dp,nat.executable('conntrack'),'-D','-p','icmp','--orig-src','192.0.2.2')
             def logs():
                 j=Journal(runtime.DATABASE,runtime.boot())
@@ -117,7 +145,8 @@ def main():
             service=None
             print(json.dumps(dict(coordinated_security_nat=True,session_end=True,lease_expiry=True,
                 local_input_isolation=True,invalid_generation_unchanged=True,live_revocation=True,
-                persistence_rollback=True,binding_loss_recovery=True)))
+                persistence_rollback=True,binding_loss_recovery=True,collector_restart_recovery=True,enobufs_recovery=True,
+                packet_burst=2000)))
     finally:
         if service is not None and service.poll() is None:
             service.send_signal(signal.SIGCONT);service.terminate()

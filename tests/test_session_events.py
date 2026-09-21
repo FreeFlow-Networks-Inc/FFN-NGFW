@@ -5,7 +5,8 @@ import sys
 import tempfile
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'opt'))
-from ffn_session_events import decode, EventError, Journal
+from ffn_session_events import decode, EventError, Journal, Collector, snapshot, EventGap
+from unittest.mock import patch
 
 
 def message(order, end=False, label=0x123456789):
@@ -25,6 +26,63 @@ def message(order, end=False, label=0x123456789):
 
 
 class EventsTests(unittest.TestCase):
+    def test_batch_failure_rolls_back_every_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            j=Journal(Path(directory)/'sessions.db','boot')
+            j.register({1:dict(logging=dict(start=True,end=True))})
+            row=decode(message('little',label=3),'little')[0]
+            with self.assertRaises(EventError):j.record_batch([row,dict(row,id=124,token=999)])
+            self.assertEqual(j.recent(),[])
+            self.assertEqual(j.db.execute('SELECT count(*) FROM sessions').fetchone()[0],0)
+            j.close()
+
+    def test_gap_reconciles_live_sessions_without_fabricating_end_or_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            j=Journal(Path(directory)/'sessions.db','boot')
+            j.register({1:dict(logging=dict(start=True,end=True))})
+            row=decode(message('little',label=3),'little')[0]
+            j.record(row,10);j.record(dict(row,id=124),11);j.fault('Session event gap: test')
+            # Surviving CT retains its actual start. Lost end is incomplete.
+            # Admission observed only in snapshot has an unknown start time.
+            j.reconcile([row,dict(row,id=125)],[],'test gap')
+            self.assertIsNone(j.fault_reason())
+            records=[json.loads(r[0]) for r in j.db.execute('SELECT data FROM sessions')]
+            self.assertEqual({r['id']:r['started'] for r in records},{123:10,125:None})
+            interrupted=[r for r in j.recent() if r['event']=='interrupted'][0]
+            self.assertIsNone(interrupted['ended']);self.assertFalse(interrupted['counters_complete'])
+            j.record(dict(row,event='end'),20)
+            self.assertTrue(j.recent()[0]['event_gap'])
+            self.assertEqual(j.recent()[0]['duration_seconds'],10)
+            j.close()
+
+    def test_reconciliation_unknown_token_preserves_fault_and_journal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            j=Journal(Path(directory)/'sessions.db','boot')
+            j.register({1:dict(logging=dict(start=True,end=True))})
+            row=decode(message('little',label=3),'little')[0]
+            j.record(row,10);j.fault('Session event gap: test')
+            before=list(j.db.execute('SELECT * FROM sessions'));events=j.recent()
+            with self.assertRaises(EventError):j.reconcile([dict(row,id=999,token=999)],[],'test')
+            self.assertEqual(list(j.db.execute('SELECT * FROM sessions')),before)
+            self.assertEqual(j.recent(),events);self.assertTrue(j.fault_reason());j.close()
+        self.assertFalse(Collector.recoverable('Policy rollback unconfirmed: test'))
+
+    def test_snapshot_replays_destroy_and_rejects_interrupted_dump(self):
+        class Stream:
+            def sendto(self,request,address):
+                sequence=struct.unpack_from('=I',request,8)[0]
+                row=bytearray(message(sys.byteorder,label=3))
+                struct.pack_into('=I',row,8,sequence)
+                self.queue=[bytes(row),message(sys.byteorder,True,label=0),
+                            struct.pack('=IHHIIi',20,3,self.flags,sequence,0,0)]
+            def recvmsg(self,size):return self.queue.pop(0),[],0,(0,0)
+        stream=Stream();stream.flags=0
+        with patch('ffn_session_events.select.select',side_effect=lambda *a:([stream] if stream.queue else [],[],[])):
+            rows,changes=snapshot(stream)
+            self.assertEqual(len(rows),1);self.assertEqual(changes[0]['event'],'end')
+            stream.flags=0x10
+            with self.assertRaises(EventGap):snapshot(stream)
+
     def test_native_nft_labels_and_network_order_tuples_both_architectures(self):
         rows=[decode(message(order),order)[0] for order in ('little','big')]
         self.assertEqual(rows[0],rows[1]);self.assertEqual(rows[0]['token'],0x91a2b3c4)

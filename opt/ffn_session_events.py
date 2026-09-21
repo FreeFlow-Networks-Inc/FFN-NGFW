@@ -6,15 +6,23 @@ IDs and counters use network order. Labels written by nftables use its native
 128-bit bitmask encoding, verified by packet tests on MIPS64eb.
 """
 import ipaddress
+import errno
 import json
 import socket
+import select
 import sqlite3
 import struct
 import sys
 import time
+import threading
 
 
 class EventError(ValueError):
+    pass
+
+
+class EventGap(EventError):
+    """A lost event can be recovered only from a complete kernel snapshot."""
     pass
 
 
@@ -75,7 +83,7 @@ def decode(raw, byteorder=sys.byteorder):
         body = raw[offset + 16:offset + size]
         offset += (size + 3) & ~3
         if kind == 4:
-            raise EventError('Conntrack event stream overrun')
+            raise EventGap('Conntrack event stream overrun')
         if kind == 2:
             if len(body) < 4 or int.from_bytes(body[:4], byteorder, signed=True):
                 raise EventError('Conntrack netlink error')
@@ -125,11 +133,51 @@ def subscribe():
         raise
 
 
-def receive(stream):
+def receive_raw(stream):
     raw, ancillary, flags, sender = stream.recvmsg(1024 * 1024)
-    if flags & socket.MSG_TRUNC or sender[0] != 0:
-        raise EventError('Truncated or non-kernel conntrack event')
-    return decode(raw)
+    if sender[0] != 0:
+        raise EventError('Non-kernel conntrack event')
+    if flags & socket.MSG_TRUNC:
+        raise EventGap('Truncated conntrack event')
+    return raw
+
+
+def receive(stream):
+    return decode(receive_raw(stream))
+
+
+def snapshot(stream, timeout=15):
+    """Dump on the subscribed socket so no events are lost between the two.
+
+    Keep multicast changes in receive order and replay them after the dump.
+    A dump interrupted by mutation, socket loss or an undrained queue cannot
+    acknowledge recovery. The caller keeps the transit gate closed throughout.
+    """
+    sequence=(time.monotonic_ns() & 0xffffffff) or 1
+    stream.sendto(struct.pack('=IHHII',20,0x101,0x301,sequence,0)+bytes([socket.AF_INET,0,0,0]),(0,0))
+    rows=[];changes=[];done=False;deadline=time.monotonic()+timeout
+    while time.monotonic()<deadline:
+        if not select.select([stream],[],[],0 if done else .1)[0]:
+            if done:return rows,changes
+            continue
+        raw=receive_raw(stream);offset=0
+        while offset<len(raw):
+            if len(raw)-offset<16:raise EventError('Truncated snapshot header')
+            size,kind,flags,seq,_=struct.unpack_from('=IHHII',raw,offset)
+            if size<16 or offset+size>len(raw):raise EventError('Invalid snapshot message')
+            message=raw[offset:offset+size];offset+=(size+3)&~3
+            if flags & 0x10:raise EventGap('Interrupted conntrack snapshot')
+            if seq==sequence:
+                if kind==3:
+                    if size>16 and (size<20 or struct.unpack_from('=i',message,16)[0]):
+                        raise EventGap('Failed conntrack snapshot')
+                    done=True
+                else:rows.extend(decode(message+b'\0'*((-size)%4)))
+            elif seq==0:changes.extend(decode(message+b'\0'*((-size)%4)))
+            else:raise EventError('Unexpected conntrack snapshot sequence')
+        if offset!=len(raw):raise EventError('Truncated snapshot padding')
+        if len(rows)+len(changes)>524288:raise EventGap('Conntrack snapshot capacity exceeded')
+    raise EventGap('Conntrack snapshot did not complete and drain')
 
 
 class Journal:
@@ -158,9 +206,17 @@ class Journal:
                 self.db.execute('INSERT OR IGNORE INTO rules VALUES(?,?)', (int(token), raw))
 
     def record(self, row, now=None):
+        with self.db:self._record(row,now)
+
+    def record_batch(self, rows):
+        # One FULL synchronous transaction per receive batch, not per packet.
+        with self.db:
+            for row in rows:self._record(row)
+
+    def _record(self, row, now=None):
         now = time.time() if now is None else now
         identity = json.dumps([self.boot, row['id'], row['original']], sort_keys=True)
-        old = self.db.execute('SELECT started,token FROM sessions WHERE identity=?', (identity,)).fetchone()
+        old = self.db.execute('SELECT started,token,data FROM sessions WHERE identity=?', (identity,)).fetchone()
         if row['token'] is None:
             if not old:return
             row=dict(row,token=old[1])
@@ -174,19 +230,61 @@ class Journal:
         started = old[0] if old else now if first_admission else None
         event = dict(row, boot_id=self.boot, rule=rule, started=started, ended=now if row['event']=='end' else None,
                      duration_seconds=max(0,now-started) if started is not None and row['event']=='end' else None)
+        if old and json.loads(old[2]).get('event_gap'):event['event_gap']=True
+        if row['event'] == 'end':
+            if rule['logging']['end'] and set(row['counters']) != {'original', 'reply'}:
+                raise EventError('Session-end accounting counters are missing')
+            self.db.execute('DELETE FROM sessions WHERE identity=?', (identity,))
+        else:
+            self.db.execute('INSERT OR REPLACE INTO sessions VALUES(?,?,?,?,?)',
+                            (identity, row['token'], started, now, json.dumps(event)))
+        if (row['event'] == 'end' and rule['logging']['end'] or
+                first_admission and rule['logging']['start']):
+            if first_admission:event=dict(event,event='start')
+            self.db.execute('INSERT INTO events(observed,kind,token,data) VALUES(?,?,?,?)',
+                            (now, event['event'], row['token'], json.dumps(event)))
+
+    def reconcile(self, rows, changes, reason):
+        """Restore live identities without inventing missing start/end events."""
+        def identity(row):return json.dumps([self.boot,row['id'],row['original']],sort_keys=True)
+        live={identity(row):row for row in rows if row['token'] is not None}
+        for row in changes:
+            key=identity(row)
+            if row['event']=='end':live.pop(key,None)
+            elif row['token'] is not None:
+                # Dump counters may be newer than an interleaved multicast.
+                old=live.get(key)
+                if old and old['token']!=row['token']:raise EventError('Snapshot token changed')
+                counters={k:dict(v) for k,v in row['counters'].items()}
+                if old:
+                    for direction,values in old['counters'].items():
+                        counters[direction]={k:max(v,counters.get(direction,{}).get(k,0)) for k,v in values.items()}
+                live[key]=dict(row,counters=counters)
+        now=time.time()
         with self.db:
-            if row['event'] == 'end':
-                if rule['logging']['end'] and set(row['counters']) != {'original', 'reply'}:
-                    raise EventError('Session-end accounting counters are missing')
-                self.db.execute('DELETE FROM sessions WHERE identity=?', (identity,))
-            else:
-                self.db.execute('INSERT OR REPLACE INTO sessions VALUES(?,?,?,?,?)',
-                                (identity, row['token'], started, now, json.dumps(event)))
-            if (row['event'] == 'end' and rule['logging']['end'] or
-                    first_admission and rule['logging']['start']):
-                if first_admission:event=dict(event,event='start')
-                self.db.execute('INSERT INTO events(observed,kind,token,data) VALUES(?,?,?,?)',
-                                (now, event['event'], row['token'], json.dumps(event)))
+            previous={key:(token,started,json.loads(raw)) for key,token,started,raw in
+                      self.db.execute('SELECT identity,token,started,data FROM sessions')}
+            for key,(token,started,record) in previous.items():
+                if key in live:continue
+                record.update(event='interrupted',reason=reason,ended=None,duration_seconds=None,counters_complete=False)
+                if record['rule']['logging']['end']:
+                    self.db.execute('INSERT INTO events(observed,kind,token,data) VALUES(?,?,?,?)',
+                                    (now,'interrupted',token,json.dumps(record)))
+            self.db.execute('DELETE FROM sessions')
+            for key,row in live.items():
+                found=self.db.execute('SELECT metadata FROM rules WHERE token=?',(row['token'],)).fetchone()
+                if not found:raise EventError('No durable rule generation for snapshot session')
+                old=previous.get(key)
+                if old and old[0]!=row['token']:raise EventError('Snapshot changed durable session identity')
+                record=dict(row,event='recovered',boot_id=self.boot,rule=json.loads(found[0]),
+                            started=old[1] if old else None,ended=None,duration_seconds=None,event_gap=True)
+                self.db.execute('INSERT INTO sessions VALUES(?,?,?,?,?)',
+                                (key,row['token'],record['started'],now,json.dumps(record)))
+                if not old and record['rule']['logging']['start']:
+                    self.db.execute('INSERT INTO events(observed,kind,token,data) VALUES(?,?,?,?)',
+                                    (now,'recovered',row['token'],json.dumps(record)))
+            self.db.execute('DELETE FROM health WHERE id=1')
+        return len(live)
 
     def fault(self, reason):
         with self.db:
@@ -215,3 +313,74 @@ class Journal:
 
     def close(self):
         self.db.close()
+
+
+class Collector:
+    """Drain events independently of nft/ip readback and forwarding leases."""
+    def __init__(self,path,boot,close_gate):
+        self.path=path;self.boot=boot;self.close_gate=close_gate
+        self.stop_event=threading.Event();self.guard=threading.Lock()
+        self.state=dict(ready=False,error='Collector starting',monotonic=time.monotonic(),recoveries=0)
+        self.thread=threading.Thread(target=self.run,name='conntrack-events',daemon=True)
+
+    def update(self,**values):
+        with self.guard:self.state.update(values,monotonic=time.monotonic())
+
+    def status(self):
+        with self.guard:return dict(self.state)
+
+    def start(self):self.thread.start()
+
+    def stop(self):
+        self.stop_event.set();self.thread.join(timeout=20)
+
+    @staticmethod
+    def recoverable(reason):
+        return (not reason or reason.startswith('Session event gap:') or
+                reason=='Collector restarted with active sessions; event-gap reconciliation is required' or
+                reason==str(OSError(errno.ENOBUFS,'No buffer space available')))
+
+    def run(self):
+        stream=None;j=None
+        try:
+            j=Journal(self.path,self.boot);j.recover_boot()
+            reason=j.fault_reason()
+            if not self.recoverable(reason):raise EventError(reason)
+            while not self.stop_event.is_set():
+                if stream is None:
+                    self.update(ready=False,error=reason or 'Reconciling kernel sessions')
+                    self.close_gate()
+                    try:
+                        stream=subscribe()
+                        rows,changes=snapshot(stream)
+                        count=j.reconcile(rows,changes,reason or 'collector-restart')
+                        state=self.status()
+                        self.update(ready=True,error=None,recoveries=state['recoveries']+1,
+                                    reconciled_sessions=count,receive_buffer=stream.getsockopt(socket.SOL_SOCKET,socket.SO_RCVBUF))
+                    except (EventGap,OSError) as error:
+                        if isinstance(error,OSError) and error.errno!=errno.ENOBUFS:raise
+                        if stream is not None:stream.close();stream=None
+                        reason='Session event gap: '+str(error);j.fault(reason)
+                        self.update(ready=False,error=reason);self.stop_event.wait(2);continue
+                try:
+                    batch=[];deadline=time.monotonic()+.05
+                    if select.select([stream],[],[],.1)[0]:
+                        while len(batch)<2048 and time.monotonic()<deadline:
+                            try:batch.extend(receive(stream))
+                            except BlockingIOError:break
+                    if batch:j.record_batch(batch)
+                    self.update(ready=True,error=None)
+                except (EventGap,OSError) as error:
+                    if isinstance(error,OSError) and error.errno!=errno.ENOBUFS:raise
+                    reason='Session event gap: '+str(error)
+                    self.update(ready=False,error=reason);self.close_gate();j.fault(reason)
+                    stream.close();stream=None
+        except BaseException as error:
+            self.update(ready=False,error=str(error))
+            try:self.close_gate()
+            finally:
+                if j is not None:j.fault(str(error))
+        finally:
+            if stream is not None:stream.close()
+            if j is not None:j.close()
+            self.update(ready=False)

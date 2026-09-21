@@ -13,7 +13,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import select
 import signal
 import sys
 import time
@@ -23,7 +22,7 @@ from ffn_nat_policy import NatError, compile_policy, digest
 from ffn_policy_config import owners, parse
 from ffn_policy_plan import compile_policy as security_plan
 from ffn_security_nft import render
-from ffn_session_events import Journal, EventError, subscribe, receive
+from ffn_session_events import Journal, EventError, Collector
 
 STATE=Path('/etc/ffn/policy-runtime.json')
 HEALTH=Path('/run/ffn-security-health.json')
@@ -277,12 +276,10 @@ def serve():
         raise NatError('Security collector must run in the isolated data namespace')
     DATABASE.parent.mkdir(parents=True,exist_ok=True)
     os.umask(0o077)
-    stream=subscribe();j=Journal(DATABASE,boot())
-    j.recover_boot()
-    # A crash with active records cannot be reported as successful session end.
-    # Preserve the evidence and hold admission for explicit reconciliation.
-    if j.db.execute('SELECT count(*) FROM sessions').fetchone()[0]:
-        j.fault('Collector restarted with active sessions; event-gap reconciliation is required')
+    j=Journal(DATABASE,boot())
+    def stop_transit():
+        with lock():close_gate()
+    collector=Collector(DATABASE,boot(),stop_transit)
     start=Path('/proc/self/stat').read_text().rsplit(') ',1)[1].split()[19]
     running=True
     def stop(*_):
@@ -291,20 +288,23 @@ def serve():
     signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
     def publish(ready,revision=None,error=None):
         atomic(HEALTH,dict(pid=os.getpid(),process_start=start,boot_id=boot(),monotonic=time.monotonic(),
-            collector_ready=ready,forwarding_revision=revision,error=error))
+            collector_ready=ready,forwarding_revision=revision,error=error,events=collector.status()))
     next_check=0;last_forwarding=None;last_error=None
     try:
         with lock():close_gate()
         for key in ('nf_conntrack_acct','nf_conntrack_events'):
             nat.run(['sysctl','-qw','net.netfilter.'+key+'=1'])
+        collector.start()
         while running:
-            if select.select([stream],[],[],max(0,min(0.25,next_check-time.monotonic())))[0]:
-                for event in receive(stream):j.record(event)
+            time.sleep(max(0,min(0.25,next_check-time.monotonic())))
             if time.monotonic()<next_check:continue
             next_check=time.monotonic()+1
-            fault=j.fault_reason()
+            events=collector.status()
+            fault=j.fault_reason() or (events.get('error') or 'Session collector is not current'
+                if not events['ready'] or time.monotonic()-events['monotonic']>3 else None)
             if fault:
                 with lock():close_gate()
+                last_forwarding=None
                 publish(False,error=fault);continue
             publish(True,last_forwarding,last_error)
             try:
@@ -319,6 +319,9 @@ def serve():
                         # validated every current owner; never reset LACP.
                         apply(dict(revision=state['revision'],xml=state['xml']),replay=True)
                         state=saved()
+                    events=collector.status()
+                    if not events['ready'] or time.monotonic()-events['monotonic']>3:
+                        raise NatError(events.get('error') or 'Session collector is not current')
                     renew();last_forwarding=state['revision'];last_error=None;publish(True,last_forwarding)
             except (NatError,OSError,ValueError) as error:
                 with lock():close_gate()
@@ -329,7 +332,9 @@ def serve():
         try:
             with lock():close_gate()
             publish(False,error='Collector stopped')
-        finally:stream.close();j.close()
+        finally:
+            if collector.thread.ident is not None:collector.stop()
+            j.close()
 
 
 def main():
