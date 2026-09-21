@@ -70,12 +70,15 @@ SCHEMAS={
  'nat':dict(label='NAT',fields=MATCH+[SERVICE,
      select('nat-type','NAT Type',['ipv4'],tab='General'),
      field('to-interface','Destination Interface','Original Packet','text','any',ref='layer3-interface'),
-     field('source-type','Source Translation','Translated Packet','branch','none',
-           ['none','static-ip','dynamic-ip','dynamic-ip-and-port'],path='source-translation'),
+     field('source-type','Translation Type','Translated Packet','branch','none',
+           ['none','static-ip','dynamic-ip','dynamic-ip-and-port','persistent-dynamic-ip-and-port'],path='source-translation'),
      field('translated-source','Translated Source Addresses','Translated Packet',default=[],ref='address',path='source-translation/{source-type}/translated-address'),
-     field('source-interface','Source Interface Address','Translated Packet','text',ref='layer3-interface',path='source-translation/dynamic-ip-and-port/interface-address/interface'),
+     field('source-interface','Interface','Translated Packet','text',ref='layer3-interface',path='source-translation/{source-type}/interface-address/interface'),
+     dict(field('destination-type','Translation Type','Translated Packet','select','none',['none','static-ip','dynamic-ip']),virtual=True),
      field('translated-destination','Translated Destination Address','Translated Packet','text',ref='address',path='destination-translation/translated-address'),
-     field('translated-port','Translated Destination Port','Translated Packet','text',path='destination-translation/translated-port')]),
+     field('translated-port','Translated Port','Translated Packet','text',path='destination-translation/translated-port'),
+     field('session-distribution','Session Distribution Method','Translated Packet','select','',
+           ['','round-robin','source-ip-hash','ip-modulo','ip-hash','least-sessions'],path='dynamic-destination-translation/distribution')]),
  'qos':dict(label='QoS',fields=FULL+[
      select('class','Class',[str(i) for i in range(1,9)],path='action/class')]),
  'pbf':dict(label='Policy Based Forwarding',fields=FULL+[
@@ -148,7 +151,8 @@ def layer3_interfaces(root):
         for group in ('ethernet','aggregate-ethernet'):
             for entry in parent.findall(group+'/entry'):
                 if entry.find('layer3') is not None:
-                    routed.add(entry.get('name'));routed.update(e.get('name') for e in entry.findall('layer3/units/entry'))
+                    if entry.findtext('aggregate-only')!='yes':routed.add(entry.get('name'))
+                    routed.update(e.get('name') for e in entry.findall('layer3/units/entry'))
         for group in ('vlan','loopback','tunnel'):routed.update(e.get('name') for e in parent.findall(group+'/units/entry'))
     return {name for name in routed if name}
 
@@ -167,6 +171,19 @@ def inventory(root,scope,ref):
     return set().union(*(named(node,path) for node in (shared,local) for path in paths))
 
 
+def nat_destination_type(settings):
+    return settings.get('destination-type') or ('static-ip' if settings.get('translated-destination') else 'none')
+
+
+def policy_field_path(kind,field,settings):
+    path=field['path']
+    if kind=='nat' and field['key'] in ('translated-destination','translated-port') and nat_destination_type(settings)=='dynamic-ip':
+        path=path.replace('destination-translation/','dynamic-destination-translation/',1)
+    for key,value in settings.items():
+        if isinstance(value,str):path=path.replace('{'+key+'}',value)
+    return path
+
+
 def serialize(kind,spec):
     entry=ET.Element('entry',name=spec['name'])
     ET.SubElement(entry,'disabled').text='no' if spec['enabled'] else 'yes'
@@ -176,9 +193,7 @@ def serialize(kind,spec):
         if f.get('virtual'):continue
         value=settings.get(f['key'])
         if value in (None,'',[]):continue
-        path=f['path']
-        for key,v in settings.items():
-            if isinstance(v,str):path=path.replace('{'+key+'}',v)
+        path=policy_field_path(kind,f,settings)
         if f['mode']=='branch':
             if value!='none':node_at(entry,path+'/'+value)
         elif f['mode']=='list':
@@ -190,15 +205,15 @@ def serialize(kind,spec):
 
 def describe(kind,entry):
     settings={};fields=SCHEMAS[kind]['fields']
+    if kind=='nat':
+        settings['destination-type']='dynamic-ip' if entry.find('dynamic-destination-translation') is not None else 'static-ip' if entry.find('destination-translation') is not None else 'none'
     for f in fields:
         if f['mode']=='branch':
             parent=entry.find(f['path']);children=list(parent) if parent is not None else []
             settings[f['key']]=children[0].tag if len(children)==1 else 'none' if not children else 'unsupported'
     for f in fields:
         if f['mode']=='branch' or f.get('virtual'):continue
-        path=f['path']
-        for k,v in settings.items():
-            if isinstance(v,str):path=path.replace('{'+k+'}',v)
+        path=policy_field_path(kind,f,settings)
         node=entry.find(path)
         if node is not None:
             settings[f['key']]=([n.text or '' for n in node.findall('member')] if f['mode']=='list'
@@ -240,6 +255,7 @@ def validate(kind,spec,root,scope):
     if not text_ok(spec.get('description','')) or len(spec.get('description',''))>1024:raise PolicyError('Invalid description')
     s=spec.get('settings');fields={f['key']:f for f in SCHEMAS[kind]['fields']}
     if not isinstance(s,dict) or set(s)-set(fields):raise PolicyError('Unknown rule settings')
+    if kind=='nat':s.setdefault('destination-type',nat_destination_type(s))
     if kind=='security' and 'profile-mode' not in s:
         s['profile-mode']='group' if s.get('profile-group') else 'profiles' if any(s.get(k) for k in SECURITY_PROFILES) else 'none'
     for key,f in fields.items():
@@ -274,8 +290,13 @@ def validate(kind,spec,root,scope):
         mode=s['source-type'];addresses=s['translated-source'];iface=s['source-interface']
         if mode=='none' and (addresses or iface):raise PolicyError('Source translation must be selected')
         if mode!='none' and bool(addresses)==bool(iface):raise PolicyError('Select translated source addresses or an interface address')
-        if iface and mode!='dynamic-ip-and-port':raise PolicyError('Interface address requires dynamic IP and port')
+        if iface and mode not in ('dynamic-ip-and-port','persistent-dynamic-ip-and-port'):raise PolicyError('Interface address requires Dynamic IP and Port or Persistent Dynamic IP and Port')
         if mode=='static-ip' and len(addresses)!=1:raise PolicyError('Static source NAT needs one address')
+        destination_mode=s['destination-type']
+        if destination_mode=='none' and (s['translated-destination'] or s['translated-port']):raise PolicyError('Select a destination translation type')
+        if destination_mode!='none' and not s['translated-destination']:raise PolicyError('Destination translation requires a translated address')
+        if destination_mode=='dynamic-ip' and not s['session-distribution']:raise PolicyError('Select a session distribution method')
+        if destination_mode!='dynamic-ip' and s['session-distribution']:raise PolicyError('Session distribution requires Dynamic IP destination translation')
         if s['translated-port']:
             if not s['translated-port'].isdigit() or not 1<=int(s['translated-port'])<=65535 or not s['translated-destination']:raise PolicyError('Destination port requires a destination address and port 1–65535')
     if kind=='pbf':
@@ -312,13 +333,18 @@ def runtime_report(xml,check_runtime=False):
                 elif kind=='nat':nat_enabled.append(dict(scope=scope,kind=kind,name=rule.get('name','')))
                 else:
                     reason='No commissioned runtime provider for this XML rulebase'
-                    if kind in ('qos','pbf','decryption'):
+                    if kind in ('security','qos','pbf','decryption'):
                         from ffn_policy_plan import compile_policy as compile_plan
                         key=(scope,kind)
                         if key not in plans:plans[key]=compile_plan(xml,kind,scope)
                         plan=plans[key]
                         errors=[b['reason'] for b in plan['blockers'] if b['name']==rule.get('name','')]
-                        reason+='; '+('; '.join(errors) if errors else '; '.join(plan['runtime_requirements']))
+                        if kind=='security':
+                            reason=('Security plan compilation failed: '+ '; '.join(errors) if errors else
+                                    'Security plan compiled, but dataplane enforcement is not connected. '+
+                                    'Required: ordered stateful rules, zone/interface bindings and requested inspection/logging. '+
+                                    'Aggregate transit remains default-deny; no rule has been activated')
+                        else:reason+='; '+('; '.join(errors) if errors else '; '.join(plan['runtime_requirements']))
                     blockers.append(dict(scope=scope,kind=kind,name=rule.get('name',''),reason=reason))
     if nat_enabled:
         from ffn_nat_policy import compile_policy

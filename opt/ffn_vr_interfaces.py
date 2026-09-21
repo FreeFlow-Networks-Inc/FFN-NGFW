@@ -16,9 +16,9 @@ def inventory(configured, routers, aliases=None):
         if not isinstance(entries, list):
             continue
         for entry in entries:
-            if entry.get('mode') != 'layer3':
+            if entry.get('mode') != 'layer3' and not (kind=='aggregate-ethernet' and entry.get('mode')=='none'):
                 continue
-            names = [entry['name'], *entry.get('sub_interfaces', [])]
+            names = ([entry['name']] if entry.get('mode')=='layer3' else []) + entry.get('sub_interfaces', [])
             for name in names:
                 if not name or name in ('loopback', 'vlan', 'tunnel'):
                     continue

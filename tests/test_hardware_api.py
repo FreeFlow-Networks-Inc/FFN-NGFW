@@ -51,8 +51,11 @@ class HardwareAPITests(unittest.IsolatedAsyncioTestCase):
         profile = {"platform": "pa5200", "features": {"front_end_asic": {"applicable": True}}}
         with patch.object(manager, "_hw_inventory", return_value=inventory), \
              patch.object(manager, "_detect_offload_dp", new=AsyncMock(return_value=far)), \
-             patch.object(manager, "_platform_profile", new=AsyncMock(return_value=profile)):
+             patch.object(manager, "_platform_profile", new=AsyncMock(return_value=profile)), \
+             patch("ffn_control_plane.control_rpc", new=AsyncMock(return_value={})) as rpc:
             result = await manager.system_hardware(user={})
+            self.assertEqual(result["fe100_driver"]["state"], "unavailable")
+            rpc.assert_awaited_with("state/control", timeout=3)
             self.assertTrue(result["specialized"]["fe1xx"]["present"])
             self.assertEqual(result["specialized"]["fe1xx"]["devices"][0]["model"], "FE100")
             self.assertEqual(result["specialized"]["fe1xx"]["devices"][0]["kind"], "asic")

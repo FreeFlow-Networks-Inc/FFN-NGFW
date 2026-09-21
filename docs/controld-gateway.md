@@ -3,6 +3,10 @@
 `ffn-controld` is the MP entry point for selected platform operations. There is
 no second `ffn-masterd` service. The request path is:
 
+Console deployments now use [local daemon RPC and FFN database-backed SSH
+authentication](CONSOLE-DAEMON.md). The CLI reuses its SSH session identity;
+the web listener and CLI share one management backend and commit owner.
+
 ```text
 WebUI / authenticated FFN-CLI -> controld -> journaled MP plane worker
 configd platform applier     -> controld -> journaled MP plane worker

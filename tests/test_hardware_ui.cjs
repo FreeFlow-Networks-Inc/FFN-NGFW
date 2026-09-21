@@ -61,6 +61,21 @@ async function render(data) {
   const arm = await render({system:{arch:'aarch64'},cpu:{aes_ni:false},cpu_role:{role:'shared'}});
   assert.ok(!arm.includes('AES-NI') && arm.includes('Hugepages'));
 
+  const driverCurrent = {state:'current',fresh:true,expires_in_seconds:4,agent:'<unsafe>',age_seconds:2,
+    available:true,devices:[{pci:'0002:01:00.0',kernel_state:'unbound',memory_decode:true,bar0_bytes:1048576}],
+    userspace:{installed:true,state:'responding',read_verified:true,sha256:'a'.repeat(64)}};
+  const withDriver = await render({fe100_driver:driverCurrent});
+  assert.ok(withDriver.includes('Unbound (userspace access)'));
+  assert.ok(withDriver.includes('Responding (non-clearing register probe)'));
+  assert.ok(withDriver.includes('&lt;unsafe&gt;') && !withDriver.includes('<unsafe>'));
+  const staleDriver = await render({fe100_driver:{...driverCurrent,fresh:false,state:'stale'}});
+  assert.ok(staleDriver.includes('observation is stale') && !staleDriver.includes('Responding'));
+  const expiryBody = {innerHTML:''}; let expire;
+  const expiryContext = vm.createContext({document:{getElementById:()=>expiryBody},_escSP:escape,
+    api:async()=>({fe100_driver:driverCurrent}),setTimeout:(callback,ms)=>{assert.equal(ms,4000);expire=callback;}});
+  vm.runInContext(script,expiryContext); await expiryContext.loadHardware(false);expire();
+  assert.ok(expiryBody.innerHTML.includes('observation expired'));
+
   const body = {innerHTML: ''};
   const context = vm.createContext({document: {getElementById: () => body}, _escSP: escape});
   vm.runInContext(script + html.slice(html.indexOf('async function loadCpuPlanes('), html.indexOf('function _dpDot(')), context);

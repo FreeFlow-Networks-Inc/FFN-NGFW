@@ -20,6 +20,29 @@
 .policy-panel { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 20px; }
 #pw-form { display: block; }
 #pw-form > p { margin-top: 12px; }
+.policy-selected { display: flex; flex-wrap: wrap; gap: 5px; min-height: 28px; }
+.policy-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 3px 7px; border: 1px solid var(--border, #ccc); border-radius: 3px; background: var(--panel, #eef3f6); overflow-wrap: anywhere; }
+.policy-chip button { border: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; padding: 0 3px; }
+.policy-reference .policy-literal { display: flex; gap: 5px; }
+.policy-reference .policy-literal input { flex: 1; min-width: 0; }
+.policy-reference .policy-literal button { flex: none; }
+.nat-dialog { width: min(1000px, 94vw); }
+.nat-dialog .policy-panel { min-height: 330px; align-content: start; }
+.nat-dialog .nat-original { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; grid-template-areas: "from to source destination" "from to-interface source destination" "from service source destination"; }
+.nat-original [data-nat-field="from"] { grid-area: from; }
+.nat-original [data-nat-field="to"] { grid-area: to; }
+.nat-original [data-nat-field="source"] { grid-area: source; }
+.nat-original [data-nat-field="destination"] { grid-area: destination; }
+.nat-original [data-nat-field="service"] { grid-area: service; }
+.nat-original [data-nat-field="to-interface"] { grid-area: to-interface; }
+.nat-original .policy-reference { padding: 8px; border: 1px solid var(--border, #ccc); }
+.nat-original [data-nat-field="from"] .policy-selected,
+.nat-original [data-nat-field="source"] .policy-selected,
+.nat-original [data-nat-field="destination"] .policy-selected { min-height: 95px; align-content: start; }
+.object-form .nat-translated fieldset { grid-column: auto; min-width: 0; margin: 0; }
+.nat-translated fieldset label { margin-bottom: 12px; }
+@media (max-width: 850px) { .nat-dialog .nat-original { grid-template-columns: 1fr 1fr; grid-template-areas: "from to" "source destination" "service to-interface"; } }
+@media (max-width: 650px) { .nat-dialog .nat-original { display: flex; flex-direction: column; } }
 #pw-validation { white-space: pre-wrap; overflow-wrap: anywhere; }
 #pw-list td { max-width: 300px; overflow-wrap: anywhere; }
 @media (max-width: 650px) { .policy-panel { grid-template-columns: 1fr; } }

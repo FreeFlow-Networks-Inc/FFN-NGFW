@@ -2401,7 +2401,7 @@ async function loadHardware(refresh) {
 
   const accelRows = accel.map(a => `<tr><td><strong>${_escSP(a.role || a.kind || 'Unknown')}</strong><div class="text-dim">${_escSP(a.model || '')}</div></td>
       <td>${a.bus === 'control-plane' ? 'Behind control plane' : a.bus === 'platform' ? 'Platform / SoC' : 'Host PCI'}<div class="mono">${_escSP(a.address || a.pci || '')}</div></td>
-      <td>${_escSP(a.driver || 'Unknown')}</td><td>${Number.isInteger(a.numa_node) && a.numa_node >= 0 ? a.numa_node : 'Unknown'}</td>
+      <td>${a.model === 'FE100' && a.bus === 'control-plane' && d.fe100_driver ? '<a href="#fe100-driver-status">See FE100 driver status</a>' : _escSP(a.driver || 'Unknown')}</td><td>${Number.isInteger(a.numa_node) && a.numa_node >= 0 ? a.numa_node : 'Unknown'}</td>
       <td>Detected${a.family === 'FE1xx' ? '<div class="text-dim">Forwarding readiness not reported by this inventory</div>' : ''}</td>
       ${showManager ? `<td>${(a.managers || []).length ? a.managers.map(m => `<div>${_escSP(m.name || 'FPGA Manager')}: ${_escSP(m.state || 'Unknown')}</div>`).join('') : a.kind === 'fpga' ? 'Unavailable' : '&mdash;'}</td>` : ''}</tr>`).join('');
   const pciRows = ((d.pci || {}).devices || []).map(p => `<tr><td class="mono">${_escSP(p.address)}</td><td class="mono">${_escSP(p.vendor_id || '????')}:${_escSP(p.device_id || '????')}</td><td>${_escSP(p.class_id || 'Unknown')}</td><td>${_escSP(p.driver || 'Unbound / unknown')}</td><td>${p.identity_complete === false ? 'Incomplete identity' : _escSP(p.source || 'Unknown')}</td></tr>`).join('');
@@ -2418,7 +2418,7 @@ async function loadHardware(refresh) {
       ${(octeon.evidence || []).map(e => `<div>${_escSP(e.value)} <span class="text-dim">${_escSP(e.source)}</span></div>`).join('')}
       ${(octeon.pci_functions || []).map(f => `<div>${_escSP(f.model)} <span class="mono">${_escSP(f.address)}</span></div>`).join('')}
       <div class="text-dim">Hardware presence does not establish firmware or forwarding readiness.</div></div>` : '';
-  el.innerHTML = `<div class="text-dim" style="margin-bottom:12px">Last collected: ${_escSP(updated)} &middot; PCI source: ${_escSP((d.pci || {}).source || 'Unknown')}</div>${app.family && app.family !== 'unknown' ? '<div class="text-dim">Hardware family: '+_escSP(app.family)+'</div>' : ''}${d.platform_status === 'unavailable' ? '<div role="status">Hardware family information unavailable; showing detected components.</div>' : ''}${probeNotice}${roleSummary}${octeonCard}
+  el.innerHTML = `<div class="text-dim" style="margin-bottom:12px">Last collected: ${_escSP(updated)} &middot; PCI source: ${_escSP((d.pci || {}).source || 'Unknown')}</div>${app.family && app.family !== 'unknown' ? '<div class="text-dim">Hardware family: '+_escSP(app.family)+'</div>' : ''}${d.platform_status === 'unavailable' ? '<div role="status">Hardware family information unavailable; showing detected components.</div>' : ''}${probeNotice}${roleSummary}${d.fe100_driver ? hardwareDriverHTML(d.fe100_driver) : ''}${octeonCard}
   <div class="grid grid-3">
     <div class="card"><div class="section-title">System</div><div style="font-size:12px;line-height:1.9">
       <div><strong>${_escSP(sys.vendor)}</strong> ${_escSP(sys.product)}</div>
@@ -2460,6 +2460,38 @@ async function loadHardware(refresh) {
   <div class="card"><div class="section-title">Storage</div>
     <div class="table-wrap"><table><thead><tr><th>Device</th><th>Size</th><th>Model</th><th>Type</th></tr></thead><tbody>${diskRows || '<tr><td colspan="4" class="text-dim">No storage devices reported</td></tr>'}</tbody></table></div></div>
     <details class="card"><summary>All PCI functions (${hwNumber((d.pci || {}).device_count)})</summary><div class="table-wrap"><table><thead><tr><th>Address</th><th>Vendor:device</th><th>Class</th><th>Driver</th><th>Source / status</th></tr></thead><tbody>${pciRows || '<tr><td colspan="5" class="text-dim">No PCI functions reported</td></tr>'}</tbody></table></div></details>`;
+  const driverCard = document.getElementById('fe100-driver-status');
+  const expiry = d.fe100_driver?.expires_in_seconds;
+  if (driverCard && d.fe100_driver?.fresh && Number.isFinite(expiry) && expiry > 0 && typeof setTimeout === 'function') {
+    setTimeout(() => {
+      if (document.getElementById('fe100-driver-status') === driverCard)
+        driverCard.innerHTML = '<div class="section-title">FE100 driver</div><div role="status">Driver observation expired. Re-detect hardware to refresh.</div>';
+    }, expiry * 1000);
+  }
+
+}
+
+function hardwareDriverHTML(observation) {
+  const heading = '<div class="section-title">FE100 driver</div>';
+  if (!observation.fresh || observation.state !== 'current')
+    return '<div class="card" id="fe100-driver-status">'+heading+'<div role="status">'+
+      (observation.state === 'stale' ? 'CP driver observation is stale. Re-detect hardware to refresh.' : 'CP driver observation unavailable.')+'</div></div>';
+  const driver = observation.userspace || {};
+  const bool = value => value === true ? 'Yes' : value === false ? 'No' : 'Unknown';
+  const rows = (observation.devices || []).map(d => `<tr><td class="mono">${_escSP(d.pci)}</td>
+    <td>${d.kernel_state === 'bound' ? _escSP(d.kernel_driver || 'Bound; name unavailable') : d.kernel_state === 'unbound' ? 'Unbound (userspace access)' : 'Unknown'}
+    ${d.kernel_module ? '<div>Module: '+_escSP(d.kernel_module)+'</div>' : ''}${d.kernel_version ? '<div>Version: '+_escSP(d.kernel_version)+'</div>' : ''}</td>
+    <td>${bool(d.memory_decode)}</td><td>${hwNumber(d.bar0_bytes, ' bytes')}</td></tr>`).join('');
+  return `<div class="card" id="fe100-driver-status">${heading}
+    <div class="text-dim">Source: CP agent ${_escSP(observation.agent || '')} via ffn-controld; ${Number.isFinite(observation.age_seconds) ? Math.floor(observation.age_seconds) : 'Unknown'} seconds old</div>
+    ${observation.available === false ? '<div role="status">PCI driver observation incomplete</div>' : ''}
+    <div class="table-wrap"><table><thead><tr><th>PCI device</th><th>Kernel driver</th><th>Memory decoding enabled</th><th>BAR0</th></tr></thead><tbody>${rows || '<tr><td colspan="4">No FE100 device reported by this observation</td></tr>'}</tbody></table></div>
+    <div>Userspace driver: <strong>ffn_fe100.py</strong> (${driver.installed === true ? 'Installed' : driver.installed === false ? 'Unavailable' : 'Unknown'})</div>
+    <div>Register access: <strong>${driver.state === 'responding' ? 'Responding (non-clearing register probe)' : 'Unverified'}</strong></div>
+    <div>Reader installed: ${bool(driver.reader_installed)} &middot; Register map installed: ${bool(driver.register_map_installed)} &middot; Memory device present: ${bool(driver.memory_device_present)}</div>
+    ${driver.sha256 ? '<details><summary>Driver fingerprint</summary><span class="mono">SHA-256: '+_escSP(driver.sha256)+'</span></details>' : ''}
+    <div class="text-dim">Register access confirms driver communication. It does not establish hardware flow offload or forwarding readiness.</div>
+  </div>`;
 }
 
 function hwNumber(value, suffix = '') {
@@ -3610,7 +3642,7 @@ function renderDeviceSetup(c) {
 }
 function consoleTabKey(event) {
   if (!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
-  const tabs = Array.from(event.currentTarget.querySelectorAll('[role="tab"]'));
+  const tabs = Array.from(event.currentTarget.querySelectorAll('[role="tab"]')).filter(tab=>!tab.hidden&&!tab.disabled);
   const index = tabs.indexOf(event.target);
   if (index < 0) return;
   event.preventDefault();
@@ -3755,13 +3787,13 @@ function renderNetworkInterfaces(c) {
     <details class="console-details"><summary>Detected hardware and port inventory</summary>
       <div id="iface-detected" class="card"><div class="text-dim">Detecting ports and interfaces&hellip;</div></div>
     </details>
-    <details class="console-details"><summary>Aggregate Ethernet Kernel State</summary>
+    <details class="console-details"><summary>Aggregate Ethernet Status</summary>
       <div class="card"><div class="table-wrap">
         <table>
           <thead><tr>
-            <th>AE Group</th><th>Kernel Bond</th><th>Mode</th>
-            <th>Configured Members</th><th>Kernel Slaves</th>
-            <th>IP</th><th>MTU</th><th>Status</th>
+            <th>AE Group</th><th>Backend</th><th>Mode</th>
+            <th>Configured Members</th><th>Live Members</th>
+            <th>IP</th><th>MTU</th><th>Status</th><th>Actions</th>
           </tr></thead>
           <tbody id="iface-ae-body"></tbody>
         </table>
@@ -3935,6 +3967,8 @@ function _linkStateDot(state) {
    and log line uses. Neither is derivable from the PAN name. Elsewhere it
    keeps showing the Linux NIC, which is the equivalent fact there. */
 function _ifaceSubtitle(r) {
+  const aggregate=(_ifaceState.aeStatus||[]).find(a=>a.ae_name===r.name&&a.backend==='pa5200-bcm');
+  if (aggregate) return '<div class="text-dim" style="font-size:10px;margin-top:2px">BCM / OCTEON aggregate</div>';
   const f = (_ifaceState.faceplate||{})[r.name];
   if (f) {
     const position = String(f.faceplate || '');
@@ -3949,6 +3983,11 @@ function _ifaceSubtitle(r) {
 }
 
 function _ifaceRowHTML(r, isSub) {
+  const aggregate=(_ifaceState.aeStatus||[]).find(a=>a.ae_name===r.name&&a.backend==='pa5200-bcm');
+  if (aggregate) r={...r,link_state:aggregate.activation?.fresh?!!aggregate.distributing?.length:aggregate.state==='inactive'?false:null};
+  const parentAggregate=isSub&&(_ifaceState.aeStatus||[]).find(a=>a.ae_name===r.parent&&a.backend==='pa5200-bcm');
+  const aggregateChild=parentAggregate&&(parentAggregate.subinterfaces||[]).find(u=>u.name===r.name);
+  if(parentAggregate) r={...r,link_state:parentAggregate.activation?.fresh?!!aggregateChild?.applied:null};
   const nameCell = isSub
     ? `<td style="padding-left:24px" class="text-dim">└ <span class="mono"><strong>${r.name}</strong></span></td>`
     : `<td>
@@ -3989,7 +4028,7 @@ function _ifaceRowHTML(r, isSub) {
     ${nameCell}
     <td>${typeBadge}</td>
     <td>${r.management_profile || '<span class="text-dim">none</span>'}</td>
-    <td>${_linkStateDot(r.link_state)}</td>
+    <td>${_linkStateDot(r.link_state)}${aggregateChild?'<div class="text-dim" style="font-size:10px">'+_escSP(aggregateChild.reason)+'</div>':''}</td>
     <td>${ipCell}</td>
     <td>${vr}</td>
     <td>${tag}</td>
@@ -4039,6 +4078,16 @@ function _renderConfiguredAE() {
         statusBadge='<span class="badge badge-down">'+_escSP(live.state.toUpperCase())+'</span>';
         statusDetail=(live.committed?'Committed configuration. ':'Pending candidate changes. ')+
           (live.blockers||[]).map(b=>_escSP(b.message)).join(' · ');
+        if (live.partner_consistency) {
+          const peer=live.partner_consistency;
+          statusDetail+=' · Partner identity: '+_escSP(peer.state)+' ('+_escSP(String(peer.observed_members))+
+            '/'+_escSP(String(peer.expected_members))+' members observed). Partner identity alone does not verify forwarding.';
+        }
+        if (live.activation?.fresh) {
+          statusDetail+=' · Egress: '+(live.hardware_offload?'BCM hardware member selection':'OCTEON software member selection');
+          statusDetail+=' · Distributing: '+_escSP((live.distributing||[]).map(p=>'ethernet1/'+p).join(', ')||'none');
+          if (live.hardware_offload) statusDetail+=' · Hardware TX: '+_escSP(String(live.offload_tx||0));
+        }
       } else if (!live.kernel_exists) {
         statusBadge = '<span class="badge badge-down">NO KERNEL BOND</span>';
         statusDetail = 'Commit to create bond interface.';
@@ -4061,8 +4110,13 @@ function _renderConfiguredAE() {
       ? cfgMembers.map(m=>`${m.pan}${m.linux?` <span class="text-dim">(${m.linux})</span>`:''}`).join(', ')
       : '<span class="text-dim">(no members)</span>';
     const liveMemStr = hardware ? (live.members||[]).map(m=>_escSP(m.name)+': '+
-      (m.link===true?_escSP(String(m.speed_mbps))+' Mb/s':m.link===false?'Link down':'Unknown')+
-      (m.partner_observation?' · Partner '+_escSP(m.partner_observation.actor.system):' · No LACP observation')).join('<br>') : (live && live.kernel_slaves && live.kernel_slaves.length)
+      (m.admin_enabled===false?'Administratively down':m.link===true?(m.speed_mbps?_escSP(String(m.speed_mbps))+' Mb/s':'Link up · Speed unknown'):m.link===false?'Link down':'Link unknown')+
+      (m.partner_observation?' · Partner '+_escSP(m.partner_observation.actor.system)+
+        ' · Priority '+_escSP(String(m.partner_observation.actor.system_priority??'unknown'))+
+        ' · Key '+_escSP(String(m.partner_observation.actor.key??'unknown'))+
+        ' · Port '+_escSP(String(m.partner_observation.actor.port??'unknown'))+
+        ' · Peer state '+_escSP(Object.entries(m.partner_observation.actor.flags||{}).filter(([,set])=>set===true).map(([name])=>name.replaceAll('_',' ')).join(', ')||'none'):
+        ' · No LACP frame observed in sample')).join('<br>') : (live && live.kernel_slaves && live.kernel_slaves.length)
       ? live.kernel_slaves.join(', ')
       : '<span class="text-dim">(none)</span>';
 
@@ -4070,15 +4124,20 @@ function _renderConfiguredAE() {
       <td><strong>${ae.name}</strong></td>
       <td class="mono" style="font-size:11px">${bondName}${hardware||live&&live.kernel_exists?'':' <span class="text-red" style="font-size:9px">(not created)</span>'}</td>
       <td><span class="badge" style="background:#1a4f9e;color:#fff">${ae.mode}</span></td>
-      <td class="mono" style="font-size:10px">${cfgMemStr}</td>
-      <td class="mono" style="font-size:10px">${liveMemStr}</td>
+      <td class="mono" style="font-size:10px;white-space:normal;min-width:170px">${cfgMemStr}</td>
+      <td class="mono" style="font-size:10px;white-space:normal;min-width:230px">${liveMemStr}</td>
       <td class="mono">${(ae.ip_addresses||[]).join(', ')||'--'}</td>
-      <td>${ae.mtu||_ifaceState.jumbo.mtu}</td>
+      <td>${hardware?(live.activation?.dataplane?.network?.mtu||ae.mtu||1500):(ae.mtu||_ifaceState.jumbo.mtu)}</td>
       <td>
         ${statusBadge}
-        <div class="text-dim" style="font-size:10px;margin-top:2px">${statusDetail}</div>
+        <div class="text-dim" style="font-size:10px;margin-top:2px;white-space:normal;min-width:230px;max-width:360px">${statusDetail}</div>
       </td>
-      <td>
+      <td style="white-space:normal;min-width:180px">
+        ${hardware&&live.activation_supported?`<button class="btn btn-xs" ${live.committed?'':'disabled'} onclick="aggregateOperation('${ae.name}','activate')">Activate</button>
+        <button class="btn btn-xs" ${live.committed&&live.offload_ready?'':'disabled'} title="${_escSP(live.offload_blocker||'BCM egress member selection')}" onclick="aggregateOperation('${ae.name}','offload')">Hardware Egress</button>
+        <button class="btn btn-xs" ${live.committed?'':'disabled'} onclick="aggregateOperation('${ae.name}','negotiate')">Qualify LACP</button>
+        <button class="btn btn-xs" onclick="aggregateOperation('${ae.name}','deactivate')">Stop</button>
+        <button class="btn btn-xs" onclick="aggregateOperation('${ae.name}','recover')">Recover</button>`:''}
         <button class="btn btn-xs" onclick="openIfaceModal('${ae.name}')">Edit</button>
         <button class="btn btn-xs" onclick="openSubinterfaceModal('${ae.name}')">+ Sub</button>
         <button class="btn btn-xs btn-danger" onclick="deleteIface('${ae.name}')">Del</button>
@@ -4087,276 +4146,162 @@ function _renderConfiguredAE() {
   }).join('');
 }
 
+async function aggregateOperation(name, operation) {
+  const live=(_ifaceState.aeStatus||[]).find(row=>row.ae_name===name);
+  const notice=document.getElementById('iface-notice');
+  if (!live?.running_revision) { if(notice)notice.textContent='Refresh aggregate status first.'; return; }
+  if(notice)notice.textContent='Requesting '+operation+' for '+name+' through the control daemon…';
+  try {
+    const result=await consoleRequest('/api/system/planes',{method:'POST',body:JSON.stringify({
+      v:1,id:crypto.randomUUID(),resource:'aggregates',action:'apply',
+      payload:{group:name,operation,running_revision:live.running_revision,revision:live.activation_revision}})});
+    if(!result.ok)throw new Error(result.error||'Aggregate operation failed; inspect controller status.');
+    if(notice)notice.textContent=name+': '+(result.result.state||(result.result.stopped?'stopped':'request accepted'))+'.';
+  } catch(error) { if(notice)notice.textContent=error.message; }
+  await loadInterfacesFull();
+}
+
 function switchIfaceEditorTab(name) {
-  if (!['config','advanced'].includes(name)) return;
-  for (const key of ['config','advanced']) {
-    const selected = key === name;
-    document.getElementById('ifm-panel-'+key).hidden = !selected;
-    const tab = document.getElementById('ifm-tab-'+key);
-    tab.classList.toggle('active', selected);
-    tab.setAttribute('aria-selected', String(selected));
-    tab.tabIndex = selected ? 0 : -1;
-  }
+  document.querySelectorAll('#interface-form [role="tab"]').forEach(tab=>{
+    const selected=tab.id==='ifm-tab-'+name;
+    tab.classList.toggle('active',selected);tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;
+    document.getElementById(tab.getAttribute('aria-controls')).hidden=!selected;
+  });
+}
+function addIfaceAddress(family,value='') {
+  const row=document.createElement('tr');
+  row.innerHTML=`<td><input aria-label="IPv${family} address with prefix" data-family="${family}" required placeholder="${family===4?'192.0.2.1/24':'2001:db8::1/64'}" value="${_escSP(value)}"></td><td><button class="btn btn-sm" type="button" aria-label="Remove IPv${family} address">Remove</button></td>`;
+  row.querySelector('button').onclick=()=>{row.remove();document.getElementById('ifm-add-'+family).focus();};
+  document.getElementById('ifm-addresses-'+family).appendChild(row);
+  if(!value)row.querySelector('input').focus();
 }
 async function openIfaceModal(name) {
-  const ethList = _ifaceState.configured.ethernet||[];
-  const aeList = _ifaceState.configured['aggregate-ethernet']||[];
-  const existing = [...ethList, ...aeList].find(e=>e.name===name);
-  let cap = _ifaceState.caps[name] || {supported_speeds:[], current_speed_mbps:0};
-  if(window.ffnExtensions?.interfaceLinkCapabilities && name.startsWith('ethernet')){
-    try{cap=await window.ffnExtensions.interfaceLinkCapabilities(name)||cap;}
-    catch(e){cap={supported_speeds:[],configurable:false,source:'Hardware controller unavailable'};}
-  }
-
-  const speedOptions = ['auto'];
-  const seen = new Set();
-  for (const s of cap.supported_speeds||[]) {
-    const key = `${s.speed_mbps}`;
-    if (!seen.has(key)) { speedOptions.push(key); seen.add(key); }
-  }
-  if(existing?.link_speed && !speedOptions.includes(existing.link_speed))speedOptions.push(existing.link_speed);
-
-  const speedOpts = speedOptions.map(s=>`<option value="${s}">${s==='auto'?'Auto-negotiate':s+' Mb/s'}</option>`).join('');
-  const modeOpts = IFACE_MODES.map(m=>`<option value="${m.value}">${m.label}</option>`).join('');
-
-  const cur = existing || {name, mode:'none', ip_addresses:[], link_speed:'auto', link_duplex:'auto', link_state:'auto', mtu:'', aggregate_group:'', interface_management_profile:'', comment:'', lldp_enabled:false, lldp_profile:''};
-  // Interface Management Profiles available for the dropdown
-  let _mgmtProfileNames = [];
+  const box=document.getElementById('info-modal-body');
+  document.getElementById('info-modal-title').textContent='Interface: '+name;
+  box.innerHTML='<p id="ifm-loading" role="status">Loading candidate interface configuration…</p>';
+  const loading=document.getElementById('ifm-loading'),overlay=document.getElementById('modal-info');
+  overlay.classList.add('show');
+  const generation=openIfaceModal.generation=(openIfaceModal.generation||0)+1;
   try {
-    const _pr = await api('/api/network-resources/interface-mgmt-profiles');
-    if (_pr && Array.isArray(_pr.entries)) _mgmtProfileNames = _pr.entries.map(e=>e.name);
-  } catch (e) { _mgmtProfileNames = []; }
-  // Virtual Router options + this interface's current VR (SQLite VR store)
-  let _vrNames = []; let _vrCurrent = ''; let _vrLoaded = false;
-  const _devName = (_ifaceState.panToLinux||{})[name] || name;
-  try {
-    const _vrresp = await consoleRequest('/api/network/virtual-routers');
-    const _vrs = _vrresp.virtual_routers || _vrresp.entries;
-    if (!Array.isArray(_vrs)) throw new Error('Virtual router inventory unavailable');
-    _vrLoaded = true;
-    for (const _v of _vrs) {
-      if (_v.name === 'default') continue;
-      _vrNames.push(_v.name);
-      if ((_v.interfaces||[]).includes(_devName) || (_v.interfaces||[]).includes(name)) _vrCurrent = _v.name;
+    const row=((_ifaceState.enriched||{}).ethernet||[]).find(e=>e.name===name);
+    const snapshot=await consoleRequest('/api/config/interfaces?name='+encodeURIComponent(name)+'&vsys='+encodeURIComponent(row?.virtual_system||'vsys1'));
+    const cur=snapshot.entry,isAE=name.startsWith('ae');
+    let cap=_ifaceState.caps[name]||{supported_speeds:[]};
+    if(!isAE&&window.ffnExtensions?.interfaceLinkCapabilities){
+      try{cap=await window.ffnExtensions.interfaceLinkCapabilities(name)||cap;}
+      catch(e){cap={supported_speeds:[],configurable:false,source:'Hardware controller unavailable'};}
     }
-  } catch (e) {}
-
-  document.getElementById('info-modal-title').textContent = (existing?'Edit':'Create')+' Interface: '+name;
-  document.getElementById('info-modal-body').innerHTML = `
-    <input type="hidden" id="ifm-name" value="${_escSP(name)}">
-    <div class="form-group"><label>Mode</label>
-      <select id="ifm-mode" onchange="_ifmToggle()" style="width:100%">${modeOpts}</select>
-      <div class="text-dim">Front-panel ports default to None, which physically disables the link. Select an interface mode before enabling the port.</div>
-    </div>
-    <div class="form-group"><label>Comment</label><input id="ifm-comment" type="text" style="width:100%" placeholder="Description of this interface"></div>
-
-    <div class="setup-tabs" role="tablist" aria-label="Interface settings" onkeydown="consoleTabKey(event)">
-      <button id="ifm-tab-config" role="tab" aria-selected="true" aria-controls="ifm-panel-config" class="active" onclick="switchIfaceEditorTab('config')">Config</button>
-      <button id="ifm-tab-advanced" role="tab" tabindex="-1" aria-selected="false" aria-controls="ifm-panel-advanced" onclick="switchIfaceEditorTab('advanced')">Advanced</button>
-    </div>
-    <div id="ifm-panel-config" role="tabpanel" aria-labelledby="ifm-tab-config">
-    <div id="ifm-l3-block" class="section">
-      <div class="section-title">Layer 3 Settings</div>
-      <div class="form-group"><label>IPv4 Addressing</label><select id="ifm-addressing" onchange="document.getElementById('ifm-ip').disabled=this.value==='dhcp'"><option value="static">Static</option><option value="dhcp">DHCP client</option></select></div>
-      <div class="form-group"><label>DHCP Default Route</label><select id="ifm-dhcp-route"><option value="yes">Install received default route</option><option value="no">Do not install default route</option></select></div>
-      <div class="form-group"><label>IP Addresses (comma-separated CIDR)</label>
-        <input id="ifm-ip" type="text" style="width:100%" placeholder="10.0.0.1/24, 2001:db8::1/64">
-      </div>
-      <div class="form-group"><label>Interface MTU</label>
-        <input id="ifm-mtu" type="number" style="width:100%" placeholder="inherits global (${_ifaceState.jumbo.mtu})">
-      </div>
-      <div class="form-group"><label>Interface Management Profile</label>
-        <select id="ifm-mgmt" style="width:100%"></select>
-        <div class="text-dim" style="font-size:10px;margin-top:3px">Permits admin services (SSH/HTTPS/SNMP/ping/OCSP) to the firewall on this interface. Blank = no management access here. Add or edit profiles in the Network Profiles section.</div>
-      </div>
-      <div class="form-group"><label>Virtual Router</label>
-        <select id="ifm-vr" style="width:100%"></select>
-        <div class="text-dim" style="font-size:10px;margin-top:3px">Assigns this interface to a virtual router (its own VRF / routing table). &quot;default (main table)&quot; keeps it in the global table. Changing this assignment updates the virtual router immediately when saved. Other interface settings require Commit.</div>
-      </div>
-    </div>
-
-    <div id="ifm-ae-block" class="section" style="display:none">
-      <div class="section-title">Aggregate Group</div>
-      <div class="form-group"><label>Aggregate Group (ae name)</label>
-        <input id="ifm-agg" type="text" style="width:100%" placeholder="ae1">
-      </div>
-    </div>
-
-    <div id="ifm-bond-block" class="section" style="display:none">
-      <div class="section-title">Bonding (Aggregate Ethernet)</div>
-      <p class="text-dim" style="font-size:10px;margin-bottom:8px">
-        On VMware/hypervisor vNICs use <strong>active-backup</strong>. Use
-        <strong>802.3ad (LACP)</strong> only if your upstream switch actually negotiates LACP.
-      </p>
-      <div class="form-row">
-        <div class="form-group"><label>Bond Mode</label>
-          <select id="ifm-bondmode" style="width:100%">
-            <option value="active-backup">active-backup (VMware/hypervisor safe)</option>
-            <option value="802.3ad">802.3ad (LACP — requires switch negotiation)</option>
-            <option value="balance-rr">balance-rr (round-robin)</option>
-            <option value="balance-xor">balance-xor (static hash)</option>
-            <option value="balance-tlb">balance-tlb</option>
-            <option value="balance-alb">balance-alb</option>
-            <option value="broadcast">broadcast</option>
-          </select>
+    if(generation!==openIfaceModal.generation||!loading.isConnected||!overlay.classList.contains('show'))return;
+    const speeds=[...new Set(['auto',...(cap.supported_speeds||[]).map(s=>String(s.speed_mbps)),cur.link_speed||'auto'])];
+    const tabs=[['config','Configuration'],['ipv4','IPv4'],['ipv6','IPv6'],['advanced','Advanced']];
+    const modes=IFACE_MODES.filter(m=>!isAE||['none','layer2','layer3'].includes(m.value));
+    box.innerHTML=`<form id="interface-form" novalidate>
+      <p class="text-dim">${_escSP(name)} · ${isAE?'Aggregate Ethernet':'Physical interface'} · Virtual system: <strong>${_escSP(snapshot.vsys)}</strong> · Candidate configuration</p>
+      <fieldset class="ifm-fields">
+      <input id="ifm-name" type="hidden" value="${_escSP(name)}">
+      <div class="form-group"><label for="ifm-mode">Interface Type</label><select id="ifm-mode" onchange="_ifmToggle()">${modes.map(m=>`<option value="${m.value}">${_escSP(isAE&&m.value==='none'?'None (aggregate link only)':m.label)}</option>`).join('')}</select></div>
+      <p class="text-dim">${isAE?'None leaves the aggregate link and LACP enabled for subinterfaces. Use Admin State Down to disable the aggregate.':'None disables the physical link.'} Changes take effect after Commit.</p>
+      <div class="setup-tabs" role="tablist" aria-label="Interface settings" onkeydown="consoleTabKey(event)">${tabs.map(([key,label],i)=>`<button id="ifm-tab-${key}" type="button" role="tab" aria-controls="ifm-panel-${key}" aria-selected="${i===0}" tabindex="${i===0?0:-1}" class="${i===0?'active':''}" onclick="switchIfaceEditorTab('${key}')">${label}</button>`).join('')}</div>
+      <section id="ifm-panel-config" role="tabpanel" aria-labelledby="ifm-tab-config">
+        <div class="form-group"><label for="ifm-comment">Comment</label><textarea id="ifm-comment" rows="2" maxlength="1024">${_escSP(cur.comment)}</textarea></div>
+        <div class="form-row"><div id="ifm-zone-block" class="form-group"><label for="ifm-zone">Security Zone</label><select id="ifm-zone"></select></div>
+        <div id="ifm-l3-block" class="form-group"><label for="ifm-vr">Virtual Router</label><select id="ifm-vr">${subinterfaceOptions(snapshot.virtual_router_choices,cur.virtual_router)}</select></div>
+        <div id="ifm-l2-block" class="form-group"><label for="ifm-vlan">VLAN</label><select id="ifm-vlan">${subinterfaceOptions(snapshot.vlan_choices,cur.vlan)}</select></div></div>
+        <div id="ifm-ae-block" class="form-group"><label for="ifm-agg">Aggregate Group</label><select id="ifm-agg">${subinterfaceOptions(snapshot.aggregate_choices,cur.aggregate_group)}</select></div>
+        <div id="ifm-bond-block">
+          <div class="form-row"><div class="form-group"><label for="ifm-bondmode">Bond Mode</label><select id="ifm-bondmode">${['active-backup','802.3ad','balance-xor','balance-rr','balance-tlb','balance-alb','broadcast'].map(m=>`<option value="${m}">${m==='802.3ad'?'802.3ad (LACP)':m}</option>`).join('')}</select></div>
+          <div class="form-group"><label for="ifm-bondmiimon">Link Monitor Interval (ms)</label><input id="ifm-bondmiimon" type="number" min="1" max="60000" required value="${_escSP(cur.bond_miimon_ms)}"></div></div>
+          <p class="text-dim">LACP requires an upstream switch configured for link aggregation. Supported bond modes depend on the platform.</p>
         </div>
-        <div class="form-group"><label>MII Monitor Interval (ms)</label>
-          <input id="ifm-bondmiimon" type="number" style="width:100%" value="100">
-        </div>
-      </div>
-    </div>
-
-    </div>
-    <div id="ifm-panel-advanced" role="tabpanel" aria-labelledby="ifm-tab-advanced" hidden>
-    <div class="section">
-      <div class="section-title">Physical Link Settings</div>
-      <p class="text-dim" style="font-size:10px;margin-bottom:8px">${_escSP(cap.source||'ethtool')} capabilities: ${
-        cap.supported_speeds && cap.supported_speeds.length
-          ? cap.supported_speeds.map(s=>`${s.speed_mbps}Mb/s ${s.duplex}`).join(', ')
-          : (cap.ethtool_available===false ? 'ethtool not installed' : 'auto-detect unavailable')
-      }${cap.current_speed_mbps?' | current: '+cap.current_speed_mbps+' Mb/s '+(cap.current_duplex||''):''}</p>
-      <div class="form-row">
-        <div class="form-group"><label>Link Speed</label><select id="ifm-speed" style="width:100%">${speedOpts}</select></div>
-        <div class="form-group"><label>Duplex</label><select id="ifm-duplex" style="width:100%"><option value="auto">Auto</option><option value="full">Full</option><option value="half">Half</option></select></div>
-        <div class="form-group"><label>Admin State</label><select id="ifm-state" style="width:100%"><option value="auto">Auto</option><option value="up">Up</option><option value="down">Down</option></select></div>
-      </div>
-    </div>
-
-    <div class="section">
-      <div class="form-row">
-        <div class="form-group"><label>LLDP</label><select id="ifm-lldp" style="width:100%"><option value="no">Disabled</option><option value="yes">Enabled</option></select></div>
-        <div class="form-group"><label>LLDP Profile</label><input id="ifm-lldp-profile" type="text" style="width:100%" placeholder="e.g. CISCO"></div>
-      </div>
-    </div>
-
-    </div>
-    <div class="settings-toolbar">
-      <button class="btn btn-primary btn-sm" id="ifm-save" onclick="saveIface()">OK</button>
-      <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
-      <span id="ifm-msg" style="font-size:11px;align-self:center"></span>
-    </div>`;
-
-  // Populate
-  document.getElementById('ifm-mode').value = ['off','disabled','unconfigured'].includes(cur.mode) ? 'none' : (cur.mode || 'none');
-  document.getElementById('ifm-comment').value = cur.comment || '';
-  document.getElementById('ifm-ip').value = (cur.ip_addresses||[]).join(', ');
-  document.getElementById('ifm-mtu').value = cur.mtu || '';
-  (function(){
-    const _sel = document.getElementById('ifm-mgmt');
-    _sel.innerHTML = '<option value="">-- none (no management access) --</option>';
-    for (const _n of _mgmtProfileNames) {
-      const _o = document.createElement('option'); _o.value=_n; _o.textContent=_n; _sel.appendChild(_o);
-    }
-    const _curp = cur.interface_management_profile || '';
-    if (_curp && !_mgmtProfileNames.includes(_curp)) {
-      const _o = document.createElement('option'); _o.value=_curp; _o.textContent=_curp+' (missing)'; _sel.appendChild(_o);
-    }
-    _sel.value = _curp;
-  })();
-  (function(){
-    const _s = document.getElementById('ifm-vr'); if (!_s) return;
-    _s.innerHTML = '<option value="">default (main table)</option>';
-    for (const _n of _vrNames) { const _o=document.createElement('option'); _o.value=_n; _o.textContent=_n; _s.appendChild(_o); }
-    _s.value = _vrCurrent;
-    _s.dataset.original = _vrCurrent;
-    _s.disabled = !_vrLoaded;
-    if (!_vrLoaded) _s.innerHTML = '<option value="">Unavailable — assignment will be preserved</option>';
-  })();
-  document.getElementById('ifm-agg').value = cur.aggregate_group || '';
-  document.getElementById('ifm-addressing').value = cur.dhcp_client ? 'dhcp' : 'static';
-  document.getElementById('ifm-ip').disabled = !!cur.dhcp_client;
-  document.getElementById('ifm-dhcp-route').value = cur.dhcp_default_route===false ? 'no' : 'yes';
-  document.getElementById('ifm-speed').value = cur.link_speed || 'auto';
-  document.getElementById('ifm-speed').disabled = cap.configurable===false;
-  document.getElementById('ifm-duplex').value = cur.link_duplex || 'auto';
-  document.getElementById('ifm-state').value = ['none','off','disabled','unconfigured'].includes(cur.mode) ? 'auto' : (cur.link_state || 'auto');
-  document.getElementById('ifm-lldp').value = cur.lldp_enabled ? 'yes' : 'no';
-  document.getElementById('ifm-lldp-profile').value = cur.lldp_profile || '';
-  // Bond settings (only used when editing an aeN)
-  const bm = document.getElementById('ifm-bondmode');
-  if (bm) bm.value = cur.bond_mode || 'active-backup';
-  const mii = document.getElementById('ifm-bondmiimon');
-  if (mii) mii.value = cur.bond_miimon_ms || 100;
-  _ifmToggle();
-  document.getElementById('modal-info').classList.add('show');
+        <p class="text-dim">Selections come from candidate configuration. Existing subinterfaces and additional settings are preserved; remove subinterfaces before changing the parent type.</p>
+      </section>
+      <section id="ifm-panel-ipv4" role="tabpanel" aria-labelledby="ifm-tab-ipv4" hidden>
+        <div class="form-group"><label for="ifm-addressing">IPv4 Addressing</label><select id="ifm-addressing" onchange="_ifmToggle()"><option value="static">Static</option><option value="dhcp">DHCP client</option></select></div>
+        <div id="ifm-dhcp-block"><div class="form-row"><div class="form-group"><label for="ifm-dhcp-route">DHCP Default Route</label><select id="ifm-dhcp-route"><option value="yes">Install received default route</option><option value="no">Do not install default route</option></select></div>
+        <div class="form-group"><label for="ifm-dhcp-metric">Default Route Metric</label><input id="ifm-dhcp-metric" type="number" min="1" max="65535" required value="${_escSP(cur.dhcp_route_metric)}"></div></div>
+        <p class="text-dim">DHCP replaces static interface addresses when saved. This client does not configure static IPv6 addresses alongside DHCP.</p></div>
+        <div id="ifm-static4"><p class="text-dim">Enter each IPv4 address with its prefix length.</p><table><thead><tr><th>Address / Prefix</th><th>Actions</th></tr></thead><tbody id="ifm-addresses-4"></tbody></table><button id="ifm-add-4" class="btn btn-sm" type="button" onclick="addIfaceAddress(4)">Add IPv4 Address</button></div>
+      </section>
+      <section id="ifm-panel-ipv6" role="tabpanel" aria-labelledby="ifm-tab-ipv6" hidden>
+        <div class="form-group"><label for="ifm-ipv6-enabled">IPv6</label><select id="ifm-ipv6-enabled"><option value="no">Disabled</option><option value="yes">Enabled</option></select></div>
+        <p class="text-dim">Static IPv6 addresses with prefix lengths. Existing IPv6 options are preserved.</p>
+        <table><thead><tr><th>Address / Prefix</th><th>Actions</th></tr></thead><tbody id="ifm-addresses-6"></tbody></table><button id="ifm-add-6" class="btn btn-sm" type="button" onclick="addIfaceAddress(6)">Add IPv6 Address</button>
+      </section>
+      <section id="ifm-panel-advanced" role="tabpanel" aria-labelledby="ifm-tab-advanced" hidden>
+        <div id="ifm-ip-advanced"><div class="form-row"><div class="form-group"><label for="ifm-mtu">MTU</label><input id="ifm-mtu" type="number" min="576" max="9216" placeholder="Inherit" value="${_escSP(cur.mtu)}"></div>
+        <div class="form-group"><label for="ifm-mgmt">Interface Management Profile</label><select id="ifm-mgmt">${subinterfaceOptions(snapshot.management_profile_choices,cur.interface_management_profile)}</select></div></div>
+        <p class="text-dim">MTU: 576–9216 bytes; IPv6 requires at least 1280. Management profiles control access to the interface's own address.</p></div>
+        <div class="form-row"><div class="form-group" ${isAE?'hidden':''}><label for="ifm-speed">Link Speed</label><select id="ifm-speed">${speeds.map(s=>`<option value="${_escSP(s)}">${s==='auto'?'Auto-negotiate':_escSP(s)+' Mb/s'}</option>`).join('')}</select></div>
+        <div class="form-group" ${isAE?'hidden':''}><label for="ifm-duplex">Duplex</label><select id="ifm-duplex"><option value="auto">Auto</option><option value="full">Full</option><option value="half">Half</option></select></div>
+        <div class="form-group"><label for="ifm-state">Admin State</label><select id="ifm-state"><option value="auto">Auto</option><option value="up">Up</option><option value="down">Down</option></select></div></div>
+        <p class="text-dim">${isAE?'Configure physical speed and duplex on the aggregate members.':_escSP(cap.source||'Detected interface capabilities')+(cap.current_speed_mbps?' · Current: '+_escSP(cap.current_speed_mbps)+' Mb/s':'')+(cap.configurable===false?' · Link controls unavailable; existing settings are retained.':'')}</p>
+        <div class="form-row"><div class="form-group"><label for="ifm-lldp">LLDP</label><select id="ifm-lldp"><option value="no">Disabled</option><option value="yes">Enabled</option></select></div>
+        <div class="form-group"><label for="ifm-lldp-profile">LLDP Profile</label><select id="ifm-lldp-profile">${subinterfaceOptions(snapshot.lldp_profile_choices,cur.lldp_profile)}</select></div></div>
+      </section></fieldset>
+      <p class="text-dim">OK stages one candidate update. Commit applies it through the control daemon; check Tasks for the platform result.</p>
+      <div class="settings-toolbar"><span id="ifm-msg" role="status"></span><button class="btn" type="button" onclick="closeModal('modal-info')">Cancel</button><button id="ifm-save" class="btn btn-primary" type="submit" ${snapshot.can_edit?'':'disabled'}>OK</button></div>
+    </form>`;
+    const form=document.getElementById('interface-form');form.snapshot=snapshot;form.cap=cap;
+    const values={'mode':cur.mode,'addressing':cur.dhcp_client?'dhcp':'static','dhcp-route':cur.dhcp_default_route?'yes':'no','ipv6-enabled':cur.ipv6_enabled?'yes':'no','speed':cur.link_speed,'duplex':cur.link_duplex,'state':cur.mode==='none'&&!isAE?'auto':cur.link_state,'lldp':cur.lldp_enabled?'yes':'no','bondmode':cur.bond_mode};
+    Object.entries(values).forEach(([id,value])=>document.getElementById('ifm-'+id).value=value);
+    cur.ip_addresses.forEach(address=>addIfaceAddress(address.includes(':')?6:4,address));
+    form.onsubmit=event=>{event.preventDefault();saveIface();};
+    _ifmToggle();document.getElementById('ifm-mode').focus();
+  } catch(error){if(generation===openIfaceModal.generation&&loading.isConnected)box.textContent=error.message;}
 }
-
 function _ifmToggle() {
-  const mode = document.getElementById('ifm-mode').value;
-  const name = document.getElementById('ifm-name').value;
-  const isAE = name.startsWith('ae') && !name.includes('.');
-  const state = document.getElementById('ifm-state');
-  if(mode==='none'){
+  const form=document.getElementById('interface-form'),snapshot=form.snapshot,cur=snapshot.entry;
+  const mode=document.getElementById('ifm-mode').value,l3=mode==='layer3',isAE=cur.name.startsWith('ae'),dhcp=document.getElementById('ifm-addressing').value==='dhcp';
+  const state=document.getElementById('ifm-state');
+  if(mode==='none'&&!isAE){
     if(state.dataset.noneForced!=='true')state.dataset.previousState=state.value;
-    state.value='down';state.disabled=true;state.dataset.noneForced='true';
-  } else if(state.dataset.noneForced==='true'){
-    state.value=state.dataset.previousState||'auto';state.disabled=false;delete state.dataset.noneForced;
+    state.value='down';state.dataset.noneForced='true';
+  }else if(state.dataset.noneForced==='true'){state.value=state.dataset.previousState||'auto';delete state.dataset.noneForced;}
+  const zone=document.getElementById('ifm-zone'),choices=snapshot.zone_choices[mode]||[];
+  const selected=choices.includes(zone.value)?zone.value:(mode===cur.mode?cur.zone:'');
+  zone.innerHTML=subinterfaceOptions(choices,selected);
+  for(const [id,visible] of Object.entries({'l3-block':l3,'l2-block':mode==='layer2','zone-block':['layer3','layer2','tap','virtual-wire'].includes(mode),'ae-block':mode==='aggregate-group','bond-block':isAE,'ip-advanced':l3,'dhcp-block':l3&&dhcp,'static4':l3&&!dhcp})){
+    const block=document.getElementById('ifm-'+id);block.hidden=!visible;block.querySelectorAll('input,select,button').forEach(el=>el.disabled=!visible||!snapshot.can_edit);
   }
-  document.getElementById('ifm-l3-block').style.display = mode==='layer3'?'block':'none';
-  document.getElementById('ifm-ae-block').style.display = mode==='aggregate-group'?'block':'none';
-  // Bonding block appears when editing an aeN interface in layer3 mode
-  document.getElementById('ifm-bond-block').style.display = (isAE && mode==='layer3')?'block':'none';
+  for(const family of [4,6]){
+    const tab=document.getElementById('ifm-tab-ipv'+family),available=l3&&(family===4||!dhcp);
+    tab.hidden=!available;
+    if(!available&&tab.getAttribute('aria-selected')==='true')switchIfaceEditorTab('config');
+    document.getElementById('ifm-panel-ipv'+family).querySelectorAll('input,select,button').forEach(el=>el.disabled=!available||!snapshot.can_edit||(family===4&&(el.closest('#ifm-static4')?dhcp:el.closest('#ifm-dhcp-block')?!dhcp:false)));
+  }
+  state.disabled=(mode==='none'&&!isAE)||!snapshot.can_edit;
+  document.getElementById('ifm-speed').disabled=isAE||form.cap.configurable===false||!snapshot.can_edit;
+  document.getElementById('ifm-duplex').disabled=isAE||form.cap.configurable===false||!snapshot.can_edit;
+  if(!snapshot.can_edit)form.querySelectorAll('input,select,textarea,button:not([role="tab"]):not(.settings-toolbar button)').forEach(el=>el.disabled=true);
 }
-
 let ifaceSavePending = false;
 async function saveIface() {
-  if (ifaceSavePending) return;
-  const name = document.getElementById('ifm-name').value;
-  const body = {
-    name,
-    kind: (name.startsWith('ae') && !name.includes('.')) ? 'aggregate-ethernet' : 'ethernet',
-    mode: document.getElementById('ifm-mode').value,
-    ip_addresses: document.getElementById('ifm-ip').value.split(',').map(s=>s.trim()).filter(Boolean),
-    interface_management_profile: document.getElementById('ifm-mgmt').value.trim(),
-    mtu: document.getElementById('ifm-mtu').value ? parseInt(document.getElementById('ifm-mtu').value) : null,
-    aggregate_group: document.getElementById('ifm-agg').value.trim(),
-    dhcp_client: document.getElementById('ifm-mode').value==='layer3' && document.getElementById('ifm-addressing').value==='dhcp',
-    dhcp_default_route: document.getElementById('ifm-dhcp-route').value!=='no',
-    link_speed:  document.getElementById('ifm-speed').value,
-    link_duplex: document.getElementById('ifm-duplex').value,
-    link_state:  document.getElementById('ifm-state').value,
-    lldp_enabled: document.getElementById('ifm-lldp').value === 'yes',
-    lldp_profile: document.getElementById('ifm-lldp-profile').value.trim(),
-    comment: document.getElementById('ifm-comment').value,
-    // Bond settings (ignored by the backend unless name is aeN)
-    bond_mode: (document.getElementById('ifm-bondmode')||{}).value || 'active-backup',
-    bond_miimon_ms: parseInt((document.getElementById('ifm-bondmiimon')||{}).value || '100'),
-  };
-  if(body.dhcp_client)body.ip_addresses=[];
-  if(body.mode==='none'){
-    body.ip_addresses=[];body.interface_management_profile='';body.mtu=null;body.aggregate_group='';
-    body.lldp_enabled=false;body.lldp_profile='';
-    body.link_state='down';
+  const form=document.getElementById('interface-form');
+  if(!form||!form.snapshot.can_edit||form.saving)return;
+  const get=id=>document.getElementById('ifm-'+id).value,mode=get('mode'),l3=mode==='layer3',dhcp=l3&&get('addressing')==='dhcp';
+  for(const input of form.querySelectorAll('input[data-family]')){
+    const value=input.value.trim(),family=Number(input.dataset.family);
+    input.setCustomValidity(value.includes('/')&&(family===6?value.includes(':'):!value.includes(':'))?'':'Enter an IPv'+family+' address with its prefix length.');
   }
-  const msg = document.getElementById('ifm-msg');
-  if (msg) { msg.textContent = 'Saving...'; msg.style.color = 'var(--orange)'; }
-  const vr = document.getElementById('ifm-vr');
-  const requestedVR = vr ? vr.value : '';
-  const changeVR = body.mode === 'layer3' && vr && !vr.disabled && requestedVR !== vr.dataset.original;
-  const saveButton = document.getElementById('ifm-save');
-  if (saveButton) saveButton.disabled = true;
-  ifaceSavePending = true;
-  let candidateSaved = false;
-  try {
-    const r = await consoleRequest(`/api/interfaces/${encodeURIComponent(name)}`, {method:'PUT', body:JSON.stringify(body)});
-    if (r.status !== 'created') throw new Error('Candidate update was not confirmed.');
-    candidateSaved = true;
-    if (changeVR) {
-      const device = (_ifaceState.panToLinux || {})[name] || name;
-      await consoleRequest(`/api/network/interfaces/${encodeURIComponent(device)}/virtual-router`, {method:'PUT', body:JSON.stringify({virtual_router:requestedVR})});
-      vr.dataset.original = requestedVR;
-    }
-    if (msg) { msg.textContent = 'Saved to candidate — review and commit to apply.'; msg.style.color = 'var(--green)'; }
-  } catch (error) {
-    if (msg) {
-      msg.textContent = candidateSaved ? 'Interface saved to candidate; virtual-router assignment failed: '+error.message : 'Save failed: '+error.message;
-      msg.style.color = candidateSaved ? 'var(--orange)' : 'var(--red)';
-    }
-  }
-  ifaceSavePending = false;
-  if (saveButton && saveButton.isConnected) saveButton.disabled = false;
-  if (candidateSaved) { refreshCommitIndicator(); loadInterfacesFull(); }
-
+  const invalid=Array.from(form.elements).find(el=>el.willValidate&&!el.validity.valid);
+  if(invalid){const panel=invalid.closest('[role="tabpanel"]');if(panel)switchIfaceEditorTab(panel.id.replace('ifm-panel-',''));invalid.reportValidity();return;}
+  const body={name:get('name'),revision:form.snapshot.revision,vsys:form.snapshot.vsys,mode,
+    comment:get('comment'),zone:['layer3','layer2','tap','virtual-wire'].includes(mode)?get('zone'):'',virtual_router:l3?get('vr'):'',vlan:mode==='layer2'?get('vlan'):'',
+    ip_addresses:l3&&!dhcp?Array.from(form.querySelectorAll('input[data-family]'),input=>input.value.trim()):[],
+    dhcp_client:dhcp,dhcp_default_route:get('dhcp-route')==='yes',dhcp_route_metric:Number(get('dhcp-metric')),
+    ipv6_enabled:l3&&!dhcp&&get('ipv6-enabled')==='yes',mtu:l3&&get('mtu')?Number(get('mtu')):null,
+    interface_management_profile:l3?get('mgmt'):'',aggregate_group:mode==='aggregate-group'?get('agg'):'',
+    link_speed:get('speed'),link_duplex:get('duplex'),link_state:mode==='none'&&!get('name').startsWith('ae')?'down':get('state'),
+    lldp_enabled:(mode!=='none'||get('name').startsWith('ae'))&&get('lldp')==='yes',lldp_profile:get('lldp-profile'),bond_mode:get('bondmode'),bond_miimon_ms:Number(get('bondmiimon'))};
+  const button=document.getElementById('ifm-save'),msg=document.getElementById('ifm-msg');
+  form.saving=true;button.disabled=true;form.querySelector('fieldset').disabled=true;msg.textContent='Saving…';
+  try{
+    const result=await consoleRequest('/api/config/interfaces',{method:'PUT',body:JSON.stringify(body)});
+    if(!['created','updated'].includes(result.status))throw Error('Candidate update was not confirmed.');
+    refreshCommitIndicator();loadInterfacesFull();
+    if(msg.isConnected&&document.getElementById('interface-form')===form){closeModal('modal-info');const notice=document.getElementById('iface-notice');if(notice)notice.textContent='Saved '+result.name+' to candidate. Commit required.';}
+  }catch(error){if(msg.isConnected){msg.textContent=error.message;button.disabled=false;form.querySelector('fieldset').disabled=false;}}
+  finally{form.saving=false;}
 }
 
 async function deleteIface(name) {
@@ -4407,6 +4352,26 @@ async function saveAlias(panName) {
 }
 
 /* VLAN subinterfaces are edited through the revision-checked candidate API. */
+function switchSubinterfaceTab(name) {
+  document.querySelectorAll('#subinterface-form [role="tab"]').forEach(button=>{
+    const selected=button.id==='sif-tab-'+name;
+    button.classList.toggle('active',selected);button.setAttribute('aria-selected',String(selected));button.tabIndex=selected?0:-1;
+    document.getElementById(button.getAttribute('aria-controls')).hidden=!selected;
+  });
+}
+function subinterfaceOptions(choices,current) {
+  const names=[...new Set(choices||[])];
+  if(current&&!names.includes(current)) names.push(current);
+  return '<option value="">None</option>'+names.map(name=>`<option value="${_escSP(name)}" ${name===current?'selected':''}>${_escSP(name)}${!(choices||[]).includes(name)?' (unresolved; retained)':''}</option>`).join('');
+}
+function addSubinterfaceAddress(family,value='') {
+  const body=document.getElementById('sif-addresses-'+family);
+  const row=document.createElement('tr');
+  row.innerHTML=`<td><input aria-label="IPv${family} address with prefix" data-family="${family}" required placeholder="${family===4?'192.0.2.1/24':'2001:db8::1/64'}" value="${_escSP(value)}"></td><td><button type="button" class="btn btn-sm" aria-label="Remove IPv${family} address">Remove</button></td>`;
+  row.querySelector('button').onclick=()=>{row.remove();document.getElementById('sif-add-'+family).focus();};
+  body.appendChild(row);
+  if(!value) row.querySelector('input').focus();
+}
 async function openSubinterfaceModal(parent, childName = null) {
   const box = document.getElementById('info-modal-body');
   document.getElementById('info-modal-title').textContent = childName ? 'Edit Subinterface: '+childName : 'Add Subinterface: '+parent;
@@ -4415,29 +4380,46 @@ async function openSubinterfaceModal(parent, childName = null) {
   document.getElementById('modal-info').classList.add('show');
   const generation = openSubinterfaceModal.generation = (openSubinterfaceModal.generation || 0)+1;
   try {
-    const [snapshot, systems] = await Promise.all([consoleRequest('/api/config/subinterfaces?parent='+encodeURIComponent(parent)), consoleRequest('/api/vsys')]);
+    const row = ((_ifaceState.enriched || {}).ethernet || []).find(e=>e.name===(childName || parent));
+    const vsys=row&&row.virtual_system || 'vsys1';
+    const snapshot = await consoleRequest('/api/config/subinterfaces?parent='+encodeURIComponent(parent)+'&vsys='+encodeURIComponent(vsys));
     if (generation !== openSubinterfaceModal.generation || !loading.isConnected) return;
     const existing = childName ? snapshot.entries.find(e=>e.name===childName) : null;
     if (childName && !existing) throw new Error('Subinterface no longer exists. Refresh the interface list.');
     if (existing && !existing.editable) throw new Error('This imported subinterface has additional settings this editor cannot safely replace.');
     const entry = existing || {unit:'',tag:'',ip_addresses:[],mtu:'',interface_management_profile:'',comment:''};
     const l3 = snapshot.mode === 'layer3';
-    box.innerHTML = `<form id="subinterface-form">
+    const tabs=l3?[['config','Configuration'],['ipv4','IPv4'],['ipv6','IPv6'],['advanced','Advanced']]:[['config','Configuration']];
+    box.innerHTML = `<form id="subinterface-form" novalidate>
+      <p class="text-dim">${_escSP(parent)} · ${l3?'Layer 3':'Layer 2'} · Virtual system: <strong>${_escSP(snapshot.vsys)}</strong> · Candidate configuration</p>
+      <fieldset class="sif-fields">
       <div class="form-row"><div class="form-group"><label for="sif-unit">Subinterface ID</label><input id="sif-unit" type="number" min="1" max="9999" required ${existing?'readonly':''} value="${_escSP(entry.unit)}"></div>
       <div class="form-group"><label for="sif-tag">VLAN Tag</label><input id="sif-tag" type="number" min="1" max="4094" required value="${_escSP(entry.tag)}"></div></div>
-      <p class="text-dim">Parent: ${_escSP(parent)} · ${l3?'Layer 3':'Layer 2'}. The interface ID and VLAN tag can differ.</p>
-      <div class="form-group"><label for="sif-vsys">Virtual System</label><select id="sif-vsys">${systems.entries.map(v=>`<option value="${_escSP(v.name)}">${_escSP(v.name)}</option>`).join('')}</select></div>
-      <div ${l3?'':'hidden'}>
-        <div class="form-group"><label for="sif-ip">IP Addresses (comma-separated CIDR)</label><input id="sif-ip" value="${_escSP(entry.ip_addresses.join(', '))}" placeholder="192.0.2.1/24, 2001:db8::1/64"></div>
+      <p class="text-dim">The interface ID and VLAN tag can differ. Link state and speed are inherited from the parent.</p>
+      <div class="setup-tabs" role="tablist" aria-label="Subinterface settings" onkeydown="consoleTabKey(event)">${tabs.map(([key,label],i)=>`<button id="sif-tab-${key}" type="button" role="tab" aria-controls="sif-panel-${key}" aria-selected="${i===0}" tabindex="${i===0?0:-1}" class="${i===0?'active':''}" onclick="switchSubinterfaceTab('${key}')">${label}</button>`).join('')}</div>
+      <section id="sif-panel-config" role="tabpanel" aria-labelledby="sif-tab-config">
+        <div class="form-group"><label for="sif-comment">Comment</label><textarea id="sif-comment" maxlength="1024" rows="2">${_escSP(entry.comment)}</textarea></div>
+        <div class="form-row"><div class="form-group"><label for="sif-zone">Security Zone</label><select id="sif-zone">${subinterfaceOptions(snapshot.zone_choices,entry.zone)}</select></div>
+        <div class="form-group"><label for="sif-network">${l3?'Virtual Router':'VLAN'}</label><select id="sif-network">${subinterfaceOptions(l3?snapshot.virtual_router_choices:snapshot.vlan_choices,l3?entry.virtual_router:entry.vlan)}</select></div></div>
+        <p class="text-dim">Selections use candidate configuration. Create missing objects in Network before assigning them here.</p>
+      </section>
+      ${l3?[4,6].map(family=>`<section id="sif-panel-ipv${family}" role="tabpanel" aria-labelledby="sif-tab-ipv${family}" hidden>
+        <p>Static IPv${family} addresses</p><p class="text-dim">Enter each address with its prefix length. Remove a row to clear that address.</p>
+        <table class="data-table"><thead><tr><th>Address / Prefix</th><th>Actions</th></tr></thead><tbody id="sif-addresses-${family}"></tbody></table>
+        <button id="sif-add-${family}" class="btn btn-sm" type="button" onclick="addSubinterfaceAddress(${family})">Add IPv${family} Address</button>
+      </section>`).join(''):''}
+      ${l3?`<section id="sif-panel-advanced" role="tabpanel" aria-labelledby="sif-tab-advanced" hidden>
         <div class="form-row"><div class="form-group"><label for="sif-mtu">MTU</label><input id="sif-mtu" type="number" min="576" max="9216" value="${_escSP(entry.mtu)}" placeholder="Inherit"></div>
-        <div class="form-group"><label for="sif-mgmt">Interface Management Profile</label><input id="sif-mgmt" maxlength="63" value="${_escSP(entry.interface_management_profile)}" placeholder="None"></div></div>
-      </div>
-      <div class="form-group"><label for="sif-comment">Comment</label><input id="sif-comment" maxlength="1024" value="${_escSP(entry.comment)}"></div>
+        <div class="form-group"><label for="sif-mgmt">Interface Management Profile</label><select id="sif-mgmt">${subinterfaceOptions(snapshot.management_profile_choices,entry.interface_management_profile)}</select></div></div>
+        <p class="text-dim">MTU: 576–9216 bytes; IPv6 requires at least 1280. Leave blank to inherit.</p>
+        <p class="text-dim">The management profile selects access to this interface's own address. Traffic through the interface uses security policy.</p>
+        ${entry.tcp_mss_preserved?'<p class="text-dim">Existing TCP MSS adjustment settings will be preserved.</p>':''}
+      </section>`:''}
+      </fieldset>
       <p class="text-dim">${_escSP(snapshot.runtime_note)}</p>
       <div class="settings-toolbar"><span id="sif-msg" role="status"></span><button class="btn" type="button" onclick="closeModal('modal-info')">Cancel</button><button id="sif-save" class="btn btn-primary" type="submit" ${snapshot.can_edit?'':'disabled'}>OK</button></div></form>`;
-    const row = ((_ifaceState.enriched || {}).ethernet || []).find(e=>e.name===(childName || parent));
-    const vsys = row && row.virtual_system;
-    document.getElementById('sif-vsys').value = systems.entries.some(v=>v.name===vsys) ? vsys : snapshot.vsys;
+    if(l3) entry.ip_addresses.forEach(address=>addSubinterfaceAddress(address.includes(':')?6:4,address));
+    if(!snapshot.can_edit) box.querySelectorAll('input,select,textarea,.sif-fields button:not([role="tab"])').forEach(control=>control.disabled=true);
     document.getElementById('subinterface-form').onsubmit = event => {event.preventDefault();saveSubinterface(parent,snapshot,existing);};
     document.getElementById(existing?'sif-tag':'sif-unit').focus();
   } catch(e) {if (generation===openSubinterfaceModal.generation && loading.isConnected) box.textContent=e.message;}
@@ -4447,18 +4429,26 @@ async function saveSubinterface(parent,snapshot,existing) {
   const button=document.getElementById('sif-save'), message=document.getElementById('sif-msg');
   if (button.disabled) return;
   const l3 = snapshot.mode==='layer3';
+  const form=document.getElementById('subinterface-form');
+  for(const input of form.querySelectorAll('input[data-family]')) {
+    const address=input.value.trim(), family=Number(input.dataset.family);
+    input.setCustomValidity(address.includes('/') && (family===6?address.includes(':'):!address.includes(':'))?'':'Enter an IPv'+family+' address with its prefix length.');
+  }
+  const invalid=Array.from(form.elements).find(input=>input.willValidate&&!input.validity.valid);
+  if(invalid){const panel=invalid.closest('[role="tabpanel"]');if(panel)switchSubinterfaceTab(panel.id.replace('sif-panel-',''));invalid.reportValidity();return;}
   const body={parent,revision:snapshot.revision,unit:Number(document.getElementById('sif-unit').value),tag:Number(document.getElementById('sif-tag').value),
-    mode:snapshot.mode,vsys:document.getElementById('sif-vsys').value,
-    ip_addresses:l3?document.getElementById('sif-ip').value.split(',').map(x=>x.trim()).filter(Boolean):[],
+    mode:snapshot.mode,vsys:snapshot.vsys,zone:document.getElementById('sif-zone').value,
+    ...(l3?{virtual_router:document.getElementById('sif-network').value}:{vlan:document.getElementById('sif-network').value}),
+    ip_addresses:l3?Array.from(form.querySelectorAll('input[data-family]'),input=>input.value.trim()):[],
     mtu:l3&&document.getElementById('sif-mtu').value?Number(document.getElementById('sif-mtu').value):null,
     interface_management_profile:l3?document.getElementById('sif-mgmt').value.trim():'',comment:document.getElementById('sif-comment').value};
-  button.disabled=true;message.textContent='Saving…';
+  button.disabled=true;form.querySelector('fieldset').disabled=true;message.textContent='Saving…';
   try {
     const result=await consoleRequest('/api/config/subinterfaces',{method:existing?'PUT':'POST',body:JSON.stringify(body)});
     if (!['created','updated'].includes(result.status)) throw new Error('Candidate update was not confirmed.');
     refreshCommitIndicator();loadInterfacesFull();
-    if(message.isConnected){message.textContent='Saved '+result.name+' to candidate. Commit required.';button.textContent='Saved';}
-  } catch(e) {if(message.isConnected){message.textContent=e.message;button.disabled=false;}}
+    if(message.isConnected){closeModal('modal-info');const notice=document.getElementById('iface-notice');if(notice)notice.textContent='Saved '+result.name+' to candidate. Commit required.';}
+  } catch(e) {if(message.isConnected){message.textContent=e.message;button.disabled=false;form.querySelector('fieldset').disabled=false;}}
 }
 async function deleteSubif(parent,childName) {
   const notice=document.getElementById('iface-notice');
@@ -4483,7 +4473,6 @@ function openAggregateModal() {
   while (existing.has(`ae${n}`)) n++;
   const name = `ae${n}`;
   // Trigger the iface modal with an empty entry
-  _ifaceState.configured['aggregate-ethernet'].push({name, mode:'layer3', ip_addresses:[], mtu:'', comment:'', link_speed:'auto', link_duplex:'auto'});
   openIfaceModal(name);
 }
 

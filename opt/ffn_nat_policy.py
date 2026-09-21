@@ -92,11 +92,20 @@ class Resolver:
     def interfaces(self,zones):
         # ANY is bounded to the virtual system's Layer 3 zone membership.
         out=[]
+        # An unaddressed aggregate can carry addressed VLAN units without being
+        # a routed endpoint itself. Do not require NAT on that transport parent.
+        containers=set()
+        for entry in self.root.findall('./devices/entry/network/interface/aggregate-ethernet/entry'):
+            layer=entry.find('layer3')
+            if layer is not None and (entry.findtext('aggregate-only')=='yes' or
+                (layer.find('units/entry') is not None and not layer.findall('ip/entry') and
+                 layer.findtext('dhcp-client/enable','no')!='yes')):
+                containers.add(entry.get('name'))
         for zone in self.owner.findall('zone/entry'):
             if zones!=['any'] and zone.get('name') not in zones:continue
             members=zone.findall('network/layer3/member')
             if not members and zones!=['any']:raise NatError('NAT requires a nonempty Layer 3 zone: '+str(zone.get('name')))
-            out.extend(m.text or '' for m in members)
+            out.extend(m.text or '' for m in members if m.text not in containers)
         if not out:raise NatError('Assign Layer 3 interfaces to the selected zones before activating NAT')
         return sorted(set(out))
 
@@ -105,6 +114,12 @@ def compile_rule(root,owner,spec,position):
     s=spec['settings'];r=Resolver(root,owner)
     if not spec['editable']:raise NatError('Imported NAT rule contains unsupported XML fields')
     if s.get('nat-type') not in ('','ipv4'):raise NatError('Only IPv4 NAT is supported')
+    if s.get('source-type')=='persistent-dynamic-ip-and-port':raise NatError('Persistent Dynamic IP and Port requires a dataplane persistent-binding allocator; activation is not supported by this provider')
+    dynamic=s.get('destination-type')=='dynamic-ip'
+    if dynamic and s.get('session-distribution') not in ('round-robin','source-ip-hash','ip-hash'):
+        raise NatError('This session-distribution method requires a different dataplane allocator')
+    if not dynamic and s.get('session-distribution'):
+        raise NatError('Session distribution requires dynamic destination translation')
     source=r.addresses(s['source']);destination=r.addresses(s['destination'])
     ingress=r.interfaces(s['from']);egress=r.interfaces(s['to'])
     if s.get('to-interface') and s['to-interface']!='any':
@@ -128,8 +143,21 @@ def compile_rule(root,owner,spec,position):
     dnat=None
     if s.get('translated-destination'):
         addresses=r.addresses([s['translated-destination']])
-        if len(addresses)!=1:raise NatError('Destination translation requires one IPv4 host')
-        dnat={'address':ipv4(addresses[0],host=True)}
+        if dynamic:
+            pool=set()
+            for value in addresses:
+                if '-' in value:
+                    first,last=value.split('-');start,end=int(ipaddress.IPv4Address(first)),int(ipaddress.IPv4Address(last))
+                else:
+                    network=ipaddress.IPv4Network(value);start,end=int(network.network_address),int(network.broadcast_address)
+                if end-start+1>256:raise NatError('Dynamic destination pool exceeds 256 hosts')
+                for number in range(start,end+1):pool.add(ipv4(str(ipaddress.IPv4Address(number)),host=True))
+                if len(pool)>256:raise NatError('Dynamic destination pool exceeds 256 hosts')
+            if not pool:raise NatError('Dynamic destination pool is empty')
+            dnat={'type':'dynamic','addresses':sorted(pool,key=ipaddress.IPv4Address),'method':s['session-distribution']}
+        else:
+            if len(addresses)!=1:raise NatError('Destination translation requires one IPv4 host')
+            dnat={'address':ipv4(addresses[0],host=True)}
         if s.get('translated-port'):
             if any(x['protocol']=='any' for x in services):raise NatError('Port forwarding requires a TCP or UDP service')
             n=int(s['translated-port'])

@@ -26,6 +26,7 @@ def main():
         run('ip','netns','exec',dp,sys.executable,'-c',"from pathlib import Path;Path('/proc/sys/net/ipv4/ip_forward').write_text('1')")
         with tempfile.TemporaryDirectory() as temp:
             nat.NS=dp;nat.STATE=Path(temp)/'nat.json';nat.BINDINGS=Path(temp)/'interfaces.json'
+            nat.PLATFORM_BINDINGS=Path(temp)/'platform-bindings.json'
             nat.BINDINGS.write_text(json.dumps({'ethernet1/1':'p1','ethernet1/2':'p2'}))
             def apply(rows):return nat.apply({'revision':nat.saved()['revision'],'plan':{'version':1,'rules':rows}})
             assert not ping(1100),'WAN has no return route before source NAT'
@@ -53,6 +54,46 @@ def main():
                 finally:
                     if proc.poll() is None:proc.kill();proc.wait()
                 print(proto+' '+('combined SNAT/DNAT' if combined else 'destination NAT')+' port forwarding and reply passed',flush=True)
+            # Two independently addressed backends verify real distribution and
+            # stable reverse translation, including a translated UDP port.
+            run('ip','-n',lan,'address','add','192.0.2.3/24','dev','lan')
+            for method in ('round-robin','source-ip-hash','ip-hash'):
+                distributed=copy.deepcopy(base)
+                distributed.update(name='distributed',ingress=['ethernet1/2'],source=['0.0.0.0/0'],destination=['198.51.100.1/32'],
+                    services=[dict(protocol='udp',source_ports=[],destination_ports=['18100'])],snat={'type':'none'},
+                    dnat=dict(type='dynamic',addresses=['192.0.2.2','192.0.2.3'],method=method,port=19100))
+                apply([distributed])
+                server="""import socket,select,time
+sockets=[]
+for address in ('192.0.2.2','192.0.2.3'):
+ s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.bind((address,19100));sockets.append(s)
+print('ready',flush=True)
+for i in range(12):
+ ready,_,_=select.select(sockets,[],[],8)
+ if not ready:raise RuntimeError('missing translated request')
+ for s in ready:
+  message,peer=s.recvfrom(128);s.sendto(s.getsockname()[0].encode(),peer)
+"""
+                proc=S.Popen(['ip','netns','exec',lan,sys.executable,'-uc',server],stdout=S.PIPE,stderr=S.PIPE,text=True)
+                try:
+                    assert proc.stdout.readline().strip()=='ready'
+                    client="""import socket,json
+results=[]
+for i in range(6):
+ s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.settimeout(4);s.connect(('198.51.100.1',18100))
+ pair=[]
+ for j in range(2):s.send(b'distribution');pair.append(s.recv(128).decode())
+ assert pair[0]==pair[1],'existing connection changed backend'
+ results.append(pair[0]);s.close()
+print(json.dumps(results))
+"""
+                    selected=json.loads(run('ip','netns','exec',wan,sys.executable,'-c',client))
+                    if method=='round-robin':assert selected.count('192.0.2.2')==selected.count('192.0.2.3')==3,selected
+                    else:assert len(set(selected))==1,selected
+                    proc.wait(timeout=10);assert proc.returncode==0
+                finally:
+                    if proc.poll() is None:proc.kill();proc.wait()
+                print(method+' destination distribution, port translation and connection affinity passed',flush=True)
             apply([]);assert not ping(1105),'Removed NAT rules continued to translate new connections'
             assert nat.status()['usage']==[],'Deleted rules retained stale usage'
             apply([base]);nat.nft(['delete','table','ip',nat.TABLE]);nat.restore()

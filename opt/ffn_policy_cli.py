@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""FFN-CLI command extension using the same authenticated API as the WebUI."""
+"""FFN-CLI commands using shared management operations through its request adapter."""
 import json
 import copy
 from urllib.parse import urlencode
@@ -25,8 +25,8 @@ Rules start disabled. Friendly commands fetch the current candidate revision;
 concurrent edits are rejected. enabled=yes|no and description= are supported.
 QoS profile fields include max-mbps, guaranteed-mbps and class1.priority,
 class1.max-mbps, class1.guaranteed-mbps (class1 through class8).
-show policies preview <nat|qos|pbf|decryption> [vsys] [candidate|running]
-request policies <nat|qos|pbf|decryption> test <packet-JSON> [vsys] [candidate|running]
+show policies preview <security|nat|qos|pbf|decryption> [vsys] [candidate|running]
+request policies <security|nat|qos|pbf|decryption> test <packet-JSON> [vsys] [candidate|running]
 show policies nat-preview [candidate|running]
 show policies nat-tools
 show policies status [candidate|running]
@@ -167,7 +167,13 @@ def friendly_rule(tokens,api,token):
         if kind=='nat':
             if s['source-type']=='none':s.update({'translated-source':[],'source-interface':''})
             elif 'source-interface' in fields and fields['source-interface']:s['translated-source']=[]
-            elif 'translated-source' in fields or s['source-type']!='dynamic-ip-and-port':s['source-interface']=''
+            elif 'translated-source' in fields or s['source-type'] not in ('dynamic-ip-and-port','persistent-dynamic-ip-and-port'):s['source-interface']=''
+            if 'translated-destination' in fields and 'destination-type' not in fields:
+                if not fields['translated-destination']:s['destination-type']='none'
+                elif s.get('destination-type') in ('','none',None):s['destination-type']='static-ip'
+            if s.get('destination-type')=='none':s.update({'translated-destination':'','translated-port':''})
+            if s.get('destination-type')!='dynamic-ip':s['session-distribution']=''
+            elif not s.get('session-distribution'):s['session-distribution']='round-robin'
         if kind=='pbf' and s['action']!='forward':s.update({'egress-interface':'','next-hop':''})
         if kind=='decryption' and (s['action']!='decrypt' or s['type']!='ssl-inbound-inspection'):s['certificate']=''
         payload.update(action='update' if op=='edit' else 'create',rule=rule)

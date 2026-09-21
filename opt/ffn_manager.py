@@ -1473,44 +1473,19 @@ class ConfigManager:
         logger.info("Config loaded: running-config at v%s (%d history entries)",
                     latest, len(self.history.list_entries()))
 
-        self._lock_holder: Optional[str] = None
-        self._lock_acquired_at: float = 0
-        self._lock_reason: str = ""
+        from ffn_config_lock import ConfigLock
+        self._config_lock = ConfigLock(CONFIG_DIR / 'config-lock.sqlite3', COMMIT_LOCK_TIMEOUT)
 
     # -- Lock management --
 
     def lock_status(self) -> dict:
-        if self._lock_holder:
-            age = time.time() - self._lock_acquired_at
-            if age > COMMIT_LOCK_TIMEOUT:
-                self._lock_holder = None
-                self._lock_reason = ""
-                return {"locked": False, "message": "Lock expired"}
-            return {
-                "locked": True,
-                "holder": self._lock_holder,
-                "acquired_at": datetime.fromtimestamp(self._lock_acquired_at).isoformat(),
-                "age_seconds": int(age),
-                "expires_in": int(COMMIT_LOCK_TIMEOUT - age),
-                "reason": self._lock_reason,
-            }
-        return {"locked": False}
+        return self._config_lock.status()
 
     def acquire_lock(self, user: str, reason: str = "commit") -> bool:
-        st = self.lock_status()
-        if st["locked"] and st["holder"] != user:
-            return False
-        self._lock_holder = user
-        self._lock_acquired_at = time.time()
-        self._lock_reason = reason
-        return True
+        return self._config_lock.acquire(user, reason)
 
     def release_lock(self, user: str) -> bool:
-        if self._lock_holder == user:
-            self._lock_holder = None
-            self._lock_reason = ""
-            return True
-        return False
+        return self._config_lock.release(user)
 
     # -- XML parsing --
 
@@ -2505,7 +2480,8 @@ async def get_current_user(
         token_str = authorization[7:]
     else:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return await _authenticate_token(token_str, request.url.path)
+    from ffn_authorization import authorize
+    return authorize(request, await _authenticate_token(token_str, request.url.path))
 
 
 async def _authenticate_token(token_str: str, path: str):
@@ -3360,6 +3336,7 @@ async def _cli_auth_conn(reader, writer):
 
 @app.on_event("startup")
 async def _cli_auth_start():
+    if os.getenv('FFN_MANAGER_FRONTEND') == '1': return
     try:
         os.makedirs(os.path.dirname(CLI_AUTH_SOCK), exist_ok=True)
         if os.path.exists(CLI_AUTH_SOCK):
@@ -3374,6 +3351,7 @@ async def _cli_auth_start():
 
 @app.on_event("startup")
 async def startup():
+    if os.getenv('FFN_MANAGER_FRONTEND') == '1': return
     await init_db()
     logger.info("FFN NGFW Manager started — FPGA device %s", DEV_PATH)
     # Make sure every detected Linux NIC has a PAN-OS alias (ens33 → ethernet1/1 …)
@@ -3507,6 +3485,10 @@ async def list_users(user: dict = Depends(get_current_user)):
 async def create_user(req: AdminUserCreate, user: dict = Depends(get_current_user)):
     _require_admin(user)
     uname = (req.username or "").strip()
+    if os.getenv('FFN_CONSOLE_IDENTITIES') == '1':
+        from ffn_console_accounts import validate_username
+        try: validate_username(uname)
+        except ValueError as error: raise HTTPException(422, str(error))
     if not uname:
         raise HTTPException(status_code=400, detail="username is required")
     if req.role not in VALID_ROLES:
@@ -4490,6 +4472,14 @@ async def system_hardware(refresh: int = 0, user: dict = Depends(get_current_use
     inv["cpu_role"] = classify_cpu_role(inv, inv["platform"])
     inv["cpu"] = dict(inv.get("cpu") or {}, role=inv["cpu_role"]["role"])
     inv["applicability"] = inventory_applicability(inv, inv["platform"])
+    if inv["applicability"]["family"] == "pa5200":
+        from ffn_control_plane import control_rpc
+        from ffn_hwdetect import fe100_driver_observation
+        try:
+            control = await control_rpc('state/control', timeout=3)
+        except (OSError, ValueError, asyncio.TimeoutError, ConnectionError):
+            control = {}
+        inv["fe100_driver"] = fe100_driver_observation(control)
     return inv
 
 
@@ -9265,11 +9255,8 @@ async def config_lock_release(user: dict = Depends(get_current_user)):
 @app.post("/api/config/lock/override")
 async def config_lock_override(user: dict = Depends(get_current_user)):
     """Admin-only lock override — forcibly release any active lock."""
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin role required")
-    prev_holder = config_mgr._lock_holder
-    config_mgr._lock_holder = None
-    config_mgr._lock_reason = ""
+    _require_admin(user)
+    prev_holder = config_mgr._config_lock.override()
     async with aiosqlite.connect(DB_PATH) as db:
         await audit(db, user["username"], "lock_override", f"previous={prev_holder}")
     return {"status": "overridden", "previous_holder": prev_holder}
@@ -11018,6 +11005,11 @@ def _build_iface_payload(i: InterfaceEntry) -> dict:
     payload: dict = {"comment": i.comment}
 
     if i.mode == "none":
+        if i.name.startswith('ae') and '.' not in i.name:
+            payload['aggregate-only']='yes'
+            payload['bond']={'mode':i.bond_mode,'miimon':i.bond_miimon_ms}
+            if i.link_state!='auto':payload['link-state']=i.link_state
+            return payload
         # Unconfigured front ports are physically disabled, including callers
         # that omit mode or try to combine None with an explicit link-up.
         payload["link-state"] = "down"
@@ -11179,6 +11171,7 @@ async def interfaces_list(user: dict = Depends(get_current_user)):
                 break
         if entry.findtext("aggregate-group"):
             mode = "aggregate-group"
+        if kind=='aggregate-ethernet' and entry.findtext('aggregate-only')=='yes':mode='none'
 
         ips = []
         for ip in entry.findall("./layer3/ip/entry"):
@@ -11198,13 +11191,13 @@ async def interfaces_list(user: dict = Depends(get_current_user)):
             "dhcp_default_route": entry.findtext("./layer3/dhcp-client/create-default-route", "yes") == "yes",
             "link_speed": entry.findtext("link-speed", "auto"),
             "link_duplex": entry.findtext("link-duplex", "auto"),
-            "link_state": "down" if mode == "none" else entry.findtext("link-state", "auto"),
+            "link_state": "down" if mode == "none" and kind!='aggregate-ethernet' else entry.findtext("link-state", "auto"),
             "aggregate_group": entry.findtext("aggregate-group", ""),
             "interface_management_profile": entry.findtext("./layer3/interface-management-profile", ""),
             "lldp_enabled": entry.findtext("./lldp/enable", "no") == "yes",
             "lldp_profile": entry.findtext("./lldp/profile", ""),
-            "bond_mode": entry.findtext("./layer3/bond/mode", "active-backup"),
-            "bond_miimon_ms": int(entry.findtext("./layer3/bond/miimon", "100") or 100),
+            "bond_mode": entry.findtext("bond/mode",entry.findtext("./layer3/bond/mode", "active-backup")),
+            "bond_miimon_ms": int(entry.findtext("bond/miimon",entry.findtext("./layer3/bond/miimon", "100")) or 100),
             "comment": entry.findtext("comment", ""),
             "sub_interfaces": subifs,
         }
@@ -11527,6 +11520,7 @@ async def interfaces_enriched(user: dict = Depends(get_current_user)):
 
     def _mode_and_type(entry: ET.Element):
         """Return (mode-key, pretty-type-label, aggregate-group or None)."""
+        if entry.findtext('aggregate-only')=='yes':return 'none','Aggregate Link',None
         if entry.findtext("aggregate-group"):
             return "aggregate-group", f"Aggregate ({entry.findtext('aggregate-group')})", entry.findtext("aggregate-group")
         if entry.find("layer3") is not None:
@@ -11701,6 +11695,9 @@ def _ensure_imported_into_vsys(iface_name: str, vsys_name: str = "vsys1"):
 
 
 from ffn_config_subinterfaces import SubinterfaceEdit as SubInterfaceEntry, SubinterfaceStore
+from ffn_config_interfaces import install as _install_interface_editor_api
+_install_interface_editor_api(app, get_current_user, _audit, config_mgr, CANDIDATE_CONFIG,
+                              lambda: set((_faceplate_map_sync('data') or _load_aliases()).keys()))
 
 @app.get("/api/config/subinterfaces")
 async def subinterface_list(parent: str, vsys: str = "vsys1", source: str = "candidate", user: dict = Depends(get_current_user)):
@@ -12217,10 +12214,15 @@ from ffn_plane_api import install as _install_plane_api
 _install_plane_api(app, get_current_user, _require_admin, _extension_audit)
 
 
+if os.getenv('FFN_MANAGER_FRONTEND') == '1':
+    from ffn_management_ipc import WebGateway
+    app.add_middleware(WebGateway)
+
+
 if __name__ == "__main__":
     # Concurrency model: one uvicorn worker with asyncio event loop.
-    # The ConfigManager, commit lock, and runtime-state cache all live in
-    # process memory and must stay consistent, so we keep one worker.
+    # Commit serialization and the runtime-state cache still live in process
+    # memory; keep one writer. Edit leases are backed by shared SQLite storage.
     # FastAPI serves thousands of concurrent API requests from one loop;
     # any CPU-bound or blocking subprocess work is off-loaded to a thread
     # pool via asyncio.to_thread() inside the individual handlers.

@@ -31,6 +31,7 @@ def elf(path):
 
 
 def status():
+    from ffn_kernel_capabilities import inspect as inspect_kernel
     machine=os.uname().machine;expected='mips' in machine.lower();results={}
     for name,args in TOOLS.items():
         path=locate(name);row={'available':False,'path':path}
@@ -50,7 +51,8 @@ def status():
         results[name]={'available':name in applets and (not expected or busyabi=={'elf':True,'bits':64,'byteorder':'big','machine':8}),
                        'argv':[busybox,name] if busybox else None,'abi':busyabi,'implementation':'busybox'}
     return {'machine':machine,'byteorder':sys.byteorder,'pointer_bits':struct.calcsize('P')*8,
-            'target':'mips64eb-n64' if expected else machine,'available':all(r['available'] for r in results.values()),'tools':results}
+            'target':'mips64eb-n64' if expected else machine,'available':all(r['available'] for r in results.values()),
+            'tools':results,'kernel':inspect_kernel()}
 
 
 if __name__=='__main__':

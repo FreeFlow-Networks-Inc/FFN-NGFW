@@ -28,7 +28,7 @@ class CommitReviewTests(unittest.TestCase):
         self.loop=asyncio.Runner()
         self.addCleanup(self.loop.close)
         m._commit_in_progress=asyncio.Lock()
-        m.config_mgr._lock_holder=None
+        m.config_mgr._config_lock.override()
         m.app.state.platform_policy_guard=None
         self.addCleanup(lambda:setattr(m.app.state,'platform_policy_guard',None))
         with closing(sqlite3.connect(m.DB_PATH)) as db, db:

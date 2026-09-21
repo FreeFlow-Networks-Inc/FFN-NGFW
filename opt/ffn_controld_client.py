@@ -1,10 +1,9 @@
 """
 ffn_controld_client — Python client library for ffn-controld IPC.
 
-Used by ffn_manager.py (web API) and ffn-cli to make fast unix-socket
-calls to the control plane daemon. Transparent fallback: if the daemon
-isn't running, callers can detect this and fall back to their old path
-(reading directly).
+Used by trusted management handlers for privileged unix-socket calls.
+The console uses ffn_cli_transport and controld's separate authenticated
+console socket. That transport never falls back to the web listener.
 """
 
 import json

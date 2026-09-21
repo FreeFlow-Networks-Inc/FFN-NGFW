@@ -18,6 +18,48 @@ const {chromium}=require('playwright'),fs=require('node:fs'),path=require('node:
     assert.match(text,/BCM \/ OCTEON/);assert.match(text,/100000 Mb\/s/);assert.match(text,/ethernet1\/24: Link down/);
     assert.match(text,/Committed configuration/);assert.match(text,/BLOCKED/);assert(!text.includes('NO KERNEL BOND'));
     assert.equal(await page.locator('img').count(),0);
+    await page.evaluate(()=>{
+      const live=_ifaceState.aeStatus[0];
+      live.partner_consistency={state:'consistent',observed_members:2,expected_members:2};
+      live.members[0].partner_observation={actor:{system:'02:00:00:00:00:01',system_priority:32768,key:100,port:101,
+        flags:{synchronization:true,collecting:true,distributing:false}}};
+      live.members[1].admin_enabled=false;live.members[1].speed_mbps=20000;
+      _renderConfiguredAE();
+    });
+    const vpc=await page.locator('table').innerText();
+    assert.match(vpc,/Partner identity: consistent \(2\/2 members observed\)/);
+    assert.match(vpc,/Priority 32768 · Key 100 · Port 101/);
+    assert.match(vpc,/Peer state synchronization, collecting/);
+    assert.match(vpc,/ethernet1\/24: Administratively down/);
+    assert(!vpc.includes('20000 Mb/s'));assert.match(vpc,/Partner identity alone does not verify forwarding/);
+    await page.evaluate(()=>{
+      const live=_ifaceState.aeStatus[0];live.activation_supported=true;live.running_revision='committed-hash';live.activation_revision=7;
+      if(!crypto.randomUUID)crypto.randomUUID=()=> '00000000-0000-4000-8000-000000000001';
+      window.calls=[];window.consoleRequest=async(path,opts)=>{calls.push({path,body:JSON.parse(opts.body)});return {ok:true,result:{state:'negotiating'}};};
+      window.loadInterfacesFull=async()=>{};
+      _renderConfiguredAE();
+    });
+    await page.getByRole('button',{name:'Qualify LACP',exact:true}).click();
+    const calls=await page.evaluate(()=>calls);
+    assert.equal(calls.length,1);assert.equal(calls[0].path,'/api/system/planes');
+    assert.deepEqual(calls[0].body.payload,{group:'ae1',operation:'negotiate',running_revision:'committed-hash',revision:7});
+    assert.equal(await page.getByRole('button',{name:'Hardware Egress',exact:true}).isDisabled(),true);
+    await page.evaluate(()=>{_ifaceState.aeStatus[0].offload_ready=true;_renderConfiguredAE();});
+    await page.getByRole('button',{name:'Hardware Egress',exact:true}).click();
+    assert.equal((await page.evaluate(()=>calls))[1].body.payload.operation,'offload');
+    assert.equal(calls[0].body.resource,'aggregates');assert.equal(calls[0].body.action,'apply');
+    await page.evaluate(()=>{_ifaceState.aeStatus[0].committed=false;_renderConfiguredAE();});
+    assert.equal(await page.getByRole('button',{name:'Activate',exact:true}).isDisabled(),true);
+    await page.evaluate(code=>{
+      window._linkStateDot=value=>value===true?'LINK-UP':value===false?'LINK-DOWN':'LINK-UNKNOWN';
+      window.eval(code);
+      const live=_ifaceState.aeStatus[0];live.activation={fresh:true};live.distributing=[23,24];
+      live.subinterfaces=[{name:'ae1.69',applied:true,reason:'Local VLAN ready <img src=x onerror=alert(1)>'}];
+      document.getElementById('iface-ae-body').innerHTML=_ifaceRowHTML({name:'ae1.69',parent:'ae1',type:'Layer3'},true);
+    },html.slice(html.indexOf('function _ifaceSubtitle('),html.indexOf('function _renderConfiguredAE(')));
+    assert.match(await page.locator('table').innerText(),/LINK-UP/);assert.equal(await page.locator('img').count(),0);
+    await page.evaluate(()=>{_ifaceState.aeStatus[0].activation.fresh=false;document.getElementById('iface-ae-body').innerHTML=_ifaceRowHTML({name:'ae1.69',parent:'ae1'},true);});
+    assert.match(await page.locator('table').innerText(),/LINK-UNKNOWN/);
     await page.evaluate(()=>{_ifaceState.aeStatus=[{ae_name:'ae1',bond:'bond1',kernel_exists:false}];_renderConfiguredAE();});
     assert.match(await page.locator('table').innerText(),/NO KERNEL BOND/);
     console.log('Aggregate hardware status, physical members, escaped blockers and generic Linux fallback passed.');

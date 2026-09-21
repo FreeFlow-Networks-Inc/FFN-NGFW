@@ -135,7 +135,7 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(self.manager.get_candidate(),before)
 
     def test_nat_and_pbf_roundtrip(self):
-        for kind,settings in [('nat',{'source-type':'dynamic-ip-and-port','source-interface':'ethernet1/1','translated-destination':'192.0.2.10','translated-port':'443'}),
+        for kind,settings in [('nat',{'source-type':'dynamic-ip-and-port','source-interface':'ethernet1/1','destination-type':'static-ip','translated-destination':'192.0.2.10','translated-port':'443'}),
                               ('pbf',{'action':'forward','egress-interface':'ethernet1/1','next-hop':'192.0.2.1'})]:
             result=self.mutate(kind,rule=self.spec(kind,**settings));self.assertEqual(result.status_code,200,result.text)
             rule=self.client.get('/api/config/policies/'+kind).json()['entries'][0]
