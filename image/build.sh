@@ -270,8 +270,32 @@ esac
 
 LOOP=$(losetup --find --show --partscan "$RAW")
 [ "$P_ESP" != 0 ] && mkfs.vfat -F 32 -n FFNESP "${LOOP}p${P_ESP}" >/dev/null
-mkfs.ext4 -q -L "$IMG_LABEL_ROOT"     "${LOOP}p${P_ROOT}"
-mkfs.ext4 -q -L "$IMG_LABEL_RECOVERY" "${LOOP}p${P_REC}"
+# The GRUB that has to read this filesystem is the one INSIDE the image, not the
+# one on the build host. e2fsprogs 1.47 turns on orphan_file and
+# metadata_csum_seed by default; orphan_file is an INCOMPAT feature that jammy's
+# GRUB 2.06 refuses, so the in-chroot `grub-install --target=x86_64-efi` fails
+# with "unknown filesystem" and the image gets no EFI bootloader. The BIOS half
+# runs on the host's newer grub and passes, so this shows up as a half-installed
+# hybrid image rather than an obvious build failure.
+#
+# Probed rather than written flat: `-O ^orphan_file` is itself an error on an
+# e2fsprogs that predates the feature, which would break building on jammy.
+EXT4_OFF=""
+_probe=$(mktemp); truncate -s 16M "$_probe"
+for _f in orphan_file metadata_csum_seed; do
+  if mkfs.ext4 -q -F -O "^$_f" "$_probe" >/dev/null 2>&1; then
+    EXT4_OFF="${EXT4_OFF:+$EXT4_OFF,}^$_f"
+  fi
+done
+rm -f "$_probe"
+if [ -n "$EXT4_OFF" ]; then
+  echo "  ext4: disabling $EXT4_OFF (unreadable by the image's own GRUB)"
+  EXT4_OFF="-O $EXT4_OFF"
+fi
+# shellcheck disable=SC2086
+mkfs.ext4 -q $EXT4_OFF -L "$IMG_LABEL_ROOT"     "${LOOP}p${P_ROOT}"
+# shellcheck disable=SC2086
+mkfs.ext4 -q $EXT4_OFF -L "$IMG_LABEL_RECOVERY" "${LOOP}p${P_REC}"
 MNT=$(mktemp -d); MNT2=$(mktemp -d)
 mount "${LOOP}p${P_ROOT}" "$MNT";  tar -C "$ROOTFS"   -cf - . | tar --xattrs -C "$MNT"  -xf -
 mount "${LOOP}p${P_REC}"  "$MNT2"; tar -C "$RECOVERY" -cf - . | tar --xattrs -C "$MNT2" -xf -
