@@ -656,11 +656,25 @@ if [ "$OS_RAID" = 1 ]; then
 	for m in /dev/md*; do
 		[ -b "$m" ] && { mdadm --stop "$m" >/dev/null 2>&1 || true; }
 	done
+	# Stopping an array frees its members, and udev reacts by running
+	# `mdadm --incremental` on each one. That re-claims the very partitions this
+	# check is about to assemble, so a single immediate attempt races it and the
+	# check reports FAIL on a healthy mirror -- which it did, twice, and a false
+	# FAIL here is worse than no check at all: it tells an operator the disks are
+	# bad when they are fine. Settle first, then retry before believing it.
 	# --run so a legitimately degraded array still counts as assembled.
-	mdadm --assemble --scan --run --config="$VERIFY_CONF" >/dev/null 2>&1 || true
+	command -v udevadm >/dev/null 2>&1 && udevadm settle --timeout=30 >/dev/null 2>&1 || true
+	BACK=""
+	for _try in 1 2 3 4 5; do
+		mdadm --assemble --scan --run --config="$VERIFY_CONF" >/dev/null 2>&1 || true
+		sleep 2
+		BACK=$(mdadm --detail --scan 2>/dev/null | sed -n 's/.*UUID=\([^ ]*\).*/\1/p' | sort -u)
+		missing=0
+		for u in $VERIFY_UUIDS; do echo "$BACK" | grep -qx "$u" || missing=1; done
+		[ "$missing" = 0 ] && break
+		command -v udevadm >/dev/null 2>&1 && udevadm settle --timeout=10 >/dev/null 2>&1 || true
+	done
 	rm -f "$VERIFY_CONF"
-	sleep 2
-	BACK=$(mdadm --detail --scan 2>/dev/null | sed -n 's/.*UUID=\([^ ]*\).*/\1/p' | sort -u)
 	VERIFY_FAIL=0
 	for u in $VERIFY_UUIDS; do
 		if echo "$BACK" | grep -qx "$u"; then
