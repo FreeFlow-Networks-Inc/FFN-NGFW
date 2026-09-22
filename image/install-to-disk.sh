@@ -542,7 +542,13 @@ grep -q GRUB_DISABLE_OS_PROBER "$MNT/etc/default/grub" || echo "GRUB_DISABLE_OS_
 grep -q '^GRUB_TIMEOUT_STYLE=' "$MNT/etc/default/grub" \
 	|| echo 'GRUB_TIMEOUT_STYLE=countdown' >> "$MNT/etc/default/grub"
 
-mount -t proc proc "$MNT/proc"; mount -t sysfs sys "$MNT/sys"; mount --rbind /dev "$MNT/dev"
+# --make-rslave is not optional. Without it the rbind is a SHARED mount, so the
+# recursive `umount -l` in the cleanup below propagates back to the host and
+# unmounts the BUILD MACHINE's /dev/pts. The symptom is remote: every later
+# login on the build host fails to allocate a PTY, long after the build that
+# did it has exited, and nothing points at the build. Observed doing exactly
+# that. Slave propagation keeps unmounts inside the chroot.
+mount -t proc proc "$MNT/proc"; mount -t sysfs sys "$MNT/sys"; mount --rbind /dev "$MNT/dev"; mount --make-rslave "$MNT/dev"
 
 # Any array that has to be assembled before or during boot must be described
 # inside the image. For the OS mirror the initramfs needs it to mount root at
