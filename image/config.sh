@@ -44,7 +44,11 @@ libpam-systemd rsync cloud-guest-utils openssl"
 # mdadm brings up the chassis log RAID (see ffn-logvol.sh). Without it a
 # reclaimed PA-5200's two internal 2TB log drives stay invisible and FFN
 # fills the 24GB system partition instead.
-export PKGS_STORAGE="mdadm"
+# parted (which also supplies partprobe) is what install-to-disk.sh partitions
+# with, and installer media runs that script FROM THIS ROOT. Without it the
+# installer menu offers an install that dies on the first partition -- on a box
+# that has just been booted from the medium specifically to be installed.
+export PKGS_STORAGE="mdadm parted"
 
 # nfs-kernel-server: the OCTEON planes NFS-root from the MP SSD over PCIC,
 # which is what makes the control plane editable in place.
