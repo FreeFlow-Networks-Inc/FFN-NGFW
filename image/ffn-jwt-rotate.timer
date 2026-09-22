@@ -1,0 +1,19 @@
+[Unit]
+Description=Rotate the FFN NGFW session-signing key weekly
+Documentation=file:/opt/ffn-ngfw/ffn_jwt_keys.py
+
+[Timer]
+# Weekly, not daily. Rotation is free of user impact, so the interval is not a
+# comfort trade -- it is chosen against the overlap: every rotation adds a key
+# that must stay verifiable for the token lifetime (8 h) plus margin, and the
+# manager tries keys in order on every request. Weekly keeps that list at two.
+OnCalendar=Sun 03:30
+RandomizedDelaySec=30m
+
+# A firewall is often powered off over a weekend. Without this the rotation is
+# simply skipped and the key ages indefinitely, which is the failure mode a
+# scheduled rotation exists to prevent.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

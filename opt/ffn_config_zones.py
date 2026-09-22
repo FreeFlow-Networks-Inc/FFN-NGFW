@@ -69,6 +69,7 @@ class ZoneStore:
                 name = entry.get('name','')
                 mode = next((m for m in ('layer3','layer2','virtual-wire','tap','aggregate-group','ha') if entry.find(m) is not None), None)
                 if kind in ('loopback','tunnel','vlan'): mode = 'layer3'
+                if kind=='aggregate-ethernet' and entry.findtext('aggregate-only')=='yes':mode=None
                 if mode in ZONE_TYPES and name: result[name] = mode
                 for submode in ('layer2','layer3'):
                     for sub in entry.findall(submode+'/units/entry'):

@@ -36,8 +36,13 @@ def validate_port(name, settings):
         raise ValueError('port settings must be an object')
     if not isinstance(name, str) or not re.fullmatch(r'p[1-9][0-9]{0,3}', name) or int(name[1:]) > MAX_PORTS:
         raise ValueError('port name exceeds the selected backend capacity')
-    if set(settings) - {'mode', 'vlans', 'pvid', 'addresses', 'mtu', 'vrf'}:
+    if set(settings) - {'mode', 'vlans', 'pvid', 'addresses', 'mtu', 'vrf', 'management'}:
         raise ValueError('unknown per-port setting')
+    if 'management' in settings:
+        from ffn_interface_management import validate as validate_management
+        validate_management(settings['management'])
+        if settings.get('mode') != 'l3':
+            raise ValueError('interface management requires l3 mode')
     mode = settings.get('mode')
     if mode not in ('disabled', 'l2', 'l3'):
         raise ValueError('mode must be disabled, l2 or l3')
@@ -296,14 +301,48 @@ def delete_vrf(name, table):
 def exists():
     return any(x['name'] == NS for x in json.loads(run('ip', '-j', 'netns', 'list') or '[]'))
 
+def remember_tap_mac(name, current):
+    """Preserve the first real TAP identity across namespace/DP recreation.
+
+    Call under the network owner lock. This is per-appliance runtime identity,
+    never a site address or a MAC copied from a development appliance.
+    """
+    def valid(value):
+        return (isinstance(value,str) and re.fullmatch(r'(?:[0-9a-f]{2}:){5}[0-9a-f]{2}',value)
+                and value!='00:00:00:00:00:00' and not int(value[:2],16)&1)
+    if not re.fullmatch(r'p[1-9][0-9]*',name) or not valid(current):raise ValueError('Invalid TAP identity')
+    path=STATE.with_name('port-macs.json')
+    saved=json.loads(path.read_text()) if path.exists() else {}
+    if not isinstance(saved,dict) or any(not re.fullmatch(r'p[1-9][0-9]*',key) or not valid(value) for key,value in saved.items()):
+        raise ValueError('Invalid persisted TAP identities')
+    if name in saved:return saved[name]
+    saved[name]=current;path.parent.mkdir(parents=True,exist_ok=True)
+    temp=path.with_name(path.name+'.'+str(os.getpid())+'.tmp')
+    with temp.open('w') as stream:
+        os.chmod(temp,0o600);json.dump(saved,stream);stream.flush();os.fsync(stream.fileno())
+    temp.replace(path)
+    fd=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY)
+    try:os.fsync(fd)
+    finally:os.close(fd)
+    return current
+
+
 def configure_port(name, settings, create=False):
     if create:
         if PORT_BACKEND == 'native':
             ip('-j', 'link', 'show', 'dev', name)  # Must already be provisioned in the data namespace.
         else:
             run('ip', 'netns', 'exec', NS, 'ip', 'tuntap', 'add', 'dev', name, 'mode', 'tap')
-    ip('link', 'set', name, 'down')
     current = json.loads(ip('-j', 'link', 'show', 'dev', name))[0]
+    if PORT_BACKEND == 'tap':
+        identity=remember_tap_mac(name,current['address'])
+        if current['address']!=identity:
+            if not create:raise RuntimeError('TAP MAC changed outside the network owner; refusing live identity replacement')
+            ip('link','set',name,'address',identity)
+    ip('link', 'set', name, 'down')
+    if 'management' in settings:
+        from ffn_interface_management import apply as apply_management
+        apply_management(NS, name, settings)
     if 'master' in current:
         if current['master'] == 'br-data':
             run('ip', 'netns', 'exec', NS, 'bridge', 'vlan', 'del', 'dev', name, 'vid', '1-4094')
@@ -417,17 +456,33 @@ def prepare(cfg, request):
     changed = [p for p in request.get('ports', {}) if cfg['ports'].get(p) != new['ports'][p]]
     old_routes, new_routes = cfg.get('routes', []), new.get('routes', [])
     retained = [r for r in old_routes if r in new_routes]
-    if any(route_ports(r).intersection(changed) for r in retained):
+    rewired = {p for p in changed if without_management(cfg['ports'].get(p, {})) != without_management(new['ports'][p])}
+    if any(route_ports(r).intersection(rewired) for r in retained):
         raise ValueError('remove dependent routes before reconfiguring their ports')
     old_rules, new_rules = cfg.get('rules', []), new.get('rules', [])
-    if any(r in new_rules and r['iif'] in changed for r in old_rules):
+    if any(r in new_rules and r['iif'] in rewired for r in old_rules):
         raise ValueError('remove dependent policies before reconfiguring their ingress ports')
     overlay = OVERLAY_STATE
     if overlay.exists():
         used = {c['underlay'] for c in json.loads(overlay.read_text())['links'].values()}
-        if used.intersection(changed):
+        if used.intersection(rewired):
             raise ValueError('remove dependent overlays before reconfiguring their underlay ports')
     return new, changed
+
+
+def without_management(settings):
+    return {k:v for k,v in settings.items() if k != 'management'}
+
+
+def update_port(name, before, after):
+    if 'management' in before and 'management' not in after:
+        from ffn_interface_management import apply as apply_management
+        apply_management(NS, name, before, remove=True)
+    if without_management(before) == without_management(after) and 'management' in after:
+        from ffn_interface_management import apply as apply_management
+        apply_management(NS, name, after)
+    else:
+        configure_port(name, after, create=not before)
 
 
 def patch(cfg, request):
@@ -454,7 +509,7 @@ def patch(cfg, request):
                 removed_routes.append(route)
         for name in changed:
             applied.append(name)
-            configure_port(name, new['ports'][name], create=name not in cfg['ports'])
+            update_port(name, cfg['ports'].get(name, {}), new['ports'][name])
         for route in new_routes:
             if route not in old_routes:
                 configure_route('add', route)
@@ -488,7 +543,7 @@ def patch(cfg, request):
         for name in reversed(applied):
             try:
                 if name in cfg['ports']:
-                    configure_port(name, cfg['ports'][name])
+                    update_port(name, new['ports'][name], cfg['ports'][name])
                 else:
                     ip('link', 'delete', name)
             except Exception as error:

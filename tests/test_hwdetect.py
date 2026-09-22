@@ -480,5 +480,87 @@ class ProbeBoundaryTests(unittest.TestCase):
         self.assertEqual(p.diagnostics[0]["message"], "PermissionError")
 
 
+class FEFamilyTests(unittest.TestCase):
+    def test_driver_observations_are_fresh_scoped_and_redacted(self):
+        driver = {'schema':1, 'available':True, 'devices':[{'pci':'0002:01:00.0', 'kernel_state':'unbound',
+                  'kernel_driver':None, 'bar0_bytes':1048576, 'memory_decode':True, 'secret':'hidden'}],
+                  'userspace':{'installed':True, 'read_verified':True, 'state':'responding', 'sha256':'a'*64},
+                  'private_config':'hidden'}
+        agent = {'role':'cp', 'fresh':True, 'connected':True, 'age_seconds':2, 'stale_after_seconds':40,
+                 'last_observation':{'platform':'pa5200', 'report':{'fe100_driver':driver, 'private_config':'hidden'}}}
+        control = {'agents':{'cp':agent}}
+        observed = hw.fe100_driver_observation(control)
+        self.assertEqual(observed['userspace']['state'], 'responding')
+        self.assertEqual(observed['expires_in_seconds'], 38)
+        self.assertNotIn('hidden', json.dumps(observed))
+        agent['age_seconds'] = 41
+        observed = hw.fe100_driver_observation(control)
+        self.assertEqual(observed['state'], 'stale')
+        self.assertNotIn('userspace', observed)
+        agent['age_seconds'] = float('nan')
+        self.assertFalse(hw.fe100_driver_observation(control)['fresh'])
+        agent['age_seconds'] = 0
+        agent['last_observation']['platform'] = 'another-platform'
+        self.assertEqual(hw.fe100_driver_observation(control)['state'], 'unavailable')
+        agent['last_observation']['platform'] = 'pa5200'
+        driver['userspace'] = 'malformed'
+        self.assertEqual(hw.fe100_driver_observation(control)['state'], 'unavailable')
+
+    def test_sysfs_control_file_is_not_an_interface(self):
+        fixture = Fixture()
+        fixture.files["/sys/class/net/bonding_masters"] = "bond0"
+        fixture.files["/sys/class/net/bond0/operstate"] = "down"
+        self.assertEqual([n["name"] for n in hw.detect_nics(fixture)], ["bond0"])
+
+    def test_numeric_identity_works_without_driver_or_pci_names(self):
+        fixture = Fixture()
+        fixture.pci("0000:01:00.0", "feed", "fe1c", "120000")
+        inv = hw.detect(probe=fixture)
+        row = inv["specialized"]["fe1xx"]["devices"][0]
+        self.assertEqual((row["family"], row["model"], row["kind"]), ("FE1xx", "FE100", "asic"))
+        self.assertEqual(inv["cpu_role"]["role"], "management")
+        self.assertTrue(inv["applicability"]["fe1xx"])
+        self.assertFalse(inv["specialized"]["fpga"]["present"])
+
+    def test_explicit_other_family_models_and_false_positives(self):
+        self.assertEqual(hw.fe1xx_identity({"vendor":"feed", "description":"FE160 front-end"})["model"], "FE160")
+        self.assertEqual(hw.fe1xx_identity({"source":"fpga_manager", "name":"FE150"})["model"], "FE150")
+        for row in ({"vendor":"feed", "device":"fe11"}, {"vendor":"feed", "description":"FE1000"},
+                    {"vendor":"8086", "description":"FE100"}, {"description":"fe100.cfgdb.xml"}):
+            self.assertEqual(hw.fe1xx_identity(row), {})
+
+    def test_fpga_manager_model_retains_fpga_kind(self):
+        fixture = Fixture()
+        fixture.files["/sys/class/fpga_manager/fpga0/name"] = "FE150"
+        fixture.files["/sys/class/fpga_manager/fpga0/state"] = "unknown"
+        inv = hw.detect(probe=fixture)
+        row = inv["specialized"]["fe1xx"]["devices"][0]
+        self.assertEqual(row["kind"], "fpga")
+        self.assertTrue(inv["specialized"]["fpga"]["present"])
+        self.assertEqual(row["managers"][0]["state"], "unknown")
+
+    def test_pci_backed_manager_keeps_identity_without_duplicate_device(self):
+        for vendor, device, model, kind in (("feed", "fe1c", "FE100", "asic"),
+                                           ("10ee", "903f", "FE150", "fpga")):
+            fixture = Fixture()
+            path = fixture.pci("0000:01:00.0", vendor, device, "120000")
+            fixture.files["/sys/class/fpga_manager/fpga0/name"] = model
+            fixture.links["/sys/class/fpga_manager/fpga0/device"] = path
+            inv = hw.detect(probe=fixture)
+            self.assertEqual(len(inv["accelerators"]), 1)
+            row = inv["specialized"]["fe1xx"]["devices"][0]
+            self.assertEqual((row["model"], row["kind"]), (model, kind))
+
+    def test_family_expectations_do_not_hide_detected_addons(self):
+        inv = {"dpu":{"present":True}, "accelerators":[{"kind":"fpga"}],
+               "hugepages":{"pools":[{"nr":4}]}, "system":{"arch":"mips64"}}
+        app = hw.inventory_applicability(inv, {"platform":"pa5200"})
+        self.assertTrue(app["fe1xx"])
+        self.assertTrue(app["dpu"])
+        self.assertTrue(app["accelerators"])
+        self.assertFalse(app["hugepages"])
+        self.assertFalse(app["aes_ni"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

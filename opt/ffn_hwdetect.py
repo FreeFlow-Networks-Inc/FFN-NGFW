@@ -8,6 +8,7 @@ Detection is not proof of working offload. Existing field names remain available
 """
 import argparse
 import json
+import math
 import re
 from datetime import datetime, timezone
 
@@ -42,6 +43,103 @@ OCTEON_IDS = {
 }
 BDF = re.compile(r"^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]$", re.I)
 TOOLS = ("lspci", "ethtool", "dmidecode", "lsblk", "mlxfwmanager")
+
+
+def fe1xx_identity(device):
+    """Identify front-end silicon without guessing a model from a PCI prefix.
+
+    feed:fe1c is verified by the PA-5200 CP inventory. Other FE1xx models
+    require an explicit model in vendor PCI or FPGA Manager metadata. A
+    vendor ID, installed tool or firmware filename alone is not evidence.
+    """
+    vendor = str(device.get("vendor_id", device.get("vendor", ""))).lower().removeprefix("0x")
+    ident = str(device.get("device_id", device.get("device", ""))).lower().removeprefix("0x")
+    if vendor == V_PAN and ident == "fe1c":
+        return {"family": "FE1xx", "model": "FE100", "identity_source": "pci-id:feed:fe1c"}
+    if vendor == V_PAN or device.get("source") == "fpga_manager":
+        description = " ".join(str(device.get(k) or "") for k in ("model", "description", "name"))
+        match = re.search(r"(?<![a-z0-9])FE1[0-9]{2}(?![a-z0-9])", description, re.I)
+        if match:
+            return {"family": "FE1xx", "model": match[0].upper(), "identity_source": "device-model"}
+    for manager in device.get("managers") or []:
+        identity = fe1xx_identity({"source": "fpga_manager", "name": manager.get("name")})
+        if identity:
+            return identity
+    return {}
+
+
+def inventory_applicability(inv, profile=None):
+    """Presentation metadata; never convert expected hardware into detected hardware."""
+    profile = profile or {}
+    features = profile.get("features") or {}
+    specialized = inv.get("specialized") or {}
+    rows = inv.get("accelerators") or []
+    family = profile.get("platform") or (profile.get("chassis") or {}).get("family") or "unknown"
+    def expected(name):
+        return (features.get(name) or {}).get("applicable") is True
+    fe = bool((specialized.get("fe1xx") or {}).get("present"))
+    return {"family": family,
+            "dpu": bool((inv.get("dpu") or {}).get("present")) or expected("dpu"),
+            "accelerators": bool(rows) or expected("front_end_asic") or expected("offload_complex") or expected("fpga_card"),
+            "fe1xx": fe or family == "pa5200",
+            "octeon": bool((specialized.get("octeon") or {}).get("present")) or family == "pa5200",
+            "hugepages": expected("hugepages") if profile else
+                         bool((inv.get("hugepages") or {}).get("pools")) or
+                         (inv.get("cpu_role") or {}).get("role") == "shared",
+            "aes_ni": str((inv.get("system") or {}).get("arch", "")).lower() in
+                      ("x86_64", "amd64", "i386", "i686")}
+
+
+def fe100_driver_observation(control):
+    """Public driver metadata from the selected daemon, never raw agent config.
+
+    Old observations are historical, not current driver health. Multiple CPs
+    require explicit association rather than choosing a possibly wrong chip.
+    """
+    result = {"state": "unavailable", "fresh": False, "expires_in_seconds": 0}
+    agents = [(name, a) for name, a in (control or {}).get("agents", {}).items()
+              if a.get("role") == "cp" and
+              (a.get("last_observation") or {}).get("platform") == "pa5200"]
+    if len(agents) != 1:
+        return result
+    name, agent = agents[0]
+    age, ttl = agent.get("age_seconds"), agent.get("stale_after_seconds")
+    valid_time = all(type(v) in (int, float) and math.isfinite(v) and v >= 0 for v in (age, ttl))
+    if not (agent.get("fresh") is True and agent.get("connected") is True and valid_time and age < ttl):
+        return dict(result, state="stale")
+    report = (agent["last_observation"].get("report") or {}).get("fe100_driver") or {}
+    if not isinstance(report, dict) or report.get("schema") != 1:
+        return result
+    def string(value):
+        return value[:128] if isinstance(value, str) else None
+    def boolean(value):
+        return value if type(value) is bool else None
+    devices = []
+    rows = report.get("devices")
+    if not isinstance(rows, list) or not isinstance(report.get("userspace"), dict):
+        return result
+    for device in rows[:16]:
+        if not isinstance(device, dict):
+            continue
+        if not BDF.fullmatch(str(device.get("pci", ""))):
+            continue
+        row = {key: string(device.get(key)) for key in ("pci", "kernel_driver", "kernel_module", "kernel_version")}
+        row.update(model="FE100", kernel_state=device.get("kernel_state") if device.get("kernel_state") in
+                   ("bound", "unbound") else "unknown", memory_decode=boolean(device.get("memory_decode")))
+        size = device.get("bar0_bytes")
+        row["bar0_bytes"] = size if type(size) is int and 0 <= size <= 2**40 else None
+        devices.append(row)
+    driver = report.get("userspace") or {}
+    userspace = {key: boolean(driver.get(key)) for key in
+                 ("installed", "reader_installed", "register_map_installed", "memory_device_present", "read_verified")}
+    userspace.update(name="ffn_fe100.py", access="devmem-mmio", target_pci=string(driver.get("target_pci")))
+    digest = driver.get("sha256")
+    userspace["sha256"] = digest if isinstance(digest, str) and re.fullmatch('[0-9a-f]{64}', digest) else None
+    userspace["state"] = ("responding" if userspace["read_verified"] is True and driver.get("state") == "responding"
+                          else "installed-unverified" if userspace["installed"] is True else "unavailable")
+    return dict(result, state="current", fresh=True, agent=string(name), age_seconds=age,
+                expires_in_seconds=min(ttl - age, 300), available=report.get("available") is True,
+                devices=devices, userspace=userspace)
 
 
 def _basename(path):
@@ -282,7 +380,8 @@ def detect_nics(probe=None, pci=None):
     seen = set()
     for path in p.entries("/sys/class/net"):
         name = _basename(path)
-        if name == "lo":
+        # bonding_masters is a sysfs control file, not a network device.
+        if name in ("lo", "bonding_masters"):
             continue
         backing = p.link(path + "/device")
         address = _basename(backing).lower()
@@ -411,6 +510,7 @@ def detect_accelerators(probe=None, pci=None):
             result.append({"role": role, "kind": kind, "bus": "host", "pci": device["description"],
                            "address": device["address"], "vendor_id": vendor,
                            "device_id": device["device_id"], "class_id": cls,
+                           "description": device["description"],
                            "model": _octeon(device),
                            "driver": device["driver"], "numa_node": device["numa_node"],
                            "source": device["source"], "evidence": "PCI identity/class and bound driver"})
@@ -421,7 +521,7 @@ def detect_accelerators(probe=None, pci=None):
         state = p.read(path + "/state")
         backing = p.link(path + "/device")
         addresses = [part.lower() for part in backing.split("/") if BDF.fullmatch(part)]
-        match = next((row for row in result if row["kind"] == "fpga" and row["address"] in addresses), None)
+        match = next((row for row in result if row["kind"] in ("fpga", "asic") and row["address"] in addresses), None)
         manager = {"path": path, "name": name, "state": state}
         if match is not None:
             match.setdefault("managers", []).append(manager)
@@ -432,6 +532,11 @@ def detect_accelerators(probe=None, pci=None):
                            "numa_node": p.number(path + "/device/numa_node", -1),
                            "source": "fpga_manager", "evidence": path,
                            "managers": [manager]})
+    for device in result:
+        identity = fe1xx_identity(device)
+        if identity:
+            device.update(identity)
+            device["role"] = "FE1xx front-end " + ("FPGA" if device["kind"] == "fpga" else "ASIC")
     return result
 
 
@@ -450,6 +555,8 @@ def detect_specialized(system, cpu, pci, accelerators):
                        "pci_slots": sorted({d["address"].rsplit(".", 1)[0] for d in functions})},
             "fpga": {"present": any(a["kind"] == "fpga" for a in accelerators),
                      "devices": [a for a in accelerators if a["kind"] == "fpga"]},
+            "fe1xx": {"present": any(a.get("family") == "FE1xx" for a in accelerators),
+                      "devices": [a for a in accelerators if a.get("family") == "FE1xx"]},
             "offload_ready": None,
             "note": "Presence does not establish loaded firmware, platform compatibility, remote-bus inventory, or forwarding readiness."}
 
@@ -571,6 +678,7 @@ def detect(refresh=True, probe=None):
         inventory["status"] = "unsupported"
     inventory["cpu_role"] = classify_cpu_role(inventory)
     inventory["cpu"]["role"] = inventory["cpu_role"]["role"]
+    inventory["applicability"] = inventory_applicability(inventory)
     return inventory
 
 

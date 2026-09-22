@@ -77,6 +77,18 @@ tar xzf /payload/opt-ffn-ngfw-v1.tgz -C /opt 2>/dev/null || true
 install -m755 /payload/ffn-cli /usr/local/bin/ffn-cli
 tar xzf /payload/etc-ffn-ngfw.tgz -C /etc
 
+# These control sources are owned by core, not whatever version happened to be
+# running on the image harvesting host. No platform channels are auto-enabled.
+for dir in /opt/ffn-ngfw /opt/ffn-ngfw-v2 /usr/local/lib/ffn; do
+  install -d -m 0755 "$dir"
+  for name in ffn_controld_client.py ffn_control_plane.py ffn_agent_protocol.py ffn_agent_resources.py ffn_planed.py ffn_policy_config.py ffn_policy_plan.py ffn_policy_profiles.py ffn_qos_config.py ffn_nat_policy.py; do
+    install -m 0644 "/payload/control-code/$name" "$dir/$name"
+  done
+done
+install -m 0644 /payload/control-code/ffn_controld.py /opt/ffn-ngfw/
+install -m 0644 /payload/control-code/ffn_plane_api.py /opt/ffn-ngfw-v2/
+python3 /payload/control-code/install-control-api.py
+
 # --- FFN payload updater: public verification key only ------------------------
 # The build server keeps the ed25519 private seed. Shipping only the public key
 # means a copy of this image can verify updates but can never forge one, which
@@ -116,6 +128,10 @@ log "systemd units (faithful copies pulled from the reference box)"
 cp -a /payload/units/*.service /etc/systemd/system/ 2>/dev/null || true
 cp -a /payload/units/*.timer   /etc/systemd/system/ 2>/dev/null || true
 cp -a /payload/units/*.d       /etc/systemd/system/ 2>/dev/null || true
+# Agent credentials and worker selection belong to the target appliance.
+# Do not inherit the harvesting host's enabled channel or credential path.
+rm -f /etc/systemd/system/ffn-controld.service.d/30-control-channel.conf \
+      /etc/systemd/system/ffn-manager-v2.service.d/30-control-channel.conf
 
 log "service group + admin gateway account (ffn-cli login shell, key-only) + sudoers"
 groupadd -f ffn-mgmt   # ffn-controld chowns its socket to this group (FFN_CONTROLD_GROUP)
@@ -206,15 +222,28 @@ fi
 mkdir -p /opt/dpfs /opt/var.cp /opt/var.dp0 /opt/var.dp1 /opt/var.dp2
 cat > /etc/exports <<'EOF'
 # FFN: NFS root for the OCTEON control/data planes.
-# Restricted to the CP/DP address space, as PAN-OS does. NFS must never be
-# reachable from the management network -- rpc.nfsd binds 0.0.0.0:2049 and
-# rpcbind 0.0.0.0:111, so the nft ruleset must refuse 111/2049 on every mgmt
-# interface. The client scoping below is what actually gates mounting.
-/opt/dpfs    127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check)
-/opt/var.cp  127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check)
-/opt/var.dp0 127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check)
-/opt/var.dp1 127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check)
-/opt/var.dp2 127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check)
+# NFS must never be reachable from the management network -- rpc.nfsd binds
+# 0.0.0.0:2049 and rpcbind 0.0.0.0:111, so the nft ruleset must refuse
+# 111/2049 on every mgmt interface. The client scoping below is what actually
+# gates mounting.
+#
+# 127.1.1.2 -- the CP, and only the CP. NOT the /16 this used to be: that range
+# contains the DP at 127.1.2.2, these exports are rw,no_root_squash, and they
+# include the CP's live root filesystems -- so a /16 lets the DP mount and
+# rewrite the CP's root. The PCIe ingress filters do not close it either: both
+# ends deliberately admit DP traffic addressed to the MP, because the CP has to
+# route it, and neither looks at protocol or port.
+#
+# The DP needs nothing from the MP; it roots on the CP's own NFS server at
+# 127.1.2.1:/opt/dproot. If a legacy DP boot path that roots from the MP is
+# ever revived, add 127.1.2.2 to /opt/dpfs DELIBERATELY rather than widening
+# every line back to a /16. Same scoping as tools/ffn_nfsd.sh in
+# ffn-platform-pa5200, which carries the full reasoning.
+/opt/dpfs    127.1.1.2(rw,sync,no_root_squash,no_subtree_check)
+/opt/var.cp  127.1.1.2(rw,sync,no_root_squash,no_subtree_check)
+/opt/var.dp0 127.1.1.2(rw,sync,no_root_squash,no_subtree_check)
+/opt/var.dp1 127.1.1.2(rw,sync,no_root_squash,no_subtree_check)
+/opt/var.dp2 127.1.1.2(rw,sync,no_root_squash,no_subtree_check)
 EOF
 # Pin nfsd to the PCIC subnet. Not a substitute for the firewall rule -- if the
 # PCIC interface is absent at boot nfsd falls back to all addresses, which is

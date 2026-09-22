@@ -4,7 +4,8 @@ import asyncio
 import os
 import uuid
 from fastapi import Depends, HTTPException, Request
-from ffn_planed import INVENTORY, check, decode, rpc
+from ffn_planed import INVENTORY, check, decode
+from ffn_control_plane import plane_rpc as rpc, control_rpc
 
 
 def selected():
@@ -15,6 +16,22 @@ def selected():
 
 
 def install(app, current_user, require_admin, audit):
+    @app.get('/api/system/control')
+    async def control(user=Depends(current_user)):
+        require_admin(user)
+        try:
+            return await control_rpc('state/control', timeout=5)
+        except (OSError, asyncio.TimeoutError, ValueError, ConnectionError):
+            raise HTTPException(503, 'Control observations unavailable')
+
+    @app.get('/api/system/control/events')
+    async def events(user=Depends(current_user)):
+        require_admin(user)
+        try:
+            return await control_rpc('state/control-events', timeout=5)
+        except (OSError, asyncio.TimeoutError, ValueError, ConnectionError):
+            raise HTTPException(503, 'Control events unavailable')
+
     @app.get('/api/system/planes')
     async def inventory(user=Depends(current_user)):
         """Which resources the selected daemons offer, and what is blocking them.

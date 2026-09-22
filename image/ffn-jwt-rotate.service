@@ -1,0 +1,26 @@
+[Unit]
+# Rotate the session-signing key. Safe to run while the manager is serving:
+# ffn_jwt_keys keeps the outgoing key valid for verification until every token
+# it could have signed has expired, and the manager re-reads the keyring when
+# the file changes, so no session is interrupted and no restart is needed.
+#
+# There is deliberately no ExecReload or restart of ffn-manager-v2 here. A
+# restart would drop in-flight requests and open websockets for no benefit --
+# the whole point of the overlap is that the change does not need one.
+Description=FFN NGFW session key rotation
+Documentation=file:/opt/ffn-ngfw/ffn_jwt_keys.py
+After=ffn-manager-v2.service
+
+[Service]
+Type=oneshot
+# --lifetime-minutes MUST match ffn_manager.JWT_EXPIRE_MINUTES. If it is set
+# too low the outgoing key is dropped while tokens signed with it are still
+# valid, and those sessions break -- which is the exact failure this design
+# exists to avoid.
+ExecStart=/usr/bin/python3 /opt/ffn-ngfw/ffn_jwt_keys.py rotate --lifetime-minutes 480
+# The keyring is 0600 and owned by root; nothing here needs more than that.
+ProtectSystem=strict
+ReadWritePaths=/etc/ffn-ngfw
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes

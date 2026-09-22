@@ -1,0 +1,13 @@
+[Unit]
+Description=Restore committed NAT in the dataplane namespace
+After=ffn-network.service systemd-modules-load.service
+Requires=ffn-network.service
+ConditionPathExists=/etc/ffn/nat.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/ffn/ffn_nat_runtime.py restore
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

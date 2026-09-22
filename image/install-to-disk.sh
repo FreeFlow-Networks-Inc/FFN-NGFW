@@ -365,7 +365,7 @@ DONE -- $LAYOUT on $DISK
 
   Normal boot  -> FFN NGFW. First boot self-provisions; the console prints the
                   generated admin password once, and the WebUI is on
-                  https://<address>:8443
+                  https://<address>
   Recovery     -> choose 'FFN NGFW Recovery / Maintenance' in GRUB to
                   enable/disable FIPS-CC (which wipes config).
 

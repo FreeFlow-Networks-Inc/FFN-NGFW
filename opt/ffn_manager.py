@@ -199,6 +199,38 @@ def _load_jwt_secret() -> str:
 JWT_SECRET = _load_jwt_secret()
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = 480
+
+# Optional signing keyring. Absent by default, so a deployment that has not run
+# `ffn_jwt_keys.py init` behaves exactly as before: one secret, no keyring file,
+# nothing to go wrong. Where it exists it lets the key be rotated on a timer
+# without logging anybody out -- see ffn_jwt_keys for why that needs two keys.
+try:
+    import ffn_jwt_keys as _jwt_keys
+except ImportError:                     # keyring module not deployed
+    _jwt_keys = None
+
+
+def _signing_secret() -> str:
+    """The key new tokens are signed with."""
+    if _jwt_keys is not None:
+        doc = _jwt_keys.load_cached()
+        if doc:
+            return _jwt_keys.signing_secret(doc)
+    return JWT_SECRET
+
+
+def _verification_secrets() -> list:
+    """Every key a presented token may legitimately have been signed with.
+
+    Current first, so the overwhelmingly common case costs one attempt. The
+    others are keys retired within the last token lifetime; without them a
+    rotation would invalidate every session that was open when it ran.
+    """
+    if _jwt_keys is not None:
+        doc = _jwt_keys.load_cached()
+        if doc:
+            return _jwt_keys.verification_secrets(doc)
+    return [JWT_SECRET]
 DB_PATH = os.getenv("FFN_DB_PATH", "/var/lib/ffn-ngfw/config.db")
 DEV_PATH = os.getenv("FFN_NGFW_DEV", "/dev/ngfw0")
 LOG_PATH = "/var/log/ffn-ngfw"
@@ -1441,44 +1473,19 @@ class ConfigManager:
         logger.info("Config loaded: running-config at v%s (%d history entries)",
                     latest, len(self.history.list_entries()))
 
-        self._lock_holder: Optional[str] = None
-        self._lock_acquired_at: float = 0
-        self._lock_reason: str = ""
+        from ffn_config_lock import ConfigLock
+        self._config_lock = ConfigLock(CONFIG_DIR / 'config-lock.sqlite3', COMMIT_LOCK_TIMEOUT)
 
     # -- Lock management --
 
     def lock_status(self) -> dict:
-        if self._lock_holder:
-            age = time.time() - self._lock_acquired_at
-            if age > COMMIT_LOCK_TIMEOUT:
-                self._lock_holder = None
-                self._lock_reason = ""
-                return {"locked": False, "message": "Lock expired"}
-            return {
-                "locked": True,
-                "holder": self._lock_holder,
-                "acquired_at": datetime.fromtimestamp(self._lock_acquired_at).isoformat(),
-                "age_seconds": int(age),
-                "expires_in": int(COMMIT_LOCK_TIMEOUT - age),
-                "reason": self._lock_reason,
-            }
-        return {"locked": False}
+        return self._config_lock.status()
 
     def acquire_lock(self, user: str, reason: str = "commit") -> bool:
-        st = self.lock_status()
-        if st["locked"] and st["holder"] != user:
-            return False
-        self._lock_holder = user
-        self._lock_acquired_at = time.time()
-        self._lock_reason = reason
-        return True
+        return self._config_lock.acquire(user, reason)
 
     def release_lock(self, user: str) -> bool:
-        if self._lock_holder == user:
-            self._lock_holder = None
-            self._lock_reason = ""
-            return True
-        return False
+        return self._config_lock.release(user)
 
     # -- XML parsing --
 
@@ -1752,6 +1759,10 @@ class ConfigManager:
         tag = f"entry[@name={name}]" if (elem.tag == "entry" and name is not None) else elem.tag
         path = f"{prefix}.{tag}" if prefix else tag
 
+        # Rule order is semantic: a pure move must appear in diff/commit.
+        if elem.tag == 'rules':
+            out[path + '.@order'] = json.dumps([n.get('name') for n in elem.findall('entry')])
+
         # Treat <member>X</member> as an ordered list, emit one key per index
         members = elem.findall("member")
         if members and len(members) == len(list(elem)):
@@ -1766,10 +1777,10 @@ class ConfigManager:
                 out.update(self._collect_paths(child, path))
         return out
 
-    def diff(self) -> dict:
+    def diff(self, candidate_root=None, running_root=None) -> dict:
         """Return the set of paths that differ between candidate and running."""
-        cand_paths = self._collect_paths(self._load(CANDIDATE_CONFIG))
-        run_paths = self._collect_paths(self._load(RUNNING_CONFIG))
+        cand_paths = self._collect_paths(candidate_root if candidate_root is not None else self._load(CANDIDATE_CONFIG))
+        run_paths = self._collect_paths(running_root if running_root is not None else self._load(RUNNING_CONFIG))
         added, modified, removed = [], [], []
         all_keys = set(cand_paths) | set(run_paths)
         for k in sorted(all_keys):
@@ -1789,96 +1800,57 @@ class ConfigManager:
 
     # -- Commit --
 
-    def commit(self, user: str, description: str = "", partial_xpath: Optional[str] = None,
-               commit_type: Optional[str] = None) -> dict:
-        """
-        Commit candidate → running. If partial_xpath is given, copy only that
-        subtree from candidate into running (partial commit).
-
-        `commit_type` is usually inferred from whether `partial_xpath` is set
-        ("full"/"partial"). Callers may override (e.g., "rollback") so the
-        history entry labels the commit accurately.
-        """
-        parent_version = self.history.latest_version()
-        diff_before = self.diff()
-        diff_counts = {
-            "added": len(diff_before["added"]),
-            "modified": len(diff_before["modified"]),
-            "removed": len(diff_before["removed"]),
-            "total": diff_before["total_changes"],
-        }
-
-        if partial_xpath is None:
-            snapshot_name = f"auto-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
-            self.snapshot_save(snapshot_name, f"Auto-snapshot before commit by {user}")
-            shutil.copy2(CANDIDATE_CONFIG, RUNNING_CONFIG)
-            ctype = commit_type or "full"
-            hist = self.history.record(
-                user=user, description=description, commit_type=ctype,
-                xpath=None, diff_counts=diff_counts,
-                parent_version=parent_version,
-            )
-            return {
-                "status": "committed",
-                "type": ctype,
-                "snapshot": snapshot_name,
-                "version": hist["version"],
-                "parent_version": parent_version,
-                "changes": diff_counts,
-                "user": user,
-                "description": description,
-                "timestamp": datetime.utcnow().isoformat(),
-            }
-
-        # Partial commit — replace only the subtree at xpath in running
-        cand_root = self._load(CANDIDATE_CONFIG)
-        run_root = self._load(RUNNING_CONFIG)
-        parts = self._normalize_xpath(partial_xpath, cand_root)
-        if not parts:
-            return {"status": "error", "message": "Partial commit requires a subtree path"}
-
-        cand_parent, cand_node = cand_root, cand_root
-        for part in parts:
-            nxt = self._find_child(cand_node, part)
-            if nxt is None:
-                return {"status": "error", "message": f"Path '{partial_xpath}' not in candidate"}
-            cand_parent, cand_node = cand_node, nxt
-
-        run_parent, run_node = run_root, run_root
-        for part in parts[:-1]:
-            nxt = self._find_or_create_child(run_node, part)
-            run_parent, run_node = run_node, nxt
-        leaf_name = parts[-1]
-
-        snapshot_name = f"partial-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
-        self.snapshot_save(snapshot_name, f"Partial commit of {partial_xpath} by {user}")
-
-        old = self._find_child(run_node, leaf_name)
-        index = list(run_node).index(old) if old is not None else len(run_node)
-        if old is not None:
-            run_node.remove(old)
+    def prepare_commit(self, partial_xpath=None, candidate_root=None, running_root=None):
+        """Construct the exact promotion in memory; never mutate either source."""
         import copy
-        run_node.insert(index, copy.deepcopy(cand_node))
-        self._save(run_root, RUNNING_CONFIG)
+        candidate = candidate_root if candidate_root is not None else self._load(CANDIDATE_CONFIG)
+        if partial_xpath is None:
+            return copy.deepcopy(candidate)
+        running = copy.deepcopy(running_root if running_root is not None else self._load(RUNNING_CONFIG))
+        parts = self._normalize_xpath(partial_xpath, candidate)
+        if not parts:
+            raise ValueError('Partial commit requires a subtree path')
+        source = candidate
+        for part in parts:
+            source = self._find_child(source, part)
+            if source is None:
+                raise ValueError(f"Path '{partial_xpath}' not in candidate")
+        parent = running
+        for part in parts[:-1]:
+            parent = self._find_or_create_child(parent, part)
+        previous = self._find_child(parent, parts[-1])
+        index = list(parent).index(previous) if previous is not None else len(parent)
+        if previous is not None:
+            parent.remove(previous)
+        parent.insert(index, copy.deepcopy(source))
+        return running
 
-        ctype = commit_type or "partial"
-        hist = self.history.record(
-            user=user, description=description, commit_type=ctype,
-            xpath=partial_xpath, diff_counts=diff_counts,
-            parent_version=parent_version,
-        )
-        return {
-            "status": "committed",
-            "type": ctype,
-            "xpath": partial_xpath,
-            "snapshot": snapshot_name,
-            "version": hist["version"],
-            "parent_version": parent_version,
-            "changes": diff_counts,
-            "user": user,
-            "description": description,
-            "timestamp": datetime.utcnow().isoformat(),
-        }
+    def commit(self, user: str, description: str = "", partial_xpath: Optional[str] = None,
+               commit_type: Optional[str] = None, prepared_root=None, prevalidated=False) -> dict:
+        """Validate and atomically promote the same in-memory document we reviewed."""
+        from ffn_policy_config import require_supported, PolicyError
+        try:
+            root = prepared_root if prepared_root is not None else self.prepare_commit(partial_xpath)
+            if not prevalidated:
+                require_supported(ET.tostring(root, encoding='utf-8'))
+        except (PolicyError, ValueError) as error:
+            return {'status':'error', 'message':str(error)}
+        diff_before = self.diff(candidate_root=root)
+        if not diff_before['has_changes']:
+            return {'status':'no-changes', 'message':'Selected scope identical to running'}
+        diff_counts = {k:len(diff_before[k]) for k in ('added','modified','removed')}
+        diff_counts['total'] = diff_before['total_changes']
+        parent_version = self.history.latest_version()
+        prefix = 'partial' if partial_xpath is not None else 'auto'
+        snapshot_name = f"{prefix}-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+        self.snapshot_save(snapshot_name, f"Before commit by {user}")
+        self._save(root, RUNNING_CONFIG)
+        ctype = commit_type or ('partial' if partial_xpath is not None else 'full')
+        hist = self.history.record(user=user, description=description, commit_type=ctype,
+                                   xpath=partial_xpath, diff_counts=diff_counts, parent_version=parent_version)
+        return dict(status='committed', type=ctype, xpath=partial_xpath, snapshot=snapshot_name,
+                    version=hist['version'], parent_version=parent_version, changes=diff_counts,
+                    user=user, description=description, timestamp=datetime.utcnow().isoformat())
 
     # -- Rollback --
 
@@ -2415,8 +2387,8 @@ async def init_db():
 
         # NOTE: no sample/example user policy rules are seeded. A fresh box
         # starts with an empty user rule set; only the immutable PAN-OS-style
-        # defaults (intrazone/interzone) and the lab-mgmt safety net below are
-        # created. Operators add their own rules.
+        # defaults (intrazone/interzone) are created. MP management access is
+        # configured separately from dataplane policy. Operators add user rules.
 
         # Seed immutable PAN-OS-style default rules. `intrazone-default`
         # permits any traffic within the same zone (hidden implicit); it
@@ -2444,31 +2416,17 @@ async def init_db():
                      name, action, desc, kind, hidden),
                 )
 
-        # Lab / dev safety net: always permit traffic on the lab mgmt
-        # interface (env-overridable). Without this, an operator who
-        # accidentally commits a deny-all policy can lock themselves
-        # out of the box. Rule is immutable and sits at position 0 so
-        # it evaluates before any user rule. Operators can disable it
-        # explicitly via the UI (enabled=0) but cannot delete it.
-        lab_iface = os.getenv("FFN_LAB_MGMT_IFACE", "eno1np0")
-        if lab_iface:
-            cur = await db.execute(
-                "SELECT id FROM policy_rules WHERE kind='lab-mgmt'"
-            )
-            if not await cur.fetchone():
-                await db.execute(
-                    "INSERT INTO policy_rules "
-                    "(position, name, src_ip, dst_ip, src_iface, "
-                    " src_port, dst_port, proto, action, description, "
-                    " kind, immutable, hidden) "
-                    "VALUES (0, ?, '0.0.0.0/0', '0.0.0.0/0', ?, "
-                    " 0, 0, 'any', 'permit', ?, 'lab-mgmt', 1, 0)",
-                    (f"allow-lab-mgmt-{lab_iface}", lab_iface,
-                     f"Lab dev/test: permit any traffic on {lab_iface}"),
-                )
+        # Remove obsolete position-0 management exceptions on upgraded systems.
+        # MP access belongs to the management service configuration, not policy.
+        await _remove_legacy_management_rules(db)
 
         await db.commit()
     logger.info("Database initialized at %s", DB_PATH)
+
+
+async def _remove_legacy_management_rules(db):
+    """Remove only reserved MP-management rows; preserve user/default rules."""
+    await db.execute("DELETE FROM policy_rules WHERE kind IN ('lab-mgmt', 'mgmt')")
 
 
 async def get_db():
@@ -2502,7 +2460,7 @@ def create_token(username: str, role: str, pw_change_only: bool = False) -> str:
         # the client -- which trusts whoever holds the token to volunteer for a
         # restriction. An attacker will not volunteer.
         claims["pwc"] = True
-    return jwt.encode(claims, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return jwt.encode(claims, _signing_secret(), algorithm=JWT_ALGORITHM)
 
 
 # The only endpoints a password-change-only token may reach: changing the
@@ -2522,14 +2480,29 @@ async def get_current_user(
         token_str = authorization[7:]
     else:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return await _authenticate_token(token_str, request.url.path)
+    from ffn_authorization import authorize
+    return authorize(request, await _authenticate_token(token_str, request.url.path))
 
 
 async def _authenticate_token(token_str: str, path: str):
     """Share token and current-account checks between HTTP and WebSocket clients."""
     try:
-        payload = jwt.decode(token_str, JWT_SECRET, algorithms=[JWT_ALGORITHM],
-                             options={"require_exp": True, "require_sub": True})
+        # Try each key the keyring still accepts, current first. With no
+        # keyring this is exactly the single-secret decode it replaces. Every
+        # candidate must satisfy the SAME options -- a retired key is a key
+        # that is still trusted, not a weaker check.
+        payload = None
+        last_error = None
+        for _secret in _verification_secrets():
+            try:
+                payload = jwt.decode(
+                    token_str, _secret, algorithms=[JWT_ALGORITHM],
+                    options={"require_exp": True, "require_sub": True})
+                break
+            except JWTError as exc:
+                last_error = exc
+        if payload is None:
+            raise last_error or JWTError("no signing key accepted the token")
         username = payload.get("sub")
         if not isinstance(username, str) or not username:
             raise HTTPException(status_code=401, detail="Invalid token")
@@ -3363,6 +3336,7 @@ async def _cli_auth_conn(reader, writer):
 
 @app.on_event("startup")
 async def _cli_auth_start():
+    if os.getenv('FFN_MANAGER_FRONTEND') == '1': return
     try:
         os.makedirs(os.path.dirname(CLI_AUTH_SOCK), exist_ok=True)
         if os.path.exists(CLI_AUTH_SOCK):
@@ -3377,6 +3351,7 @@ async def _cli_auth_start():
 
 @app.on_event("startup")
 async def startup():
+    if os.getenv('FFN_MANAGER_FRONTEND') == '1': return
     await init_db()
     logger.info("FFN NGFW Manager started — FPGA device %s", DEV_PATH)
     # Make sure every detected Linux NIC has a PAN-OS alias (ens33 → ethernet1/1 …)
@@ -3510,6 +3485,10 @@ async def list_users(user: dict = Depends(get_current_user)):
 async def create_user(req: AdminUserCreate, user: dict = Depends(get_current_user)):
     _require_admin(user)
     uname = (req.username or "").strip()
+    if os.getenv('FFN_CONSOLE_IDENTITIES') == '1':
+        from ffn_console_accounts import validate_username
+        try: validate_username(uname)
+        except ValueError as error: raise HTTPException(422, str(error))
     if not uname:
         raise HTTPException(status_code=400, detail="username is required")
     if req.role not in VALID_ROLES:
@@ -3919,70 +3898,53 @@ async def system_resources(user: dict = Depends(get_current_user)):
 # ==========================================================================
 
 
-# Throughput tracking state (for delta-based rate calculation)
-_prev_counters = {}
-_prev_counter_time = 0
+# A shared sample prevents multiple dashboard clients from shortening deltas.
+from ffn_port_traffic import PortTraffic
+_traffic_sampler = PortTraffic()
+_traffic_lock = asyncio.Lock()
+_traffic_cached = None
+_traffic_sampled = 0.0
 
 
 @app.get("/api/dashboard/throughput")
 async def dashboard_throughput(user: dict = Depends(get_current_user)):
-    global _prev_counters, _prev_counter_time
-
-    now = time.time()
-    ports = []
-
-    if not fpga.sim_mode:
-        # FPGA present — read FPGA port throughput
-        for p in range(NUM_PORTS):
-            tp = fpga.get_throughput_gbps(p)
-            ports.append({
-                "port": p,
-                "name": f"qsfp{p}",
-                "type": "fpga",
-                "rx_gbps": tp["rx_gbps"],
-                "tx_gbps": tp["tx_gbps"],
-            })
-
-    # Always include real CPU interfaces
-    counters = psutil.net_io_counters(pernic=True)
-    stats = psutil.net_if_stats()
-    dt = now - _prev_counter_time if _prev_counter_time > 0 else 1.0
-
-    for iface_name in sorted(counters.keys()):
-        if iface_name == "lo":
-            continue
-        if iface_name not in stats or not stats[iface_name].isup:
-            continue
-
-        cur = counters[iface_name]
-        prev = _prev_counters.get(iface_name)
-
-        if prev and dt > 0.1:
-            rx_bps = (cur.bytes_recv - prev.bytes_recv) * 8 / dt
-            tx_bps = (cur.bytes_sent - prev.bytes_sent) * 8 / dt
+    global _traffic_cached, _traffic_sampled
+    async with _traffic_lock:
+        if _traffic_cached is not None and time.monotonic()-_traffic_sampled < 2:
+            return _traffic_cached
+        provider = getattr(app.state, 'platform_data_port_stats', None)
+        if provider is not None:
+            try:
+                observation = await asyncio.to_thread(provider)
+                result = _traffic_sampler.sample(observation)
+            except Exception:
+                _traffic_sampler.previous = None
+                raise HTTPException(503, 'Front data-port telemetry unavailable')
+        elif _this_is_a_faceplate_chassis():
+            raise HTTPException(503, 'Platform data-port telemetry is not installed')
+        elif not fpga.sim_mode:
+            ports = [dict(name=f'qsfp{p}', type='fpga', link=None,
+                     **fpga.get_throughput_gbps(p)) for p in range(NUM_PORTS)]
+            result = dict(timestamp=time.time(), ports=ports, unit='Gbps', available=True)
         else:
-            rx_bps = 0
-            tx_bps = 0
-
-        # Convert to Gbps (cap at link speed)
-        link_speed = stats[iface_name].speed  # Mbps
-        max_bps = link_speed * 1e6 if link_speed else 100e9
-
-        ports.append({
-            "name": iface_name,
-            "type": "cpu",
-            "rx_gbps": round(min(rx_bps / 1e9, max_bps / 1e9), 4),
-            "tx_gbps": round(min(tx_bps / 1e9, max_bps / 1e9), 4),
-            "rx_bytes_total": cur.bytes_recv,
-            "tx_bytes_total": cur.bytes_sent,
-            "rx_pps": int((cur.packets_recv - (prev.packets_recv if prev else cur.packets_recv)) / dt) if prev and dt > 0.1 else 0,
-            "tx_pps": int((cur.packets_sent - (prev.packets_sent if prev else cur.packets_sent)) / dt) if prev and dt > 0.1 else 0,
-        })
-
-    _prev_counters = counters
-    _prev_counter_time = now
-
-    return {"timestamp": now, "ports": ports}
+            # Only configured data-port aliases, never every PCI/host adapter.
+            counters = psutil.net_io_counters(pernic=True)
+            stats = psutil.net_if_stats()
+            eligible = set(_list_linux_nics()) - {_mgmt_iface()}
+            ports = []
+            for name, netdev in _load_aliases().items():
+                if not re.fullmatch(r'ethernet[0-9]+/[0-9]+', name) or netdev not in eligible or netdev not in counters:
+                    continue
+                cur = counters[netdev]; link = stats.get(netdev)
+                ports.append(dict(name=name, type='data', link=link.isup if link else None,
+                    speed_gbps=max(0,link.speed)/1000 if link else None,
+                    rx_bytes_total=cur.bytes_recv, tx_bytes_total=cur.bytes_sent,
+                    rx_packets_total=cur.packets_recv, tx_packets_total=cur.packets_sent))
+            result = _traffic_sampler.sample(dict(ports=ports, sample_monotonic=time.monotonic(),
+                boot_id='host', unit='Gbps', source='Configured data ports'))
+        _traffic_cached = result
+        _traffic_sampled = time.monotonic()
+        return result
 
 
 @app.get("/api/dashboard/threats")
@@ -4457,10 +4419,10 @@ async def system_hardware(refresh: int = 0, user: dict = Depends(get_current_use
     distinguishable rather than merging into one misleading list."""
     inv = dict(await asyncio.to_thread(_hw_inventory, refresh=bool(refresh)))
     try:
-        far = await _detect_offload_dp()
+        far = await _detect_offload_dp(max_age=0 if refresh else 15.0)
     except Exception:
         far = {}
-    rows = list(inv.get("accelerators") or [])
+    rows = [dict(row) for row in inv.get("accelerators") or []]
     if inv.get("error") and "accelerators" not in inv:
         # The host probe failed. Appending the control-plane rows to an empty
         # list would produce a shorter list that looks complete -- which is how
@@ -4484,12 +4446,40 @@ async def system_hardware(refresh: int = 0, user: dict = Depends(get_current_use
                                       dev.get("vendor"), dev.get("device")),
             "driver": dev.get("driver"),
             "description": dev.get("description"),
+            "model": dev.get("description"),
+            "address": dev.get("pci"), "vendor_id": dev.get("vendor"),
+            "device_id": dev.get("device"),
         })
+    from ffn_hwdetect import fe1xx_identity, inventory_applicability
+    for row in rows:
+        # CP metadata uses vendor/device; preserve identity independently of
+        # whether a kernel driver is bound or the forwarding agent is ready.
+        identity = fe1xx_identity(row)
+        if identity:
+            row.update(identity)
+            row["role"] = "FE1xx front-end " + ("FPGA" if row.get("kind") == "fpga" else "ASIC")
     inv["accelerators"] = rows
+    inv["specialized"] = dict(inv.get("specialized") or {})
+    fe_rows = [row for row in rows if row.get("family") == "FE1xx"]
+    inv["specialized"]["fe1xx"] = {"present": bool(fe_rows), "devices": fe_rows}
     inv["offload"] = far
     from ffn_hwdetect import classify_cpu_role
-    inv["cpu_role"] = classify_cpu_role(inv)
+    try:
+        inv["platform"] = await _platform_profile()
+    except Exception:
+        inv["platform"] = {}
+        inv["platform_status"] = "unavailable"
+    inv["cpu_role"] = classify_cpu_role(inv, inv["platform"])
     inv["cpu"] = dict(inv.get("cpu") or {}, role=inv["cpu_role"]["role"])
+    inv["applicability"] = inventory_applicability(inv, inv["platform"])
+    if inv["applicability"]["family"] == "pa5200":
+        from ffn_control_plane import control_rpc
+        from ffn_hwdetect import fe100_driver_observation
+        try:
+            control = await control_rpc('state/control', timeout=3)
+        except (OSError, ValueError, asyncio.TimeoutError, ConnectionError):
+            control = {}
+        inv["fe100_driver"] = fe100_driver_observation(control)
     return inv
 
 
@@ -5074,6 +5064,7 @@ async def _detect_offload_dp(max_age: float = 15.0) -> dict:
         return ent["data"]
 
     info = await asyncio.to_thread(_probe_host_octeon)
+    from ffn_hwdetect import fe1xx_identity
 
     if info["cp"]["reachable"]:
         try:
@@ -5118,7 +5109,7 @@ async def _detect_offload_dp(max_age: float = 15.0) -> dict:
                         "present": True, "pci": dev["pci"],
                         "driver": dev["driver"], "model": dev["description"],
                     })
-                elif dev["kind"] == "asic":
+                elif fe1xx_identity(dev).get("model") == "FE100":
                     info["fe100"].update({
                         "present": True, "pci": dev["pci"],
                         "driver": dev["driver"], "model": dev["description"],
@@ -5460,29 +5451,22 @@ IMMUTABLE_KIND_PREFIX = {"intrazone-default", "interzone-default", "lab-mgmt"}
 
 
 @app.get("/api/policy/rules")
-async def policy_list(show_hidden: bool = False, show_defaults: bool = True, user: dict = Depends(get_current_user)):
-    """
-    Returns rules in evaluation order: user rules first (by position),
-    then PAN-OS-style implicit defaults (intrazone-default, then
-    interzone-default) which always evaluate last.
+async def policy_list(show_hidden: bool = True, show_defaults: bool = True, user: dict = Depends(get_current_user)):
+    """Stored rules in engine order. Implicit defaults are always included.
 
-    Query params:
-      - show_hidden=true  — include intrazone-default (hidden by default,
-                            matching PAN-OS UI which shows it only when
-                            "Show default rules" is enabled)
-      - show_defaults=false — hide both implicit defaults entirely
+    The legacy visibility query parameters are accepted for API compatibility;
+    they no longer suppress immutable defaults from the inventory.
     """
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         # User rules in position order, then defaults (intrazone before
         # interzone because intrazone is more specific).
-        # Evaluation order: lab-mgmt override → user rules →
+        # Evaluation order: user rules →
         # intrazone-default → interzone-default.
         cursor = await db.execute(
-            "SELECT * FROM policy_rules "
+            "SELECT * FROM policy_rules WHERE COALESCE(kind, 'user') NOT IN ('lab-mgmt', 'mgmt') "
             "ORDER BY "
             "  CASE kind "
-            "    WHEN 'lab-mgmt' THEN 0 "
             "    WHEN 'user' THEN 1 "
             "    WHEN 'intrazone-default' THEN 2 "
             "    WHEN 'interzone-default' THEN 3 "
@@ -5497,13 +5481,9 @@ async def policy_list(show_hidden: bool = False, show_defaults: bool = True, use
         for r in rows:
             r["compilation"] = compatibility[r["id"]]
             kind = r.get("kind", "user")
-            if not show_defaults and kind != "user":
-                continue
-            if kind == "intrazone-default" and not show_hidden:
-                continue
             # Expose computed flags for the UI
             r["is_default"] = kind != "user"
-            r["is_immutable"] = bool(r.get("immutable", 0))
+            r["is_immutable"] = bool(r.get("immutable", 0)) or kind in ("intrazone-default", "interzone-default", "lab-mgmt")
             out.append(r)
         return {"rules": out, "can_edit": user.get("role") in ADMIN_ROLES, "storage": "policy-database", "compilation": report}
 
@@ -5702,19 +5682,8 @@ async def policy_update(rule_id: int, rule: PolicyRule,
         existing = await cur.fetchone()
         if existing is None:
             raise HTTPException(status_code=404, detail="Rule not found")
-        if existing["immutable"]:
-            # Only description (and eventually profile/log fields) may be
-            # changed on an immutable default rule. Everything else is
-            # locked to preserve PAN-OS semantics.
-            await db.execute(
-                "UPDATE policy_rules SET description=?, "
-                " updated_at=datetime('now') WHERE id=?",
-                (rule.description, rule_id),
-            )
-            await audit(db, user["username"], "update_rule",
-                        f"id={rule_id} (immutable: description only)")
-            return {"status": "updated", "immutable": True,
-                    "message": "Immutable default rule — only description updated"}
+        if existing["immutable"] or existing['kind'] in ('intrazone-default', 'interzone-default', 'lab-mgmt'):
+            raise HTTPException(403, 'Implicit and system rules are read only; no fields may be modified')
 
         validate_policy_rule(rule.dict())
         await db.execute(
@@ -5743,7 +5712,7 @@ async def policy_delete(rule_id: int, user: dict = Depends(get_current_user)):
         existing = await cur.fetchone()
         if existing is None:
             raise HTTPException(status_code=404, detail="Rule not found")
-        if existing["immutable"]:
+        if existing["immutable"] or existing['kind'] in ('intrazone-default', 'interzone-default', 'lab-mgmt'):
             raise HTTPException(
                 status_code=403,
                 detail=f"Cannot delete immutable default rule ({existing['kind']})",
@@ -6458,122 +6427,65 @@ async def _iface_vrf_conflict(db, ifaces, exclude_vr: Optional[str] = None):
 @app.put("/api/network/interfaces/{iface}/virtual-router")
 async def iface_set_vr(iface: str, body: IfaceVrAssign,
                        user: dict = Depends(get_current_user)):
-    """Assign `iface` (Linux dev name) to a virtual router from the interface
-    side -- the mirror of the VR's member list. Moves the iface between SQLite
-    VR member lists and reconciles the kernel VRF enslavement. Empty / 'default'
-    -> the kernel main table (no VRF). An interface belongs to exactly one VR."""
-    mgmt = _mgmt_iface()
-    target = (body.virtual_router or "").strip()
-    if target.lower() in ("", "default", "none", "main"):
-        target = ""
-    if target and iface == mgmt:
-        raise HTTPException(
-            status_code=400,
-            detail=f"management interface '{iface}' cannot be enslaved to a VRF",
-        )
+    target = body.virtual_router or 'default'
+    return await _vr_candidate_edit('assign-interface', target, {'interface': iface}, user)
+
+
+async def _vr_candidate_seed():
+    # SQL is a read-only migration source. Edits never alter it or live routing.
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        cur = await db.execute("SELECT name, interfaces FROM virtual_routers")
-        rows = await cur.fetchall()
-        by_name = {r["name"]: r for r in rows}
-        if target and target not in by_name:
-            raise HTTPException(status_code=404,
-                                detail=f"no such virtual router '{target}'")
-        current = None
-        for r in rows:
-            if r["name"] == "default":
-                continue
-            if iface in json.loads(r["interfaces"] or "[]"):
-                current = r["name"]
-                break
-        if (current or "") == target:
-            return {"status": "unchanged", "interface": iface,
-                    "virtual_router": target or "default"}
-        if current:
-            lst = [x for x in json.loads(by_name[current]["interfaces"] or "[]")
-                   if x != iface]
-            await db.execute("UPDATE virtual_routers SET interfaces=?, "
-                             "updated_at=datetime('now') WHERE name=?",
-                             (json.dumps(lst), current))
-        if target:
-            lst = json.loads(by_name[target]["interfaces"] or "[]")
-            if iface not in lst:
-                lst.append(iface)
-            await db.execute("UPDATE virtual_routers SET interfaces=?, "
-                             "updated_at=datetime('now') WHERE name=?",
-                             (json.dumps(lst), target))
-        await audit(db, user["username"], "assign_iface_vrf",
-                    f"{iface} -> {target or 'default'} (was {current or 'default'})")
-        await db.commit()
-    # kernel reconcile (mgmt already refused above)
-    if current:
-        _run_ip(["ip", "link", "set", iface, "nomaster"])
-    if target:
-        _vrf_enslave(target, iface)
-        _run_ip(["ip", "link", "set", target, "up"])
-    return {"status": "updated", "interface": iface,
-            "virtual_router": target or "default", "previous": current or "default"}
+        rows = await (await db.execute('SELECT * FROM virtual_routers ORDER BY table_id')).fetchall()
+        result = []
+        for row in rows:
+            vr = _vr_row_to_dict(row)
+            vr['routes'] = [dict(r) for r in await (await db.execute(
+                'SELECT * FROM static_routes WHERE vr_id=? ORDER BY id', (row['id'],))).fetchall()]
+            result.append(vr)
+        return result
+
+
+async def _vr_candidate_list():
+    from ffn_vr_candidate import list_routers
+    seed = await _vr_candidate_seed()
+    return list_routers(config_mgr._load(CANDIDATE_CONFIG), seed)
+
+
+async def _vr_candidate_get(name):
+    for vr in await _vr_candidate_list():
+        if vr['name'] == name: return vr
+    raise HTTPException(404, 'Virtual router not found')
+
+
+async def _vr_candidate_edit(action, name, data, user, route_id=None):
+    from ffn_vr_candidate import edit, RouterError
+    _require_admin(user)
+    seed = await _vr_candidate_seed()
+    state = config_mgr.lock_status()
+    if state['locked'] and state.get('holder') != user['username']:
+        raise HTTPException(423, 'Configuration is locked by another administrator')
+    if not state['locked'] and not config_mgr.acquire_lock(user['username'], 'editing virtual routers'):
+        raise HTTPException(423, 'Could not acquire configuration lock')
+    try:
+        root = config_mgr._load(CANDIDATE_CONFIG)
+        result = edit(root, seed, action, name, data, route_id, _mgmt_iface())
+        config_mgr._save(root, CANDIDATE_CONFIG)
+    except Exception as error:
+        if not state['locked']: config_mgr.release_lock(user['username'])
+        if isinstance(error, RouterError): raise HTTPException(error.code, str(error)) from error
+        raise
+    await _audit(user, 'candidate_virtual_router_' + action, name)
+    return result
 
 
 @app.get("/api/network/virtual-routers")
 async def vr_list(user: dict = Depends(get_current_user)):
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cur = await db.execute(
-            "SELECT * FROM virtual_routers ORDER BY table_id"
-        )
-        vrs = [_vr_row_to_dict(r) for r in await cur.fetchall()]
-    return {"virtual_routers": vrs}
+    return {"virtual_routers": await _vr_candidate_list()}
 
 
 @app.post("/api/network/virtual-routers")
 async def vr_create(vr: VirtualRouterCreate, user: dict = Depends(get_current_user)):
-    mgmt = _mgmt_iface()
-    if mgmt in vr.interfaces:
-        raise HTTPException(
-            status_code=400,
-            detail=f"management interface '{mgmt}' cannot be enslaved to a VRF",
-        )
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cur = await db.execute(
-            "SELECT id FROM virtual_routers WHERE name=?", (vr.name,)
-        )
-        if await cur.fetchone():
-            raise HTTPException(status_code=409, detail=f"virtual router '{vr.name}' exists")
-        conflict = await _iface_vrf_conflict(db, vr.interfaces)
-        if conflict:
-            raise HTTPException(
-                status_code=409,
-                detail=f"interface '{conflict[0]}' already belongs to VRF '{conflict[1]}'",
-            )
-        table_id = await _alloc_vrf_table_id(db)
-        frag = FrrManager.render_fragment(
-            vr.name, table_id, vr.protocol, vr.router_id, vr.asn, routes=[])
-        await db.execute(
-            "INSERT INTO virtual_routers "
-            "(name, table_id, interfaces, admin_up, vsys, protocol, router_id, asn, frr_fragment) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (vr.name, table_id, json.dumps(vr.interfaces),
-             1 if vr.admin_up else 0, vr.vsys,
-             vr.protocol, vr.router_id, vr.asn, frag),
-        )
-        await audit(db, user["username"], "create_vrf",
-                    f"{vr.name} table={table_id} proto={vr.protocol} ifaces={vr.interfaces}")
-        await db.commit()
-
-    # Apply to the live kernel (no-op on non-Linux). l3mdev device FIRST...
-    _vrf_create(vr.name, table_id)
-    if not vr.admin_up:
-        _run_ip(["ip", "link", "set", vr.name, "down"])
-    for iface in vr.interfaces:
-        _vrf_enslave(vr.name, iface)
-    # ...THEN the FRR routing config (§6): zebra owns the VRF table, staticd/
-    # bgpd/ospfd own routing. No-op-with-log when vtysh is absent.
-    _get_frr().apply(vr.name, table_id, vr.protocol, vr.router_id, vr.asn, routes=[])
-    return {"status": "created", "name": vr.name, "table_id": table_id,
-            "interfaces": vr.interfaces, "admin_up": vr.admin_up, "vsys": vr.vsys,
-            "protocol": vr.protocol, "router_id": vr.router_id, "asn": vr.asn}
+    return await _vr_candidate_edit('create', vr.name, vr.dict(), user)
 
 
 async def _vr_fetch(db, name: str):
@@ -6584,105 +6496,18 @@ async def _vr_fetch(db, name: str):
 
 @app.get("/api/network/virtual-routers/{name}")
 async def vr_get(name: str, user: dict = Depends(get_current_user)):
-    async with aiosqlite.connect(DB_PATH) as db:
-        row = await _vr_fetch(db, name)
-        if not row:
-            raise HTTPException(status_code=404, detail=f"no such virtual router '{name}'")
-        return _vr_row_to_dict(row)
+    return await _vr_candidate_get(name)
 
 
 @app.put("/api/network/virtual-routers/{name}")
 async def vr_update(name: str, upd: VirtualRouterUpdate,
                     user: dict = Depends(get_current_user)):
-    mgmt = _mgmt_iface()
-    async with aiosqlite.connect(DB_PATH) as db:
-        row = await _vr_fetch(db, name)
-        if not row:
-            raise HTTPException(status_code=404, detail=f"no such virtual router '{name}'")
-        cur_ifaces = json.loads(row["interfaces"] or "[]")
-        table_id = row["table_id"]
-        is_default = (name == "default")
-
-        new_ifaces = cur_ifaces
-        if upd.interfaces is not None and not (is_default and not upd.interfaces):
-            if is_default:
-                raise HTTPException(
-                    status_code=400,
-                    detail="the default VRF is the kernel main table; it has no "
-                           "enslaved interfaces",
-                )
-            if mgmt in upd.interfaces:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"management interface '{mgmt}' cannot be enslaved to a VRF",
-                )
-            conflict = await _iface_vrf_conflict(db, upd.interfaces, exclude_vr=name)
-            if conflict:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"interface '{conflict[0]}' already belongs to VRF '{conflict[1]}'",
-                )
-            new_ifaces = upd.interfaces
-
-        admin_up = bool(row["admin_up"]) if upd.admin_up is None else upd.admin_up
-        vsys = row["vsys"] if upd.vsys is None else upd.vsys
-        cur_vr = _vr_row_to_dict(row)
-        protocol = cur_vr["protocol"] if upd.protocol is None else upd.protocol
-        router_id = cur_vr["router_id"] if upd.router_id is None else upd.router_id
-        asn = cur_vr["asn"] if upd.asn is None else upd.asn
-
-        # Re-render the FRR fragment from the current static routes + new proto.
-        routes = await _vr_static_routes(db, row["id"])
-        frag = FrrManager.render_fragment(
-            name, table_id, protocol, router_id, asn, routes=routes)
-
-        await db.execute(
-            "UPDATE virtual_routers SET interfaces=?, admin_up=?, vsys=?, "
-            "protocol=?, router_id=?, asn=?, frr_fragment=?, "
-            "updated_at=datetime('now') WHERE name=?",
-            (json.dumps(new_ifaces), 1 if admin_up else 0, vsys,
-             protocol, router_id, asn, frag, name),
-        )
-        await audit(db, user["username"], "update_vrf",
-                    f"{name} ifaces={new_ifaces} up={admin_up} vsys={vsys} proto={protocol}")
-        await db.commit()
-
-    # Reconcile membership with the kernel (skip for the default/main table).
-    if not is_default:
-        added = [i for i in new_ifaces if i not in cur_ifaces]
-        removed = [i for i in cur_ifaces if i not in new_ifaces]
-        for iface in removed:
-            _run_ip(["ip", "link", "set", iface, "nomaster"])
-        for iface in added:
-            _vrf_enslave(name, iface)
-        _run_ip(["ip", "link", "set", name, "up" if admin_up else "down"])
-    # Re-apply the FRR routing config (routes flow through staticd, §6).
-    _get_frr().apply(name, table_id, protocol, router_id, asn, routes=routes)
-    return {"status": "updated", "name": name, "interfaces": new_ifaces,
-            "admin_up": admin_up, "vsys": vsys, "table_id": table_id,
-            "protocol": protocol, "router_id": router_id, "asn": asn}
+    return await _vr_candidate_edit('update', name, upd.dict(exclude_unset=True), user)
 
 
 @app.delete("/api/network/virtual-routers/{name}")
 async def vr_delete(name: str, user: dict = Depends(get_current_user)):
-    if name == "default":
-        raise HTTPException(status_code=400, detail="the default virtual router cannot be deleted")
-    async with aiosqlite.connect(DB_PATH) as db:
-        row = await _vr_fetch(db, name)
-        if not row:
-            raise HTTPException(status_code=404, detail=f"no such virtual router '{name}'")
-        ifaces = json.loads(row["interfaces"] or "[]")
-        table_id = row["table_id"]
-        await db.execute("DELETE FROM static_routes WHERE vr_id=?", (row["id"],))
-        await db.execute("DELETE FROM virtual_routers WHERE name=?", (name,))
-        await audit(db, user["username"], "delete_vrf", f"{name} table={table_id}")
-        await db.commit()
-
-    # Remove the FRR routing config FIRST (staticd/bgpd/ospfd), then tear the
-    # l3mdev substrate down (flush table, un-enslave members, drop the device).
-    _get_frr().remove(name)
-    _vrf_teardown(name, table_id, ifaces)
-    return {"status": "deleted", "name": name}
+    return await _vr_candidate_edit('delete', name, {}, user)
 
 
 # --- VR static routes ------------------------------------------------------
@@ -6701,124 +6526,66 @@ class VrRoutingConfig(BaseModel):
 
 @app.get("/api/network/virtual-routers/{name}/routing")
 async def vr_get_routing(name: str, user: dict = Depends(get_current_user)):
-    async with aiosqlite.connect(DB_PATH) as db:
-        row = await _vr_fetch(db, name)
-        if not row:
-            raise HTTPException(status_code=404, detail=f"virtual router '{name}' not found")
-        vr = _vr_row_to_dict(row)
-    return {"name": name, "config": vr.get("config") or {}, "frr_fragment": vr.get("frr_fragment")}
+    vr = await _vr_candidate_get(name)
+    return {'name': name, 'config': vr.get('config') or {}, 'source': 'candidate', 'runtime': 'not-applied'}
 
 
 @app.put("/api/network/virtual-routers/{name}/routing")
 async def vr_set_routing(name: str, cfg: VrRoutingConfig, user: dict = Depends(get_current_user)):
-    async with aiosqlite.connect(DB_PATH) as db:
-        row = await _vr_fetch(db, name)
-        if not row:
-            raise HTTPException(status_code=404, detail=f"virtual router '{name}' not found")
-        vr = _vr_row_to_dict(row)
-        routes = await _vr_static_routes(db, vr["id"])
-        cfgd = cfg.dict()
-        frr = _get_frr()
-        clear = frr.render_clear_commands(name, cfgd)
-        if clear:
-            frr._vtysh(clear)                       # tolerated: 'can't find' on first apply is fine
-        cmds = frr.render_full_commands(name, vr["table_id"], cfgd, routes)
-        rc, out = frr._vtysh(cmds)                  # clean apply (no error-prone lines)
-        frag = "\n".join(cmds)
-        await db.execute(
-            "UPDATE virtual_routers SET vr_config=?, frr_fragment=?, updated_at=datetime('now') WHERE name=?",
-            (json.dumps(cfgd), frag, name))
-        await audit(db, user["username"], "vr_routing", name)
-        await db.commit()
-    return {"status": "applied", "name": name, "vtysh_rc": rc,
-            "config": cfgd, "frr_commands": cmds,
-            "vtysh_output": (out or "")[-2000:]}
+    return await _vr_candidate_edit('routing', name, cfg.dict(), user)
 
 
 @app.get("/api/network/virtual-routers/{name}/routes")
 async def vr_routes_list(name: str, user: dict = Depends(get_current_user)):
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        row = await _vr_fetch(db, name)
-        if not row:
-            raise HTTPException(status_code=404, detail=f"no such virtual router '{name}'")
-        cur = await db.execute(
-            "SELECT * FROM static_routes WHERE vr_id=? ORDER BY id", (row["id"],)
-        )
-        routes = [{
-            "id": r["id"], "vr_id": r["vr_id"], "dest_cidr": r["dest_cidr"],
-            "next_hop": r["next_hop"], "dev": r["dev"], "metric": r["metric"],
-            "table_id": r["table_id"],
-        } for r in await cur.fetchall()]
-    return {"virtual_router": name, "routes": routes}
+    vr = await _vr_candidate_get(name)
+    return {'virtual_router': name, 'routes': vr.get('routes', []), 'source': 'candidate'}
+
+
+async def _vr_interface_inventory(user):
+    from ffn_vr_interfaces import inventory
+    configured = await interfaces_list(user)
+    routers = (await vr_list(user))['virtual_routers']
+    return inventory(configured, routers, _load_aliases())
+
+
+@app.get("/api/network/virtual-router-interfaces")
+async def vr_interface_choices(user: dict = Depends(get_current_user)):
+    return {'interfaces': await _vr_interface_inventory(user),
+            'default_membership': 'Configured Layer 3 interfaces not assigned to another virtual router'}
+
+
+async def _validate_vr_route(name, route, user):
+    from ffn_vr_interfaces import validate_route
+    _require_admin(user)
+    try:
+        data = validate_route(route.dict(), name, await _vr_interface_inventory(user))
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    return VRRoute(**data)
+
+
+def _vr_platform_managed():
+    return bool(os.environ.get('FFN_PLATFORM_EXTENSION'))
+
+
+@app.put("/api/network/virtual-routers/{name}/routes/{route_id}")
+async def vr_route_update(name: str, route_id: int, route: VRRoute,
+                          user: dict = Depends(get_current_user)):
+    route = await _validate_vr_route(name, route, user)
+    return await _vr_candidate_edit('route-update', name, route.dict(), user, route_id)
 
 
 @app.post("/api/network/virtual-routers/{name}/routes")
 async def vr_route_add(name: str, route: VRRoute,
                        user: dict = Depends(get_current_user)):
-    async with aiosqlite.connect(DB_PATH) as db:
-        row = await _vr_fetch(db, name)
-        if not row:
-            raise HTTPException(status_code=404, detail=f"no such virtual router '{name}'")
-        table_id = row["table_id"]
-        cur = await db.execute(
-            "INSERT INTO static_routes (vr_id, dest_cidr, next_hop, dev, metric, table_id) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (row["id"], route.dest_cidr, route.next_hop, route.dev,
-             route.metric, table_id),
-        )
-        route_id = cur.lastrowid
-        # Re-render the FRR fragment now that the route set changed.
-        routes = await _vr_static_routes(db, row["id"])
-        vr = _vr_row_to_dict(row)
-        frag = FrrManager.render_fragment(
-            name, table_id, vr["protocol"], vr["router_id"], vr["asn"], routes=routes)
-        await db.execute(
-            "UPDATE virtual_routers SET frr_fragment=?, updated_at=datetime('now') "
-            "WHERE id=?", (frag, row["id"]))
-        await audit(db, user["username"], "add_vrf_route",
-                    f"{name}: {route.dest_cidr} via {route.next_hop or route.dev} table={table_id}")
-        await db.commit()
-
-    # Static routes go through staticd (FRR), NOT raw `ip route` (contract §6).
-    _get_frr().add_route(name, route.dest_cidr, route.next_hop, route.dev, route.metric)
-    return {"status": "added", "id": route_id, "virtual_router": name,
-            "dest_cidr": route.dest_cidr, "next_hop": route.next_hop,
-            "dev": route.dev, "metric": route.metric, "table_id": table_id}
+    route = await _validate_vr_route(name, route, user)
+    return await _vr_candidate_edit('route-add', name, route.dict(), user)
 
 
 @app.delete("/api/network/virtual-routers/{name}/routes/{route_id}")
 async def vr_route_delete(name: str, route_id: int,
                           user: dict = Depends(get_current_user)):
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        row = await _vr_fetch(db, name)
-        if not row:
-            raise HTTPException(status_code=404, detail=f"no such virtual router '{name}'")
-        cur = await db.execute(
-            "SELECT * FROM static_routes WHERE id=? AND vr_id=?",
-            (route_id, row["id"]),
-        )
-        rt = await cur.fetchone()
-        if not rt:
-            raise HTTPException(status_code=404, detail=f"no such route {route_id} on '{name}'")
-        await db.execute("DELETE FROM static_routes WHERE id=?", (route_id,))
-        # Re-render the FRR fragment now that the route set changed.
-        routes = await _vr_static_routes(db, row["id"])
-        vr = _vr_row_to_dict(row)
-        frag = FrrManager.render_fragment(
-            name, row["table_id"], vr["protocol"], vr["router_id"], vr["asn"],
-            routes=routes)
-        await db.execute(
-            "UPDATE virtual_routers SET frr_fragment=?, updated_at=datetime('now') "
-            "WHERE id=?", (frag, row["id"]))
-        await audit(db, user["username"], "delete_vrf_route",
-                    f"{name}: {rt['dest_cidr']} table={rt['table_id']}")
-        await db.commit()
-
-    # Withdraw the route through staticd (FRR), NOT raw `ip route` (contract §6).
-    _get_frr().del_route(name, rt["dest_cidr"], rt["next_hop"], rt["dev"])
-    return {"status": "deleted", "id": route_id, "virtual_router": name}
+    return await _vr_candidate_edit('route-delete', name, {}, user, route_id)
 
 
 @app.get("/api/network/virtual-routers/{name}/fib")
@@ -8465,6 +8232,54 @@ async def system_setup(cfg: SetupConfig, user: dict = Depends(get_current_user))
     }
 
 
+MP_INTERFACE_XPATH = "devices.entry[@name=localhost.localdomain].deviceconfig.system.mp-interfaces"
+
+
+def _mp_revision(node):
+    return hashlib.sha256(ET.tostring(node) if node is not None else b'').hexdigest()
+
+
+async def _mp_inventory():
+    provider = getattr(app.state, 'platform_mp_interfaces', None)
+    if provider is None: return []
+    try: return (await asyncio.to_thread(provider))['ports']
+    except Exception: raise HTTPException(503, 'External management interface controller unavailable')
+
+
+@app.get('/api/system/mp-interfaces')
+async def mp_interfaces_get(user: dict = Depends(get_current_user)):
+    from ffn_mp_interfaces import decode
+    ports = await _mp_inventory()
+    for port in ports:
+        node = config_mgr.get_xpath(MP_INTERFACE_XPATH+'.entry[@name='+port['name']+']',source='candidate')
+        port['candidate'] = decode(node)
+        port['revision'] = _mp_revision(node)
+    return dict(ports=ports, source='candidate', requires_commit=True)
+
+
+@app.put('/api/system/mp-interfaces/{name}')
+async def mp_interfaces_set(name: str, request: Request, user: dict = Depends(get_current_user)):
+    from ffn_mp_interfaces import encode
+    _require_admin(user)
+    ports = await _mp_inventory()
+    if name not in {port['name'] for port in ports}: raise HTTPException(404, 'External MP interface is not detected')
+    data = await request.json()
+    if not isinstance(data,dict) or set(data)!={'revision','config'}: raise HTTPException(422, 'Expected revision and config')
+    try: settings=encode(data['config'])
+    except (ValueError,TypeError,KeyError): raise HTTPException(422, 'Invalid management interface settings')
+    xpath = MP_INTERFACE_XPATH+'.entry[@name='+name+']'
+    node = config_mgr.get_xpath(xpath, source='candidate')
+    if data['revision'] != _mp_revision(node): raise HTTPException(409, 'Candidate changed; reopen the interface editor')
+    lock = config_mgr.lock_status()
+    if lock['locked'] and lock.get('holder') != user['username']: raise HTTPException(423, 'Candidate is locked by another administrator')
+    if not lock['locked']: config_mgr.acquire_lock(user['username'], 'editing')
+    result=config_mgr.update_candidate(xpath, settings, user['username'])
+    if result.get('status')!='ok': raise HTTPException(500, 'Candidate update failed')
+    async with aiosqlite.connect(DB_PATH) as db:
+        await audit(db,user['username'],'mp_interface_candidate_update',name)
+    return dict(status='candidate-updated',requires_commit=True)
+
+
 class RetrainRequest(BaseModel):
     model_type: str = "anomaly"
     epochs: int = 10
@@ -8921,6 +8736,7 @@ class CommitRequest(BaseModel):
     description: str = ""
     partial_xpath: Optional[str] = None  # None = full commit
     commit_type: Optional[str] = None    # override history type e.g. "rollback"
+    expected_revision: Optional[str] = None  # revision returned by Preview / Validate
 
 
 class LockRequest(BaseModel):
@@ -8971,7 +8787,10 @@ async def config_bulk_update(req: ConfigBulkUpdate, user: dict = Depends(get_cur
 
 @app.get("/api/config/diff")
 async def config_diff(user: dict = Depends(get_current_user)):
-    return config_mgr.diff()
+    try:
+        return _redacted_commit_diff((await _prepare_commit_review())['diff'])
+    except (ValueError, ET.ParseError, DefusedXmlException) as exc:
+        raise HTTPException(422, str(exc))
 
 
 # -- PAN-OS style xpath API --------------------------------------------------
@@ -9130,7 +8949,7 @@ def _apply_running_config():
     return applied
 
 
-async def _sync_netresources_to_xml():
+async def _sync_netresources_to_xml(candidate_root=None, persist=True):
     """
     Mirror the net_resources SQL table into the PAN-OS candidate XML so a
     commit carries every UI-managed resource. Mapping table below.
@@ -9146,7 +8965,7 @@ async def _sync_netresources_to_xml():
         "virtual-wires":         f"{NET}.virtual-wire",
         "gre-tunnels":           f"{NET}.gre",
         "vxlan-tunnels":         f"{NET}.vxlan-tunnel",
-        "qos-policies":          f"{VSYS}.rulebase.qos.rules",
+        # QoS policies are owned by the controld candidate rulebase.
         # FFN Protect (vsys-scoped in PAN-OS)
         "fp-portals":                 f"{VSYS}.global-protect.global-protect-portal",
         "fp-gateways":                f"{VSYS}.global-protect.global-protect-gateway",
@@ -9166,7 +8985,7 @@ async def _sync_netresources_to_xml():
         "monitor-profiles":           f"{NET}.profiles.monitor-profile",
         "interface-mgmt-profiles":    f"{NET}.profiles.interface-management-profile",
         "zone-protection-profiles":   f"{NET}.profiles.zone-protection-profile",
-        "qos-profiles":               f"{NET}.profiles.qos-profile",
+        # QoS profiles are XML-owned by controld; the legacy SQL mirror must not overwrite them.
         "lldp-profiles":              f"{NET}.profiles.lldp-profile",
         "bfd-profiles":               f"{NET}.profiles.bfd-profile",
         # SD-WAN
@@ -9177,14 +8996,14 @@ async def _sync_netresources_to_xml():
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(
-            "SELECT kind, name, enabled, config FROM net_resources")).fetchall()
+            "SELECT kind, name, enabled, config FROM net_resources ORDER BY kind, name")).fetchall()
 
     by_kind: dict = {}
     for r in rows:
         by_kind.setdefault(r["kind"], []).append(r)
 
     # Walk the candidate XML and rewrite each managed subtree
-    root = config_mgr._load(CANDIDATE_CONFIG)
+    root = candidate_root if candidate_root is not None else config_mgr._load(CANDIDATE_CONFIG)
     touched = []
     for kind, xpath in RESOURCE_PATHS.items():
         entries = by_kind.get(kind, [])
@@ -9199,11 +9018,15 @@ async def _sync_netresources_to_xml():
             entry.set("name", r["name"])
             try:
                 cfg = json.loads(r["config"] or "{}")
-            except Exception:
-                cfg = {}
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f"Invalid configuration for {kind}/{r['name']}") from exc
+            if not isinstance(cfg, dict):
+                raise ValueError(f"Invalid configuration for {kind}/{r['name']}")
             cfg["enabled"] = "yes" if r["enabled"] else "no"
             config_mgr._apply_dict(entry, cfg)
         touched.append(f"{kind}:{len(entries)}")
+    if not persist:
+        return root
     config_mgr._save(root, CANDIDATE_CONFIG)
     logger.info("net_resources → XML sync: %s", ", ".join(touched))
     return touched
@@ -9242,49 +9065,122 @@ def _publish_to_planes() -> dict:
         return {"published": False, "error": repr(exc)}
 
 
+async def _prepare_commit_review(partial_xpath=None):
+    """Read XML and the legacy SQL mirror without saving, locking, or applying."""
+    candidate_bytes = CANDIDATE_CONFIG.read_bytes()
+    running_bytes = RUNNING_CONFIG.read_bytes()
+    candidate = SafeET.fromstring(candidate_bytes, forbid_dtd=True)
+    running = SafeET.fromstring(running_bytes, forbid_dtd=True)
+    projected = await _sync_netresources_to_xml(candidate, persist=False)
+    if CANDIDATE_CONFIG.read_bytes() != candidate_bytes or RUNNING_CONFIG.read_bytes() != running_bytes:
+        raise HTTPException(409, 'Configuration changed while reading resource settings. Preview again.')
+    effective = config_mgr.prepare_commit(partial_xpath, projected, running)
+    # Bind the review to all inputs, including order, SQL-derived settings and scope.
+    digest = hashlib.sha256()
+    for value in (candidate_bytes, running_bytes, ET.tostring(projected), (partial_xpath or '').encode()):
+        digest.update(len(value).to_bytes(8, 'big')); digest.update(value)
+    return dict(revision=digest.hexdigest(), projected=projected, effective=effective,
+                diff=config_mgr.diff(effective, running), candidate_bytes=candidate_bytes)
+
+
+def _redacted_commit_diff(diff):
+    # Review never needs credentials. Values can contain markup and are still
+    # escaped by clients; redaction here also protects CLI/API consumers.
+    import copy
+    result = copy.deepcopy(diff)
+    secret = re.compile(r'password|passwd|phash|passphrase|secret|key|psk|token|community|credential', re.I)
+    for kind in ('added', 'modified', 'removed'):
+        for row in result[kind]:
+            if secret.search(row['path']):
+                for key in ('old','new'):
+                    if key in row: row[key] = '[redacted]'
+    return result
+
+
+@app.get('/api/config/review')
+async def config_review(partial_xpath: Optional[str] = None, validate: bool = False,
+                        user: dict = Depends(get_current_user)):
+    from ffn_policy_config import runtime_report
+    try:
+        prepared = await _prepare_commit_review(partial_xpath)
+        report = await asyncio.to_thread(runtime_report, ET.tostring(prepared['effective']), validate)
+        current = await _prepare_commit_review(partial_xpath)
+        if current['revision'] != prepared['revision']:
+            raise HTTPException(409, 'Configuration changed during review. Preview again.')
+    except (ValueError, ET.ParseError, DefusedXmlException) as exc:
+        raise HTTPException(422, str(exc))
+    lock = config_mgr.lock_status()
+    return dict(revision=prepared['revision'], scope=partial_xpath, diff=_redacted_commit_diff(prepared['diff']),
+                validation=report, validated=validate, lock=lock,
+                can_commit=user.get('role') in ('admin','superuser') and
+                    (not lock['locked'] or lock.get('holder') == user['username']),
+                validation_scope='Policy compilation and commissioned policy-provider checks. Other settings are checked by configd during apply.',
+                applied=False)
+
+
+_commit_in_progress = asyncio.Lock()
+
+
 @app.post("/api/config/commit")
 async def config_commit(req: CommitRequest, user: dict = Depends(get_current_user)):
-    """Commit candidate → running. Supports full or partial (xpath-scoped) commits."""
-    # Must hold or acquire lock
+    _require_admin(user)
+    if _commit_in_progress.locked():
+        raise HTTPException(409, 'A commit is already in progress. Check Tasks before retrying.')
+    async with _commit_in_progress:
+        return await _config_commit_serial(req, user)
+
+
+async def _config_commit_serial(req, user):
     st = config_mgr.lock_status()
     if st["locked"] and st.get("holder") != user["username"]:
-        raise HTTPException(status_code=423, detail=f"Config locked by {st['holder']} — wait or request override")
-    if not st["locked"]:
-        if not config_mgr.acquire_lock(user["username"], "commit"):
-            raise HTTPException(status_code=423, detail="Could not acquire commit lock")
-
-    # Fold any UI-managed resources (virtual wires, FFN Protect, profiles,
-    # etc.) from the SQL side-store into the PAN-OS XML before we diff.
+        raise HTTPException(423, f"Config locked by {st['holder']} — wait or request override")
+    if not st['locked'] and not config_mgr.acquire_lock(user['username'], 'commit'):
+        raise HTTPException(423, 'Could not acquire commit lock')
     try:
-        await _sync_netresources_to_xml()
-    except Exception as exc:
-        logger.warning("net_resources→XML sync failed: %s", exc)
-
-    # Check for changes
-    d = config_mgr.diff()
-    if not d["has_changes"]:
-        config_mgr.release_lock(user["username"])
-        return {"status": "no-changes", "message": "Candidate identical to running"}
-
-    logger.info("Commit by %s: type=%s description=%s changes=%d",
-                user["username"], "partial" if req.partial_xpath else "full",
-                req.description, d["total_changes"])
-
-    try:
-        from ffn_policy_barrier import before_commit as _before_policy_commit
+        from ffn_policy_config import require_supported, PolicyError
         try:
-            policy_barrier = await _before_policy_commit(app, CANDIDATE_CONFIG)
-        except Exception as exc:
-            logger.error('Selected platform policy barrier failed: %s', exc)
-            raise HTTPException(409, 'Hardware session invalidation failed; configuration was not committed')
-        result = config_mgr.commit(
-            user=user["username"],
-            description=req.description,
-            partial_xpath=req.partial_xpath,
-            commit_type=req.commit_type,
-        )
-        if result.get("status") != "committed":
-            raise HTTPException(422, result.get("message", "Commit failed"))
+            prepared = await _prepare_commit_review(req.partial_xpath)
+        except (ValueError, ET.ParseError, DefusedXmlException) as exc:
+            raise HTTPException(422, str(exc))
+        if req.expected_revision and req.expected_revision != prepared['revision']:
+            raise HTTPException(409, 'Configuration changed since review. Preview and validate again.')
+        d = prepared['diff']
+        if not d['has_changes']:
+            return dict(status='no-changes', message='Selected scope identical to running')
+        try:
+            await asyncio.to_thread(require_supported, ET.tostring(prepared['effective']))
+        except PolicyError as exc:
+            raise HTTPException(422, str(exc))
+        if (await _prepare_commit_review(req.partial_xpath))['revision'] != prepared['revision']:
+            raise HTTPException(409, 'Configuration changed during validation. Preview again.')
+        # Validate the projected scope BEFORE any hardware invalidation. The
+        # barrier reads a temporary copy of exactly the proposed running config.
+        from ffn_policy_barrier import before_commit as _before_policy_commit
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix='ffn-commit-') as directory:
+            proposal = Path(directory) / 'running-config.xml'
+            proposal.write_bytes(ET.tostring(prepared['effective']))
+            try:
+                policy_barrier = await _before_policy_commit(app, proposal)
+            except Exception as exc:
+                logger.error('Selected platform policy barrier failed: %s', exc)
+                raise HTTPException(409, 'Hardware session invalidation failed; configuration was not committed')
+        current = await _prepare_commit_review(req.partial_xpath)
+        if current['revision'] != prepared['revision']:
+            raise HTTPException(409, 'Configuration changed during commit preparation. Preview again.')
+        result = config_mgr.commit(user=user['username'], description=req.description,
+                                   partial_xpath=req.partial_xpath, commit_type=req.commit_type,
+                                   prepared_root=prepared['effective'], prevalidated=True)
+        if result.get('status') != 'committed':
+            raise HTTPException(422, result.get('message', 'Commit failed'))
+        # Retain concurrent edits from other control processes if they arrived
+        # during provider validation. The promotion still uses the reviewed XML.
+        if CANDIDATE_CONFIG.read_bytes() == prepared['candidate_bytes']:
+            try:
+                config_mgr._save(prepared['projected'], CANDIDATE_CONFIG)
+            except OSError:
+                logger.exception('Committed, but candidate resource synchronization failed')
+                result['warnings'] = ['Running configuration saved; candidate resource synchronization needs review.']
         if policy_barrier is not None:
             result['policy_barrier'] = policy_barrier
         # Apply to live system.
@@ -9359,11 +9255,8 @@ async def config_lock_release(user: dict = Depends(get_current_user)):
 @app.post("/api/config/lock/override")
 async def config_lock_override(user: dict = Depends(get_current_user)):
     """Admin-only lock override — forcibly release any active lock."""
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin role required")
-    prev_holder = config_mgr._lock_holder
-    config_mgr._lock_holder = None
-    config_mgr._lock_reason = ""
+    _require_admin(user)
+    prev_holder = config_mgr._config_lock.override()
     async with aiosqlite.connect(DB_PATH) as db:
         await audit(db, user["username"], "lock_override", f"previous={prev_holder}")
     return {"status": "overridden", "previous_holder": prev_holder}
@@ -9399,7 +9292,9 @@ def _platform_decl() -> dict:
         import ffn_cpuisol
         decl, _path = ffn_cpuisol.find_platform_decl(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        return decl or {}
+        # The reader also returns a generic build-time default without a path.
+        # That is not a selected platform and must not override live detection.
+        return (decl or {}) if _path else {}
     except Exception:
         return {}
 
@@ -9468,6 +9363,7 @@ async def _platform_profile() -> dict:
 
     has_fpga_card = not fpga.sim_mode
     has_offload = bool(offload.get("present"))
+    pa5200 = decl.get("platform") == "pa5200" or chassis.get("platform") in ("pa5200", "gryphon")
     dpdk_unit = _detect_dpdk_service()
     # A unit FILE existing is not a datapath. The image ships ffn-dpdk-fwd on
     # every platform, so keying "present" off the unit reported DPDK as present
@@ -9478,7 +9374,7 @@ async def _platform_profile() -> dict:
     # the platform stating its own design. Otherwise infer from what is here.
     datapath = decl.get("datapath")
     if not datapath:
-        datapath = ("offload" if has_offload
+        datapath = ("offload" if has_offload or pa5200
                     else "fpga" if has_fpga_card
                     else "dpdk")
 
@@ -9500,7 +9396,7 @@ async def _platform_profile() -> dict:
         "dpdk": feat(datapath == "dpdk", dpdk_running,
                      off_reason if datapath != "dpdk" else "",
                      unit=dpdk_unit),
-        "fpga_card": feat(datapath in ("dpdk", "fpga"), has_fpga_card,
+        "fpga_card": feat(has_fpga_card or decl.get("platform") == "vu9p", has_fpga_card,
                           off_reason if datapath == "offload" else ""),
         "hugepages": feat(datapath == "dpdk", datapath == "dpdk",
                           "hugepages back the DPDK mempools; nothing here uses "
@@ -9517,11 +9413,12 @@ async def _platform_profile() -> dict:
             decl.get("reason") or (off_reason if datapath == "offload" else "")),
 
         # The offload chassis's own silicon.
-        "offload_complex": feat(has_offload, has_offload,
+        "offload_complex": feat(has_offload or pa5200, has_offload,
                                 detail=offload.get("boot_state") or ""),
         "switch_faceplate": feat(faceplate is not None, bool(faceplate),
                                  ports=len(faceplate or {})),
-        "front_end_asic": feat(has_offload,
+        "front_end_asic": feat(pa5200 or
+                               bool((offload.get("fe100") or {}).get("present")),
                                bool((offload.get("fe100") or {}).get("present")),
                                model=(offload.get("fe100") or {}).get("model") or ""),
 
@@ -9535,7 +9432,7 @@ async def _platform_profile() -> dict:
 
     return {
         "platform": decl.get("platform") or (
-            "pa5200" if faceplate is not None else
+            "pa5200" if pa5200 or faceplate is not None else
             "vu9p" if has_fpga_card else "generic"),
         # Falls back to the chassis fingerprint, because the declaration is the
         # thing that is missing on a deployed box.
@@ -9727,14 +9624,17 @@ async def dpd_reload(user: dict = Depends(get_current_user)):
 
 @app.get("/api/system/plane-usage")
 async def plane_usage(user: dict = Depends(get_current_user)):
-    """
-    Return per-plane CPU + memory usage.
-      - Data plane  : cores listed in isolcpus (or FFN_DPDK_CORES env)
-      - Control plane: cores running ffn-controld + ffn-configd + ffn-manager
-                        (and adjacent "system" cores). Default = non-isolcpus - mgmt
-      - Management plane: cores dedicated to the webUI/ssh (default = first 2)
-    Usage is averaged over a 500ms sample.
-    """
+    """Selected agent CPU usage, or local CPU allocation on shared hosts."""
+    from ffn_agent_resources import agent_plane_usage
+    from ffn_control_plane import control_rpc
+    try:
+        control = await control_rpc('state/control', timeout=2)
+        if not isinstance(control, dict) or not isinstance(control.get('agents'), dict):
+            raise ValueError('invalid control state')
+    except Exception:
+        # An unavailable controller must never relabel MP samples as CP/DP.
+        control = None
+    remote = bool(control and control['agents'])
     total_cores = os.cpu_count() or 2
 
     # Precedence for plane-to-core mapping:
@@ -9760,13 +9660,16 @@ async def plane_usage(user: dict = Depends(get_current_user)):
     ctrl_cores = [c for c in ctrl_cores if c < total_cores]
     data_cores = [c for c in data_cores if c < total_cores]
 
+    if remote:
+        mgmt_cores = sorted(all_cores)
+
     # Sample per-core usage (blocking 0.5s — run in thread pool)
     import asyncio as _aio
     per_core = await _aio.to_thread(psutil.cpu_percent, 0.5, True)
 
     def avg(cores):
         vals = [per_core[c] for c in cores if c < len(per_core)]
-        return round(sum(vals) / len(vals), 1) if vals else 0.0
+        return round(sum(vals) / len(vals), 1) if vals else None
 
     mem = psutil.virtual_memory()
     swap = psutil.swap_memory()
@@ -9792,7 +9695,7 @@ async def plane_usage(user: dict = Depends(get_current_user)):
                          "charon", "swanctl", "lldpd"])
     data_rss = _rss_for(["ffn_dpdk_fwd", "dpdk-testpmd"])
 
-    return {
+    result = {
         "cores_total": total_cores,
         "management_plane": {
             "cores": mgmt_cores,
@@ -9824,6 +9727,14 @@ async def plane_usage(user: dict = Depends(get_current_user)):
             "swap_used_gb":  round(swap.used  / 1e9, 2),
         },
     }
+    for key in ('management_plane', 'control_plane', 'data_plane'):
+        result[key].update(source='local', state='available' if result[key]['cores'] else 'unassigned',
+                           fresh=True, age_seconds=0, expires_in_seconds=10, memory_scope='processes')
+    if remote or control is None:
+        result['control_plane'] = agent_plane_usage(control, 'cp')
+        result['data_plane'] = agent_plane_usage(control, 'dp')
+    return result
+
 
 
 @app.get("/api/config/snapshots")
@@ -10035,6 +9946,9 @@ class NetResource(BaseModel):
 
 
 def _check_kind(kind: str):
+    if kind in ('qos-profiles', 'qos-policies'):
+        endpoint = '/api/config/policy-profiles/qos' if kind == 'qos-profiles' else '/api/config/policies/qos'
+        raise HTTPException(status_code=409, detail='QoS is managed through ' + endpoint)
     if kind not in NET_RESOURCE_KINDS:
         raise HTTPException(status_code=404, detail=f"Unknown resource kind: {kind}")
 
@@ -10662,7 +10576,7 @@ async def zone_delete(vsys: str, name: str, revision: str, user: dict = Depends(
 class InterfaceEntry(BaseModel):
     name: str                                # ethernet1/1 | ae1
     kind: str = "ethernet"                   # ethernet | aggregate-ethernet
-    mode: str = "layer3"                     # layer3 | layer2 | virtual-wire | tap | aggregate-group | decrypt-mirror | ha
+    mode: str = "none"                       # none | layer3 | layer2 | virtual-wire | tap | aggregate-group | decrypt-mirror | ha
     ip_addresses: list = []                  # strings ("192.168.1.1/24") or address-object names
     dhcp_client: bool = False
     dhcp_default_route: bool = True
@@ -10683,7 +10597,7 @@ class InterfaceEntry(BaseModel):
     comment: str = ""
 
 
-MODES = {"layer3", "layer2", "virtual-wire", "tap", "aggregate-group",
+MODES = {"none", "layer3", "layer2", "virtual-wire", "tap", "aggregate-group",
          "decrypt-mirror", "ha"}
 
 
@@ -11077,6 +10991,8 @@ def _ae_to_bond(ae_name: str) -> str:
 
 def _build_iface_payload(i: InterfaceEntry) -> dict:
     """Render an InterfaceEntry to the PAN-OS XML-dict form."""
+    if i.mode in ("default", "off", "disabled", "unconfigured"):
+        i.mode = "none"
     if i.mode not in MODES:
         raise HTTPException(status_code=400, detail=f"mode must be one of {sorted(MODES)}")
 
@@ -11087,6 +11003,17 @@ def _build_iface_payload(i: InterfaceEntry) -> dict:
     if i.dhcp_client and (i.mode != "layer3" or i.ip_addresses):
         raise HTTPException(422, "DHCP requires Layer 3 with no static interface addresses")
     payload: dict = {"comment": i.comment}
+
+    if i.mode == "none":
+        if i.name.startswith('ae') and '.' not in i.name:
+            payload['aggregate-only']='yes'
+            payload['bond']={'mode':i.bond_mode,'miimon':i.bond_miimon_ms}
+            if i.link_state!='auto':payload['link-state']=i.link_state
+            return payload
+        # Unconfigured front ports are physically disabled, including callers
+        # that omit mode or try to combine None with an explicit link-up.
+        payload["link-state"] = "down"
+        return payload
 
     # Link settings (only on ethernet / aggregate-ethernet, not aggregate-group members)
     if i.mode != "aggregate-group":
@@ -11237,13 +11164,14 @@ async def interfaces_list(user: dict = Depends(get_current_user)):
 
     def shape(entry, kind):
         # Detect mode
-        mode = "layer3"
+        mode = "none" if kind in ("ethernet", "aggregate-ethernet") else "layer3"
         for m in ("layer3", "layer2", "virtual-wire", "tap", "ha", "decrypt-mirror"):
             if entry.find(m) is not None:
                 mode = m
                 break
         if entry.findtext("aggregate-group"):
             mode = "aggregate-group"
+        if kind=='aggregate-ethernet' and entry.findtext('aggregate-only')=='yes':mode='none'
 
         ips = []
         for ip in entry.findall("./layer3/ip/entry"):
@@ -11263,13 +11191,13 @@ async def interfaces_list(user: dict = Depends(get_current_user)):
             "dhcp_default_route": entry.findtext("./layer3/dhcp-client/create-default-route", "yes") == "yes",
             "link_speed": entry.findtext("link-speed", "auto"),
             "link_duplex": entry.findtext("link-duplex", "auto"),
-            "link_state": entry.findtext("link-state", "auto"),
+            "link_state": "down" if mode == "none" and kind!='aggregate-ethernet' else entry.findtext("link-state", "auto"),
             "aggregate_group": entry.findtext("aggregate-group", ""),
             "interface_management_profile": entry.findtext("./layer3/interface-management-profile", ""),
             "lldp_enabled": entry.findtext("./lldp/enable", "no") == "yes",
             "lldp_profile": entry.findtext("./lldp/profile", ""),
-            "bond_mode": entry.findtext("./layer3/bond/mode", "active-backup"),
-            "bond_miimon_ms": int(entry.findtext("./layer3/bond/miimon", "100") or 100),
+            "bond_mode": entry.findtext("bond/mode",entry.findtext("./layer3/bond/mode", "active-backup")),
+            "bond_miimon_ms": int(entry.findtext("bond/miimon",entry.findtext("./layer3/bond/miimon", "100")) or 100),
             "comment": entry.findtext("comment", ""),
             "sub_interfaces": subifs,
         }
@@ -11592,6 +11520,7 @@ async def interfaces_enriched(user: dict = Depends(get_current_user)):
 
     def _mode_and_type(entry: ET.Element):
         """Return (mode-key, pretty-type-label, aggregate-group or None)."""
+        if entry.findtext('aggregate-only')=='yes':return 'none','Aggregate Link',None
         if entry.findtext("aggregate-group"):
             return "aggregate-group", f"Aggregate ({entry.findtext('aggregate-group')})", entry.findtext("aggregate-group")
         if entry.find("layer3") is not None:
@@ -11604,7 +11533,7 @@ async def interfaces_enriched(user: dict = Depends(get_current_user)):
             return "tap", "TAP", None
         if entry.find("ha") is not None:
             return "ha", "HA", None
-        return "unconfigured", "", None
+        return "none", "None", None
 
     def _shape_row(entry: ET.Element, parent_name=None, tag=None, kind="ethernet"):
         if parent_name and tag:
@@ -11766,6 +11695,9 @@ def _ensure_imported_into_vsys(iface_name: str, vsys_name: str = "vsys1"):
 
 
 from ffn_config_subinterfaces import SubinterfaceEdit as SubInterfaceEntry, SubinterfaceStore
+from ffn_config_interfaces import install as _install_interface_editor_api
+_install_interface_editor_api(app, get_current_user, _audit, config_mgr, CANDIDATE_CONFIG,
+                              lambda: set((_faceplate_map_sync('data') or _load_aliases()).keys()))
 
 @app.get("/api/config/subinterfaces")
 async def subinterface_list(parent: str, vsys: str = "vsys1", source: str = "candidate", user: dict = Depends(get_current_user)):
@@ -11830,6 +11762,11 @@ async def aggregate_status(user: dict = Depends(get_current_user)):
       - Bonding mode, MII status, AD partner info when available
       - Per-slave LACP state and link status
     """
+    provider=getattr(app.state,'platform_aggregate_status',None)
+    if provider is not None:
+        try:return await asyncio.to_thread(provider)
+        except Exception as error:
+            raise HTTPException(503,'Platform aggregate observations unavailable; refresh to retry') from error
     # Read configured AEs + member assignments from candidate config
     cfg = config_mgr.get_xpath(f"{DEV}.network.interface", source="candidate")
     configured = []
@@ -12270,15 +12207,22 @@ _install_patch_api(app, get_current_user, _require_admin, _extension_audit, _upd
 
 from ffn_config_objects import install as _install_object_api
 _install_object_api(app, get_current_user, _require_admin, _extension_audit, config_mgr, CANDIDATE_CONFIG)
+from ffn_policy_api import install as _install_policy_api
+_install_policy_api(app, get_current_user, _require_admin, _extension_audit, config_mgr)
 
 from ffn_plane_api import install as _install_plane_api
 _install_plane_api(app, get_current_user, _require_admin, _extension_audit)
 
 
+if os.getenv('FFN_MANAGER_FRONTEND') == '1':
+    from ffn_management_ipc import WebGateway
+    app.add_middleware(WebGateway)
+
+
 if __name__ == "__main__":
     # Concurrency model: one uvicorn worker with asyncio event loop.
-    # The ConfigManager, commit lock, and runtime-state cache all live in
-    # process memory and must stay consistent, so we keep one worker.
+    # Commit serialization and the runtime-state cache still live in process
+    # memory; keep one writer. Edit leases are backed by shared SQLite storage.
     # FastAPI serves thousands of concurrent API requests from one loop;
     # any CPU-bound or blocking subprocess work is off-loaded to a thread
     # pool via asyncio.to_thread() inside the individual handlers.
@@ -12302,10 +12246,21 @@ if __name__ == "__main__":
         print("ffn-manager: bind resolver unavailable (%s); binding %s"
               % (_exc, _host))
 
+    # 443, so `python3 ffn_manager.py` reaches the same place the service does.
+    # FFN_MGMT_PORT is the single source of truth, set in the systemd drop-in
+    # next to the --port it passes uvicorn; ffn_updated.py's health check reads
+    # the same variable, and that check decides commit vs rollback.
+    try:
+        _port = int(os.environ.get("FFN_MGMT_PORT", "443"))
+        if not 1 <= _port <= 65535:
+            _port = 443
+    except ValueError:
+        _port = 443
+
     uvicorn.run(
         "ffn_manager:app",
         host=_host,
-        port=8443,
+        port=_port,
         reload=False,
         log_level="info",
         workers=workers,

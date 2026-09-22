@@ -15,6 +15,9 @@ const context = vm.createContext({console, window:{}, localStorage:{getItem(){re
   setInterval(){return 1;}, clearInterval(){},setTimeout(){},alert(){},confirm(){return true;},
   fetch:async()=>({ok:true,status:200,json:async()=>({})})});
 // Must evaluate the whole bundle: sliced function tests miss declaration-order failures.
+vm.runInContext(fs.readFileSync(__dirname+'/../static/config-objects.js','utf8'),context);
+vm.runInContext(fs.readFileSync(__dirname+'/../static/config-policies.js','utf8'),context);
+vm.runInContext(fs.readFileSync(__dirname+'/../static/policy-profiles.js','utf8'),context);
 vm.runInContext(script,context);
 const run = code => vm.runInContext(code,context);
 (async()=>{
@@ -29,6 +32,15 @@ const run = code => vm.runInContext(code,context);
   context.switchSetupTab('management');
   assert.equal(element('setup-hostname').value,'unsaved-name','Setup tab switches preserve edits');
   const menus=run('TAB_MENUS');
+  const renderPolicyWorkspace=context.renderPolicyWorkspace, visited=[];
+  context.renderPolicyWorkspace=(_container,kind)=>visited.push(kind);
+  for(const page of ['nat','policy-qos','pbf','decryption'])context.switchSubPage(page);
+  assert.deepEqual(visited,['nat','qos','pbf','decryption'],'Policy navigation must reach the editors instead of legacy unavailable pages');
+  context.renderPolicyWorkspace=renderPolicyWorkspace;
+  assert.deepEqual(Array.from(menus.policy,x=>x.label),['Security','NAT','QoS','Policy Based Forwarding','Decryption','Tunnel Inspection','Application Override','Authentication','DoS Protection','SD-WAN']);
+  assert.deepEqual(Array.from(menus.objects.slice(0,12),x=>x.label),[
+    'Addresses','Address Groups','Regions','Dynamic User Groups','Applications',
+    'Application Groups','Application Filters','Services','Service Groups','Tags','Devices','External Dynamic Lists']);
   const ids=Object.values(menus).flat().filter(x=>x.id).map(x=>x.id);
   assert.equal(new Set(ids).size,ids.length,'Every page must have one menu owner');
   assert.equal(ids.filter(x=>x==='device-updates').length,1);
@@ -82,6 +94,34 @@ const run = code => vm.runInContext(code,context);
   assert.equal(element('setup-msg').textContent,'Forbidden');
   run("consoleRole = 'readonly'");
   body=null;await context.saveSetup();assert.equal(body,null);
+  const usage = {source:'agent', state:'available', fresh:true, cores:[0,1],
+    cpu_percent:95, per_core:{'0':90,'1':100}, agents:[{name:'dp'}],
+    age_seconds:2, expires_in_seconds:30, sample_seconds:10};
+  let expire;
+  context.setTimeout = fn => {expire=fn;};
+  context._setPlaneWidget('dp', usage);
+  assert.equal(element('dash-dp-cpu').textContent,'95.0%');
+  assert.equal(element('dash-dp-bar').style.background,'var(--red)');
+  assert.match(element('dash-dp-per-core').textContent,/CPU 1: 100.0%/);
+  assert.match(element('dash-dp-source').textContent,/Agent: dp/);
+  const oldExpiry=expire;
+  context._setPlaneWidget('dp', {...usage,cpu_percent:0});
+  oldExpiry();
+  assert.equal(element('dash-dp-cpu').textContent,'0.0%','Old timers cannot expire a newer sample');
+  assert.equal(element('dash-dp-bar').style.background,'var(--accent)');
+  expire();
+  assert.equal(element('dash-dp-cpu').textContent,'--');
+  assert.match(element('dash-dp-source').textContent,/Stale/);
+  assert(!element('dash-dp-per-core').textContent.includes('100.0%'));
+  context._setPlaneWidget('dp',null);
+  assert.equal(element('dash-dp-bar').style.width,'0%');
+  run("currentSubPage='dash-overview'");
+  context.api=async path=>path.endsWith('plane-usage')?{data_plane:usage}:null;
+  await context.refreshDashboard();
+  assert.equal(element('dash-dp-cpu').textContent,'95.0%','Agent data must update without throughput');
+  context.api=async()=>null;
+  await context.refreshDashboard();
+  assert.equal(element('dash-dp-cpu').textContent,'--','Failed refresh must clear previous readings');
   const requested=[];
   context.api=async path=>{requested.push(path);return {ports:[]};};
   run("currentSubPage='dash-throughput'");
@@ -107,39 +147,22 @@ const run = code => vm.runInContext(code,context);
   assert.match(element('tasks-body').innerHTML,/unknown/);
   assert(!element('tasks-body').innerHTML.includes('Disabled'),'Failed refresh clears stale successes');
   context.loadCommitDiff=async()=>{};
+  const readyCommit=()=>run("commitReview={scope:null,revision:'r1',validated:true,can_commit:true,validation:{valid:true},diff:{has_changes:true}}; updateCommitButtons()");
+  element('commit-scope').value='';
   for (const overall of ['partial-failure','applied']) {
-    context.fetch=async()=>({ok:true,status:200,json:async()=>({status:'committed',type:'full',snapshot:'v8',apply_status:{overall}})});
+    readyCommit();
+    context.fetch=async()=>({ok:true,status:200,json:async()=>({status:'committed',type:'full',snapshot:'v8',apply_status:{overall},planes:{published:true}})});
     await context.doCommit();
     assert.equal(element('commit-msg').style.color,overall==='applied'?'var(--green)':'var(--orange)');
-    assert.equal(element('commit-msg').textContent.includes('Applied successfully'),overall==='applied');
+    assert.equal(element('commit-msg').textContent.includes('Local apply completed'),overall==='applied');
   }
   context.loadInterfacesFull=()=>{};
+  readyCommit();
   context.fetch=async()=>({ok:true,status:200,json:async()=>({status:'committed',type:'full',snapshot:'v8',apply_status:{overall:'applied',skipped:[{xpath:'zone-reconcile'}]}})});
   await context.doCommit();
   assert.match(element('commit-msg').textContent,/1 settings skipped/);
   assert.equal(element('commit-msg').style.color,'var(--orange)');
-  element('ifm-name').value='ethernet1/1'; element('ifm-mode').value='layer3';
-  element('ifm-vr').value='default'; element('ifm-vr').dataset.original='default';
-  const writes=[];
-  context.fetch=async(path)=>{writes.push(path);return {ok:true,status:200,json:async()=>({status:'created'})};};
-  await context.saveIface();
-  assert.deepEqual(writes,['/api/interfaces/ethernet1%2F1'],'Unchanged VR must not trigger a runtime write');
-  element('ifm-addressing').value='dhcp';element('ifm-ip').value='192.0.2.1/24';
-  let dhcpBody;
-  context.fetch=async(path,opts)=>{dhcpBody=JSON.parse(opts.body);return {ok:true,status:200,json:async()=>({status:'created'})};};
-  await context.saveIface();
-  assert.equal(dhcpBody.dhcp_client,true);assert.deepEqual(dhcpBody.ip_addresses,[]);
-  element('ifm-addressing').value='static';
-  element('ifm-vr').value='new-router';
-  context.fetch=async(path)=>path.endsWith('/virtual-router') ?
-    {ok:false,status:503,json:async()=>({detail:'MP unavailable'})} :
-    {ok:true,status:200,json:async()=>({status:'created'})};
-  await context.saveIface();
-  assert.match(element('ifm-msg').textContent,/Interface saved to candidate; virtual-router assignment failed: MP unavailable/);
-  assert.equal(element('ifm-vr').dataset.original,'default','Failed VR write must remain retryable');
-  element('ifm-ip').value='192.0.2.1/24';
-  context.switchIfaceEditorTab('advanced');context.switchIfaceEditorTab('config');
-  assert.equal(element('ifm-ip').value,'192.0.2.1/24');
+  // Parent interface form writes are exercised in test_interface_defaults_browser.cjs.
   element('zones-vsys-select').value='vsys1'; element('zones-source').value='candidate';
   context.fetch=async()=>({ok:true,status:200,json:async()=>({vsys:'vsys1',revision:'a'.repeat(64),can_edit:true,
     entries:[{name:'<img src=x>',zone_type:'layer3',interfaces:['ethernet1/1'],editable:true,comment:'test'}],
@@ -153,15 +176,7 @@ const run = code => vm.runInContext(code,context);
   await context.loadZones();
   assert.equal(element('zones-add').disabled,true);
   assert.match(element('zones-notice').textContent,/Unable to load zones/);
-  element('sif-save').disabled=false; element('sif-unit').value='1';element('sif-tag').value='200';
-  element('sif-vsys').value='vsys1';element('sif-ip').value='192.0.2.1/24';
-  let subWrite;
-  context.fetch=async(path,opts)=>{subWrite={path,...opts};return {ok:false,status:409,json:async()=>({detail:'Candidate changed'})};};
-  await context.saveSubinterface('ethernet1/1',{can_edit:true,revision:'b'.repeat(64),mode:'layer3'},{name:'ethernet1/1.1'});
-  assert.equal(subWrite.method,'PUT');
-  assert.equal(JSON.parse(subWrite.body).unit,1);assert.equal(JSON.parse(subWrite.body).tag,200);
-  assert.equal(element('sif-tag').value,'200');assert.equal(element('sif-save').disabled,false);
-  assert.match(element('sif-msg').textContent,/Candidate changed/);
+  // Subinterface form writes are exercised in test_subinterface_browser.cjs.
   context.fetch=async()=>({ok:true,status:200,json:async()=>({can_edit:true,rules:[{id:1,name:'<img src=x>',src_ip:'192.0.2.0/24',dst_ip:'0.0.0.0/0',src_iface:'ethernet1/1',dst_iface:'ethernet1/2',src_port:0,dst_port:443,proto:'tcp',action:'permit',vsys:3,enabled:1,position:1}]})});
   await context.loadPolicies();
   assert(!element('policy-table-body').innerHTML.includes('<img'));

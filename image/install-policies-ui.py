@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""Merge policy UI, daemon ownership, CLI commands and configd validation.
+
+No configuration writes or service restarts. Back up before replacing code.
+"""
+import argparse
+import ast
+from pathlib import Path
+import shutil
+import time
+
+
+def replace_once(source,old,new):
+    if new in source:return source
+    if source.count(old)!=1:raise ValueError('Unsupported source boundary: '+old[:90])
+    return source.replace(old,new)
+
+
+def method_range(source,klass,method):
+    cls=next(n for n in ast.parse(source).body if isinstance(n,ast.ClassDef) and n.name==klass)
+    node=next(n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name==method)
+    lines=source.splitlines(keepends=True)
+    return sum(map(len,lines[:node.lineno-1])),sum(map(len,lines[:node.end_lineno]))
+
+
+def merge_manager(live,source):
+    for method in ('prepare_commit','commit','diff','_collect_paths'):
+        x,y=method_range(source,'ConfigManager',method)
+        try:
+            a,b=method_range(live,'ConfigManager',method)
+        except StopIteration:
+            a,_=method_range(live,'ConfigManager','commit');b=a
+            live=live[:a]+source[x:y]+'\n\n'+live[b:]
+        else:
+            live=live[:a]+source[x:y]+live[b:]
+    for name in ('_sync_netresources_to_xml','_check_kind','config_diff'):
+        def span(text):
+            node=next(n for n in ast.parse(text).body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and n.name==name)
+            lines=text.splitlines(keepends=True)
+            return sum(map(len,lines[:node.lineno-1])),sum(map(len,lines[:node.end_lineno]))
+        a,b=span(live);x,y=span(source);live=live[:a]+source[x:y]+live[b:]
+    start='async def _prepare_commit_review('
+    a=live.index(start) if start in live else live.index('@app.post("/api/config/commit")')
+    b=live.index('@app.post("/api/config/revert")',a)
+    x=source.index(start);y=source.index('@app.post("/api/config/revert")',x)
+    live=live[:a]+source[x:y]+live[b:]
+    if '    expected_revision: Optional[str] = None  # revision returned by Preview / Validate' not in live:
+        live=replace_once(live,'class CommitRequest(BaseModel):','class CommitRequest(BaseModel):\n    expected_revision: Optional[str] = None  # revision returned by Preview / Validate')
+    marker='if __name__ == "__main__":'
+    hook='from ffn_policy_api import install as _install_policy_api\n_install_policy_api(app, get_current_user, _require_admin, _extension_audit, config_mgr)\n\n'
+    if '_install_policy_api' not in live:live=replace_once(live,marker,hook+marker)
+    compile(live,'ffn_manager.py','exec');return live
+
+
+def merge_control(live):
+    anchor='        self.handlers: Dict[str, Callable] = {}\n'
+    hook="        from ffn_policy_config import PolicyController\n        self.policy = PolicyController(os.getenv('FFN_CONFIG_DIR','/var/lib/ffn-ngfw/config'), commit)\n"
+    live=replace_once(live,anchor,anchor+hook)
+    anchor='        self.handlers.update({\n'
+    live=replace_once(live,anchor,anchor+'            "policy/request":           self.policy.request,\n')
+    compile(live,'ffn_controld.py','exec');return live
+
+
+def merge_configd(live):
+    anchor='        # 5. Compute diff vs last-applied (or against empty if forced).\n'
+    hook='        # FFN policy activation boundary (before any platform side effects)\n        from ffn_policy_config import configd_validate\n        if not configd_validate(RUNNING_CONFIG, status):\n            return status\n\n'
+    live=replace_once(live,anchor,hook+anchor)
+    anchor='        logger.info("Validation passed")\n'
+    hook="        from ffn_policy_config import require_supported, PolicyError\n        try:\n            require_supported(RUNNING_CONFIG.read_bytes())\n        except PolicyError as error:\n            logger.error('policy: %s', error)\n            sys.exit(5)\n"
+    live=replace_once(live,anchor,hook+anchor)
+    compile(live,'ffn_configd.py','exec');return live
+
+
+def merge_cli(live):
+    anchor='        cmd, args = tokens[0], tokens[1:]\n'
+    hook="""        # FFN shared policy API command hook
+        if tokens[:2] in (['show', 'policies'], ['request', 'policies']):
+            import importlib.util
+            spec = importlib.util.spec_from_file_location('ffn_policy_cli', '/opt/ffn-ngfw-v2/ffn_policy_cli.py')
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            if module.handle(tokens, api, self.token):
+                return True
+"""
+    live=replace_once(live,anchor,hook+anchor)
+    compile(live,'ffn-cli','exec');return live
+
+
+def merge_html(live,source):
+    for rule in source.splitlines():
+        if rule.startswith(('#modal-commit .diff-table', '#commit-validation{')) and rule not in live:
+            live=replace_once(live,'</style>',rule+'\n</style>')
+    for start,end in [('function renderNetworkQoS(c)', '/* ---- Network > LLDP'),
+                      ('async function refreshCommitIndicator()', 'function startCommitPolling()'),
+                      ('<div class="modal-overlay" id="modal-commit">','<!-- Commit history modal -->'),
+                      ('async function openCommitModal()', '// ========================================================================\n// Commit history')]:
+        if start=='async function openCommitModal()' and 'let commitReview = null,' in live:
+            start='let commitReview = null,'
+        a=live.index(start);b=live.index(end,a)
+        source_start='let commitReview = null,' if start in ('async function openCommitModal()', 'let commitReview = null,') else start
+        x=source.index(source_start);y=source.index(end,x)
+        live=live[:a]+source[x:y]+live[b:]
+    for start,end in [('  policy: [','  objects: ['),('    // Policy tab','    // Objects tab')]:
+        if any(s.count(start)!=1 or s.count(end)!=1 for s in (live,source)):raise ValueError('Policy navigation boundaries changed')
+        a=live.index(start);b=live.index(end,a);x=source.index(start);y=source.index(end,x)
+        live=live[:a]+source[x:y]+live[b:]
+    for name in ('config-policies.js','policy-profiles.js'):
+        asset='<script src="/static/'+name+'"></script>'
+        if asset not in live:live=replace_once(live,'</head>',asset+'\n</head>')
+    for old,new in [
+        ("  nat:'NAT policy editor', decryption:'Decryption policy', sdwan:'SD-WAN policy',\n  'policy-qos':'Per-application QoS policy', 'access-domain':'Access domains',", "  sdwan:'SD-WAN policy', 'access-domain':'Access domains',"),
+        ("function renderPolicyNAT(c) { renderUnavailable(c, 'Workflow unavailable'); }", "function renderPolicyNAT(c) { renderPolicyWorkspace(c, 'nat'); }"),
+        ("function renderPolicyDecryption(c) { renderUnavailable(c, 'Workflow unavailable'); }", "function renderPolicyDecryption(c) { renderPolicyWorkspace(c, 'decryption'); }"),
+        ("    {id:'security-profiles',label:'Security Profiles'},", "    {id:'security-profiles',label:'Security Profiles'},\n    {id:'decryption-profiles',label:'Decryption Profiles'},"),
+        ("    'security-profiles': renderObjectsSecurityProfiles,", "    'security-profiles': renderObjectsSecurityProfiles,\n    'decryption-profiles': c => renderPolicyProfiles(c, 'decryption'),"),
+        ("function renderNPQoSProfile(c){c.innerHTML=netPageHTML(_CTX_NP_QOS);netRenderList(_CTX_NP_QOS);}", "function renderNPQoSProfile(c){renderPolicyProfiles(c,'qos');}")]:
+        live=replace_once(live,old,new)
+    return live
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--manager',default='/opt/ffn-ngfw-v2');parser.add_argument('--daemons',default='/opt/ffn-ngfw')
+    parser.add_argument('--cli',default='/usr/local/bin/ffn-cli');args=parser.parse_args()
+    root=Path(__file__).resolve().parents[1];manager=Path(args.manager);daemon=Path(args.daemons);cli=Path(args.cli)
+    writes={manager/'ffn_manager.py':merge_manager((manager/'ffn_manager.py').read_text(),(root/'opt/ffn_manager.py').read_text()),
+            manager/'static/index.html':merge_html((manager/'static/index.html').read_text(),(root/'static/index.html').read_text()),
+            daemon/'ffn_controld.py':merge_control((daemon/'ffn_controld.py').read_text()),
+            daemon/'ffn_configd.py':merge_configd((daemon/'ffn_configd.py').read_text()),cli:merge_cli(cli.read_text())}
+    for name in ('ffn_policy_api.py','ffn_policy_config.py','ffn_policy_plan.py','ffn_policy_profiles.py','ffn_qos_config.py','ffn_nat_policy.py','ffn_policy_cli.py','ffn_config_objects.py'):
+        writes[manager/name]=(root/'opt'/name).read_text()
+    writes[daemon/'ffn_policy_config.py']=(root/'opt/ffn_policy_config.py').read_text()
+    for name in ('ffn_policy_plan.py','ffn_policy_profiles.py','ffn_qos_config.py','ffn_nat_policy.py'):
+        writes[daemon/name]=(root/'opt'/name).read_text()
+    for name in ('config-policies.js','policy-profiles.js','config-objects.css'):writes[manager/'static'/name]=(root/'static'/name).read_text()
+    backup=manager/('policies-backup-'+str(time.time_ns()));backup.mkdir()
+    for i,(path,text) in enumerate(writes.items()):
+        mode=path.stat().st_mode & 0o777 if path.exists() else 0o644
+        if path.exists():shutil.copy2(path,backup/(str(i)+'-'+path.name))
+        temp=path.with_name(path.name+'.policy-new');temp.write_text(text);temp.chmod(mode);temp.replace(path)
+    print('Installed; backup '+str(backup)+'. Restart controld, configd and manager after validating the running policy report. No reboot required.')
+
+
+if __name__=='__main__':main()

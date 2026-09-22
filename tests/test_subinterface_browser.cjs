@@ -1,0 +1,75 @@
+const {chromium}=require('playwright'), fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
+(async()=>{
+  const browser=await chromium.launch({headless:true,...(process.env.TEST_BROWSER?{executablePath:process.env.TEST_BROWSER}:{})});
+  try {
+    const page=await browser.newPage({viewport:{width:1100,height:800}});
+    const html=fs.readFileSync(path.join(__dirname,'../static/index.html'),'utf8');
+    const code=html.slice(html.indexOf('/* VLAN subinterfaces are edited'),html.indexOf('async function deleteSubif('));
+    await page.setContent('<div id="iface-notice"></div><div id="modal-info"><h3 id="info-modal-title"></h3><div id="info-modal-body"></div></div>');
+    await page.evaluate(code=>{
+      window._escSP=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      window._ifaceState={enriched:{ethernet:[{name:'ae1',virtual_system:'vsys2'}]}};
+      window.closeModal=id=>{document.getElementById(id).classList.remove('show');document.getElementById('info-modal-body').innerHTML='';};
+      window.refreshCommitIndicator=()=>{};window.loadInterfacesFull=()=>{};
+      window.calls=[];window.error='';window.snapshot={parent:'ae1',mode:'layer3',vsys:'vsys2',revision:'a'.repeat(64),can_edit:true,entries:[],zone_choices:['trust','<img src=x onerror=alert(1)>'],virtual_router_choices:['default'],management_profile_choices:['ping'],runtime_note:'Commit required.'};
+      window.consoleRequest=async(url,opts)=>{
+        if(!opts){window.lastUrl=url;return structuredClone(snapshot);}
+        calls.push({url,method:opts.method,body:JSON.parse(opts.body)});
+        if(error)throw Error(error);
+        return {status:opts.method==='POST'?'created':'updated',name:'ae1.10'};
+      };
+      window.eval(code);
+    },code);
+    await page.evaluate(()=>openSubinterfaceModal('ae1'));
+    assert.match(await page.evaluate(()=>lastUrl),/vsys=vsys2/);
+    assert.equal(await page.getByRole('tab').count(),4);assert.equal(await page.locator('img').count(),0);
+    await page.locator('#sif-unit').fill('10');await page.locator('#sif-tag').fill('100');
+    await page.locator('#sif-zone').selectOption('trust');await page.locator('#sif-network').selectOption('default');
+    await page.getByRole('tab',{name:'IPv4',exact:true}).click();
+    await page.getByRole('button',{name:'Add IPv4 Address',exact:true}).click();
+    await page.getByLabel('IPv4 address with prefix',{exact:true}).fill('192.0.2.1/24');
+    await page.getByRole('tab',{name:'IPv6',exact:true}).click();
+    await page.getByRole('button',{name:'Add IPv6 Address',exact:true}).click();
+    await page.getByLabel('IPv6 address with prefix',{exact:true}).fill('2001:db8::1/64');
+    await page.getByRole('tab',{name:'Advanced',exact:true}).click();
+    await page.locator('#sif-mtu').fill('1500');await page.locator('#sif-mgmt').selectOption('ping');
+    await page.getByRole('button',{name:'OK',exact:true}).click();
+    const saved=(await page.evaluate(()=>calls))[0];
+    assert.equal(saved.method,'POST');assert.deepEqual(saved.body,{parent:'ae1',revision:'a'.repeat(64),unit:10,tag:100,mode:'layer3',vsys:'vsys2',zone:'trust',virtual_router:'default',ip_addresses:['192.0.2.1/24','2001:db8::1/64'],mtu:1500,interface_management_profile:'ping',comment:''});
+    assert.match(await page.locator('#iface-notice').innerText(),/Commit required/);
+    assert.equal(await page.locator('#subinterface-form').count(),0);
+    await page.evaluate(()=>{snapshot.entries=[{...calls[0].body,name:'ae1.10',editable:true}];error='Candidate changed. Refresh and review before retrying.';});
+    await page.evaluate(()=>openSubinterfaceModal('ae1','ae1.10'));
+    assert.equal(await page.locator('#sif-unit').getAttribute('readonly'),'');
+    await page.locator('#sif-comment').fill('Retain my edit');
+    await page.getByRole('tab',{name:'IPv4',exact:true}).click();
+    await page.getByRole('button',{name:'Remove IPv4 address',exact:true}).click();
+    await page.getByRole('button',{name:'OK',exact:true}).click();
+    assert.match(await page.locator('#sif-msg').innerText(),/Candidate changed/);
+    assert.equal(await page.locator('#sif-comment').inputValue(),'Retain my edit');
+    assert.equal(await page.locator('#sif-save').isDisabled(),false);
+    assert.deepEqual((await page.evaluate(()=>calls))[1].body.ip_addresses,['2001:db8::1/64']);
+    assert.equal((await page.evaluate(()=>calls))[1].method,'PUT');
+    await page.getByRole('button',{name:'Cancel',exact:true}).click();
+    assert.equal((await page.evaluate(()=>calls)).length,2);
+    // Empty rows and incorrect family are rejected on their tab, even when hidden.
+    await page.evaluate(()=>{error='';});await page.evaluate(()=>openSubinterfaceModal('ae1','ae1.10'));
+    await page.getByRole('tab',{name:'IPv6',exact:true}).click();
+    await page.getByLabel('IPv6 address with prefix',{exact:true}).fill('192.0.2.3/24');
+    await page.getByRole('tab',{name:'Configuration',exact:true}).click();
+    await page.getByRole('button',{name:'OK',exact:true}).click();
+    assert.equal(await page.locator('#sif-tab-ipv6').getAttribute('aria-selected'),'true');
+    assert.equal((await page.evaluate(()=>calls)).length,2);
+    await page.evaluate(()=>{snapshot.mode='layer2';snapshot.entries=[];snapshot.zone_choices=['switch'];snapshot.vlan_choices=['users'];});
+    await page.evaluate(()=>openSubinterfaceModal('ae1'));
+    assert.equal(await page.getByRole('tab').count(),1);assert.equal(await page.locator('#sif-mtu').count(),0);
+    await page.locator('#sif-unit').fill('20');await page.locator('#sif-tag').fill('200');await page.locator('#sif-network').selectOption('users');
+    await page.getByRole('button',{name:'OK',exact:true}).click();
+    const l2=(await page.evaluate(()=>calls))[2].body;assert.equal(l2.vlan,'users');assert(!('virtual_router' in l2));assert.deepEqual(l2.ip_addresses,[]);
+    await page.evaluate(()=>{snapshot.mode='layer3';snapshot.can_edit=false;});await page.evaluate(()=>openSubinterfaceModal('ae1'));
+    await page.getByRole('tab',{name:'Advanced',exact:true}).click();
+    assert.equal(await page.locator('#sif-tab-advanced').getAttribute('aria-selected'),'true');
+    assert.equal(await page.locator('#sif-mgmt').isDisabled(),true);assert.equal(await page.locator('#sif-save').isDisabled(),true);
+    console.log('Subinterface tabs, candidate staging, address rows, stale-save retention, Cancel, read-only and L2 browser checks passed.');
+  } finally {await browser.close();}
+})().catch(e=>{console.error(e);process.exitCode=1;});

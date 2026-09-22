@@ -20,9 +20,18 @@ install -d -m 0700 /etc/ffn/planes
 # ffn_planed, and a tool needed when the manager is unhappy must not live only
 # beside the manager.
 install -m 0644 "$root/opt/ffn_planed.py" "$root/opt/ffn_linux_network.py" \
-                "$root/opt/ffn_plane_network.py" /usr/local/lib/ffn/
+                "$root/opt/ffn_plane_network.py" \
+                "$root/opt/ffn_agent_protocol.py" "$root/opt/ffn_agent_resources.py" \
+                "$root/opt/ffn_dp_tools.py" "$root/opt/ffn_kernel_capabilities.py" "$root/opt/ffn_nat_runtime.py" \
+                "$root/opt/ffn_nat_policy.py" "$root/opt/ffn_interface_management.py" /usr/local/lib/ffn/
+install -m 0644 "$root/opt/ffn_security_runtime.py" "$root/opt/ffn_security_nft.py" \
+                "$root/opt/ffn_session_events.py" "$root/opt/ffn_session_feed.py" "$root/opt/ffn_policy_config.py" \
+                "$root/opt/ffn_policy_plan.py" "$root/opt/ffn_policy_profiles.py" \
+                "$root/opt/ffn_qos_config.py" "$root/opt/ffn_security_control.py" \
+                "$root/opt/ffn_nat_control.py" /usr/local/lib/ffn/
 install -m 0600 "$config" "/etc/ffn/planes/$role.json"
 install -m 0644 "$root/systemd/ffn-plane@.service" /etc/systemd/system/
+install -m 0644 "$root/systemd/ffn-security-runtime.service" /etc/systemd/system/
 systemctl daemon-reload
 echo "Installed $role. Verify transports and backend prerequisites, then start ffn-plane@$role."
 echo "Describe a running node with: python3 /usr/local/lib/ffn/ffn_plane_network.py \\"
