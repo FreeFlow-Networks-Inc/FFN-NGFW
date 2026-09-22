@@ -420,10 +420,34 @@ else
 	P3=$(pname "${OS_DISKS[0]}" $OS_P_NFS)
 fi
 
-mkfs.ext4 -q -F -L ffn-root     "$P1"
-mkfs.ext4 -q -F -L ffn-recovery "$P2"
-mkfs.ext4 -q -F -L "$NFS_LABEL"  "$P3"
-[ -n "${OS_LOG_DEV:-}" ] && mkfs.ext4 -q -F -L "$LOG_LABEL" "$OS_LOG_DEV"
+# The filesystems this creates are read by the PAYLOAD's userspace, not by this
+# host's. e2fsprogs 1.47 turns on orphan_file and metadata_csum_seed by default;
+# jammy's e2fsck 1.46 refuses a filesystem carrying them --
+#     /dev/md0 has unsupported feature(s): FEATURE_C12
+#     e2fsck: Get a newer version of e2fsck!
+# -- and the boot stops at "The root filesystem requires a manual fsck". The
+# kernel mounts it perfectly well; it is the checker that is too old, which is
+# why this surfaces at first boot rather than at install time.
+#
+# Same class of bug as the image build's, where the consumer was the image's own
+# GRUB instead. Probed rather than written flat: `-O ^orphan_file` is itself an
+# error on an e2fsprogs that predates the feature.
+EXT4_OFF=""
+_probe=$(mktemp); truncate -s 16M "$_probe"
+for _f in orphan_file metadata_csum_seed; do
+	if mkfs.ext4 -q -F -O "^$_f" "$_probe" >/dev/null 2>&1; then
+		EXT4_OFF="${EXT4_OFF:+$EXT4_OFF,}^$_f"
+	fi
+done
+rm -f "$_probe"
+if [ -n "$EXT4_OFF" ]; then
+	echo "-- ext4: disabling $EXT4_OFF (unreadable by the payload's e2fsck) --"
+	EXT4_OFF="-O $EXT4_OFF"
+fi
+mkfs.ext4 -q -F $EXT4_OFF -L ffn-root     "$P1"
+mkfs.ext4 -q -F $EXT4_OFF -L ffn-recovery "$P2"
+mkfs.ext4 -q -F $EXT4_OFF -L "$NFS_LABEL"  "$P3"
+[ -n "${OS_LOG_DEV:-}" ] && mkfs.ext4 -q -F $EXT4_OFF -L "$LOG_LABEL" "$OS_LOG_DEV"
 
 # ---------------------------------------------------------- log volume -------
 LOG_DEV=""
@@ -454,7 +478,7 @@ if [ "${#LOG_DISKS[@]}" -ge 1 ]; then
 		      --homehost=ffn --name="$LOG_LABEL" "${members[@]}"
 		LOG_DEV="$LOG_MD"
 	fi
-	mkfs.ext4 -q -F -L "$LOG_LABEL" "$LOG_DEV"
+	mkfs.ext4 -q -F $EXT4_OFF -L "$LOG_LABEL" "$LOG_DEV"
 fi
 
 # ------------------------------------------------------------- extract -------
