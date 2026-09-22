@@ -4,7 +4,18 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>FFN NGFW Management Console</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<!-- FreeFlow Networks' mark, one asset for every use: browser tab, iOS
+     home-screen bookmark, the sign-in card and the top bar. Served from this
+     appliance and never from a CDN, so the console still brands itself on a
+     management network with no route off the box. -->
+<link rel="icon" type="image/png" href="/static/ffn-icon.png">
+<link rel="apple-touch-icon" href="/static/ffn-icon.png">
+<!-- Served from the appliance, never a CDN: this is executable code running
+     inside a firewall's management session, and a box on an isolated management
+     network cannot reach the internet to fetch it -- which used to leave every
+     chart in the console blank. static/vendor/README.md records the version,
+     its source and the hashes to re-verify it with. -->
+<script src="/static/vendor/chart.umd.js"></script>
 <script src="/static/plane-control.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -23,7 +34,7 @@ input,select,textarea{font-family:inherit;font-size:13px}
 /* ---- Top navigation bar ---- */
 .topnav{display:flex;align-items:center;background:var(--surface);border-bottom:1px solid var(--border);padding:0 16px;height:var(--topnav-h);position:fixed;top:0;left:0;right:0;z-index:100}
 .topnav .brand{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:700;color:var(--text);margin-right:24px;white-space:nowrap}
-.topnav .brand svg{width:28px;height:28px}
+.topnav .brand img{width:28px;height:28px;display:block;flex:none}
 .topnav .main-tabs{display:flex;gap:0;flex:1}
 .topnav .main-tabs button{background:none;border:none;color:var(--text-dim);padding:0 18px;height:var(--topnav-h);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;border-bottom:2px solid transparent;transition:all .15s}
 .topnav .main-tabs button:hover{color:var(--text);background:rgba(255,255,255,.03)}
@@ -195,6 +206,7 @@ tbody tr.dragging{opacity:.4}
 /* ---- Login screen ---- */
 .login-screen{display:flex;align-items:center;justify-content:center;min-height:100vh;background:var(--bg)}
 .login-box{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:36px;width:360px;text-align:center}
+.login-box .mark{display:block;width:64px;height:64px;margin:0 auto 12px}
 .login-box h2{font-size:22px;margin-bottom:6px}
 .login-box .sub{color:var(--text-dim);font-size:12px;margin-bottom:20px}
 .login-box .form-group{text-align:left}
@@ -266,11 +278,7 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
 <!-- ============================================================ -->
 <div id="login-screen" class="login-screen">
   <div class="login-box">
-    <svg width="44" height="44" viewBox="0 0 48 48" style="margin-bottom:10px">
-      <rect x="4" y="4" width="40" height="40" rx="8" fill="#2f81f7" opacity=".15"/>
-      <path d="M14 16h20v4H14zM14 24h16v4H14zM14 32h12v4H14z" fill="#2f81f7"/>
-      <circle cx="38" cy="34" r="4" fill="#3fb950"/>
-    </svg>
+    <img class="mark" src="/static/ffn-icon.png" width="64" height="64" alt="">
     <h2>FFN NGFW</h2>
     <div class="sub">Next-Generation Firewall Management Console</div>
     <div class="form-group">
@@ -294,7 +302,9 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
 <!-- Top Navigation -->
 <nav class="topnav">
   <div class="brand">
-    <svg viewBox="0 0 48 48"><rect x="4" y="4" width="40" height="40" rx="8" fill="#2f81f7" opacity=".15"/><path d="M14 16h20v4H14zM14 24h16v4H14zM14 32h12v4H14z" fill="#2f81f7"/><circle cx="38" cy="34" r="4" fill="#3fb950"/></svg>
+    <!-- alt="" on purpose: the product name sits next to it, and a screen
+         reader announcing it twice is worse than not announcing the mark. -->
+    <img src="/static/ffn-icon.png" width="28" height="28" alt="">
     FFN NGFW
   </div>
   <div class="main-tabs" id="main-tabs">

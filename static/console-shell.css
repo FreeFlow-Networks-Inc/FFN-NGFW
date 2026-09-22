@@ -35,7 +35,7 @@ body {font-family:Arial,Helvetica,sans-serif;font-size:12px}
 #ifm-panel-config,#ifm-panel-advanced {min-height:260px}
 .topnav {height:82px;padding:0;display:grid;grid-template-columns:auto 1fr;grid-template-rows:44px 38px;gap:0;background:#34383c;color:#fff;border:0;align-content:stretch}
 .topnav .brand {grid-row:1;grid-column:1;margin:0;padding:0 18px;font-size:17px;color:#fff;letter-spacing:.2px}
-.topnav .brand svg {width:26px;height:26px}
+.topnav .brand img {width:26px;height:26px}
 .topnav .user-area {grid-row:1;grid-column:2;margin:0;justify-content:flex-end;padding:0 14px;color:#eee;gap:12px;min-width:0}
 .topnav .user-area .btn {background:transparent;color:#fff;border-color:#71777c;border-radius:2px;font-size:11px}
 .topnav .user-area .btn-primary {background:#176da0;border-color:#6db0d5}
@@ -115,7 +115,7 @@ tbody tr:hover {background:#e6f1f9}
 }
 @media(max-width:580px) {
   :root {--sidebar-w:140px}
-  .topnav .brand svg,.topnav #commit-indicator {display:none!important}
+  .topnav .brand img,.topnav #commit-indicator {display:none!important}
   .topnav .main-tabs button {padding:0 12px}
   .content {padding:10px 8px}
   .page-header {margin-left:-8px;margin-right:-8px}

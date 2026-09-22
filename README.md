@@ -205,7 +205,10 @@ platform provides, and how to add one.
     dataplanes/        portable dataplanes: policy engine, flow cache,
                        AF_PACKET backend, optional co-processor backends
     dpdk/              DPDK fast path and its multi-process plumbing
-    static/            management console
+    static/            management console, and ffn-icon.png -- the FreeFlow
+                       Networks mark, served from the appliance rather than a
+                       CDN so the console still brands itself on a management
+                       network with no route off the box
     examples/          worked configuration examples
     tools/             host diagnostics
     image/             appliance image build and the bare-metal installer
@@ -305,3 +308,10 @@ elects the GPL branch.
 Third-party obligations are in [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES). Note
 that `opt/ffn_license.py` is FFN's entitlement module and has nothing to do with
 copyright licensing.
+
+`static/ffn-icon.png` is FreeFlow Networks' own mark, taken from the
+organisation's GitHub avatar and reworked for the console: the encoder's black
+edge band trimmed, the light card behind it removed so it sits on the dark top
+bar and the white sign-in card alike, and scaled to 192px. A trademark is not
+code; the GPL covers the source, not the right to use this mark as a badge of
+origin for something that is not FFN's.
