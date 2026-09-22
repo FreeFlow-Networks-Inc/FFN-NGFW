@@ -1,0 +1,13 @@
+[Unit]
+Description=FFN NGFW post-boot self-test (verifies management plane came up)
+After=ffn-manager-v2.service network-online.target
+Wants=ffn-manager-v2.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ffn-selftest.sh
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

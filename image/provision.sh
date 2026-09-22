@@ -192,7 +192,10 @@ if [ -f /factory-running-config.xml ]; then
   echo "  factory config: model-specific (harvested build-host config discarded)"
 elif [ -f /var/lib/ffn-ngfw/config/running-config.xml ]; then
   cp /var/lib/ffn-ngfw/config/running-config.xml /etc/ffn-ngfw/factory/running-config.xml
-  echo "  WARNING: no profiles/${FFN_MODEL}.running-config.xml -- this image"
+  # :-unknown matters: this branch runs when no model profile was supplied, so
+  # FFN_MODEL is exactly the variable that is unset here. Under `set -u` the
+  # bare form aborted the build at the moment it was trying to warn.
+  echo "  WARNING: no profiles/${FFN_MODEL:-unknown}.running-config.xml -- this image"
   echo "           inherits the BUILD HOST identity as its factory default"
 fi
 
@@ -265,7 +268,11 @@ done
 log "GRUB defaults + serial console (for headless/qemu) + initramfs"
 cat > /etc/default/grub <<EOF
 GRUB_DEFAULT=0
-GRUB_TIMEOUT=3
+# 10s, not 3. The menu is read over a 9600 serial console on the appliances this
+# targets, where an 80x25 repaint is ~2000 characters -- about 2.1 s on the wire
+# before the countdown is even legible. A 3 s timeout left roughly one usable
+# second to interrupt the boot. PAN-OS used 5 s AND --silent on the same port.
+GRUB_TIMEOUT=10
 GRUB_DISTRIBUTOR="FFN NGFW"
 GRUB_CMDLINE_LINUX_DEFAULT="${GRUB_CMDLINE_DEFAULT} console=tty0 console=ttyS0,${FFN_SERIAL_BAUD:-115200}n8"
 GRUB_CMDLINE_LINUX=""
