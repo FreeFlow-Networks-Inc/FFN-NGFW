@@ -59,8 +59,9 @@ redistribution.
 2. Chart.js -- MIT
 -------------------------------------------------------------------------------
 
-The management console uses Chart.js. The MIT notice is reproduced here
-because the console ships it to the browser.
+The management console uses Chart.js 4.4.1, vendored unmodified at
+`static/vendor/chart.umd.js` with its licence beside it. The MIT notice is
+reproduced here because the console ships it to the browser.
 
     Copyright (c) Chart.js Contributors
 
@@ -82,11 +83,16 @@ because the console ships it to the browser.
     FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
     DEALINGS IN THE SOFTWARE.
 
-RECOMMENDED FOLLOW-UP, not yet done: `static/index.html` currently loads it
-from a public CDN with no subresource integrity. That means an unauthenticated
-remote script running inside a firewall's management interface, and a console
-that breaks entirely on an air-gapped appliance. Self-hosting it under
-`static/vendor/` fixes both; this notice is already written for that.
+DONE, and this is what it was about. `static/index.html` used to load Chart.js
+from a public CDN with no subresource integrity: an unauthenticated remote
+script running inside a firewall's management interface, and a console whose
+every chart was blank on an air-gapped appliance. It is now served from the
+appliance itself.
+
+What is committed is the publisher's own build from the npm package, not the
+CDN's re-minified copy of it, and the package was checked against the integrity
+hash the registry publishes before anything was extracted.
+`static/vendor/README.md` records the hashes and the commands to re-verify them.
 
 
 -------------------------------------------------------------------------------
