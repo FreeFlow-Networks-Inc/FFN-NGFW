@@ -365,10 +365,23 @@ fi
 # These pieces let them plug a stick in and have FFN pick it up. The firmware
 # itself is NEVER packaged -- only the mechanism is.
 if [ -f /payload/99-ffn-vendor.rules ]; then
+  # All three or none. build.sh stages these with [ -f ] && cp, so a file missing
+  # from the build tree is skipped SILENTLY there and then dies here under set -e
+  # as an opaque "install: cannot stat". Name the missing piece instead.
+  for _v in 99-ffn-vendor.rules ffn-vendor-autoimport@.service vendor.conf; do
+    [ -f "/payload/$_v" ] || { echo "ABORT: vendor autodetect incomplete -- /payload/$_v missing"; exit 1; }
+  done
   install -m644 /payload/99-ffn-vendor.rules /etc/udev/rules.d/99-ffn-vendor.rules
   install -m644 /payload/ffn-vendor-autoimport@.service /etc/systemd/system/
   [ -f /etc/ffn-ngfw/vendor.conf ] || install -m644 /payload/vendor.conf /etc/ffn-ngfw/vendor.conf
-  echo "  vendor firmware autodetect installed (udev + template unit)"
+  # The unit's ExecStart is /opt/ffn-ngfw-v2/ffn-vendor-autoimport.sh. Without it
+  # the udev rule fires a unit that fails at runtime, on media insertion, long
+  # after anyone is watching -- so check it here, where the failure is visible.
+  if [ ! -x /opt/ffn-ngfw-v2/ffn-vendor-autoimport.sh ]; then
+    echo "ABORT: /opt/ffn-ngfw-v2/ffn-vendor-autoimport.sh missing or not executable"
+    exit 1
+  fi
+  echo "  vendor firmware autodetect installed (udev + template unit + importer)"
 fi
 # Belt and braces: an image must never carry vendor firmware.
 rm -rf /var/lib/ffn-ngfw/vendor

@@ -1,0 +1,14 @@
+[Unit]
+Description=FFN vendor firmware auto-import from %I
+After=ffn-manager-v2.service
+# Media can be pulled at any moment; never block boot or shutdown on it.
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/opt/ffn-ngfw-v2/ffn-vendor-autoimport.sh %I
+TimeoutStartSec=300
+# The stick is untrusted input: give the job no more of the system than it needs.
+PrivateTmp=yes
+ProtectHome=yes
+NoNewPrivileges=yes
