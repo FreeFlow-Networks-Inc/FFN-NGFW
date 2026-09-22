@@ -66,7 +66,19 @@ export PKGS_BOOT="${FFN_KERNEL_META} initramfs-tools grub-pc-bin grub-efi-amd64-
 # NOTE: the dev box uses isolcpus=12-47 hugepages=2048 for a 48-thread Xeon. That is
 # hardware-specific and would break a smaller CPU, so the image ships a conservative
 # default and ffn-hwtune.sh recomputes it on first boot from the actual core count.
-export GRUB_CMDLINE_DEFAULT="intel_iommu=on iommu=pt default_hugepagesz=2M hugepagesz=2M hugepages=512 transparent_hugepage=never"
+# rootfstype and init are not tuning -- without them this image does not boot on
+# the appliance, proven at a 9600 console on a PA-5220:
+#
+#   * /sbin/init is an ABSOLUTE symlink to /lib/systemd/systemd. The initramfs
+#     resolves it against ITSELF, where systemd does not exist, so run-init is
+#     called with an empty argument and the boot ends in "No init found. Try
+#     passing init= bootarg." Naming the real path settles it.
+#   * blkid reports an md mirror member as linux_raid_member and the initramfs
+#     then tries `mount -t linux_raid_member`, which fails ENODEV. rootfstype
+#     tells it what the filesystem actually is.
+#
+# Neither is RAID-specific in principle; the first bites every boot.
+export GRUB_CMDLINE_DEFAULT="rootfstype=ext4 init=/usr/lib/systemd/systemd intel_iommu=on iommu=pt default_hugepagesz=2M hugepagesz=2M hugepages=512 transparent_hugepage=never"
 
 # --- admin gateway (mirrors what we wired on the live box) ---
 export FFN_CLI="/usr/local/bin/ffn-cli"
