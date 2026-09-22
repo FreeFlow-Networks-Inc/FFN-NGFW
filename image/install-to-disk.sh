@@ -628,11 +628,22 @@ if [ "$OS_RAID" = 1 ]; then
 	# path-based check reports a perfectly healthy mirror as a failure.
 	VERIFY_UUIDS=$(mdadm --detail --scan 2>/dev/null | sed -n 's/.*UUID=\([^ ]*\).*/\1/p' | sort -u)
 	[ -n "$VERIFY_UUIDS" ] || die "no arrays to verify, yet OS_RAID=1"
+	# Assemble against the ARRAY lines we just recorded, NOT whatever
+	# /etc/mdadm/mdadm.conf this environment happens to have. Two reasons:
+	# the arrays are named ffn:<name>, so a host whose hostname is not "ffn"
+	# treats them as foreign and --scan skips them; and when this installer is
+	# run inside the payload root (the way to make mdadm/mkfs/grub match the
+	# image), the conf in scope is the payload's, which has no ARRAY lines at
+	# all. Either way the check reported FAIL on four perfectly good arrays.
+	# Explicit UUID lines make homehost irrelevant.
+	VERIFY_CONF=$(mktemp)
+	mdadm --detail --scan > "$VERIFY_CONF" 2>/dev/null || true
 	for m in /dev/md*; do
 		[ -b "$m" ] && { mdadm --stop "$m" >/dev/null 2>&1 || true; }
 	done
 	# --run so a legitimately degraded array still counts as assembled.
-	mdadm --assemble --scan --run >/dev/null 2>&1 || true
+	mdadm --assemble --scan --run --config="$VERIFY_CONF" >/dev/null 2>&1 || true
+	rm -f "$VERIFY_CONF"
 	sleep 2
 	BACK=$(mdadm --detail --scan 2>/dev/null | sed -n 's/.*UUID=\([^ ]*\).*/\1/p' | sort -u)
 	VERIFY_FAIL=0
