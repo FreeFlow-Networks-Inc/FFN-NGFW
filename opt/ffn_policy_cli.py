@@ -165,6 +165,14 @@ def friendly_rule(tokens,api,token):
             else:raise ValueError('Unknown rule field: '+key)
         s=rule['settings']
         if kind=='nat':
+            # An explicit mode switch removes stale fields from the prior mode.
+            # Values explicitly provided by the caller still undergo validation.
+            if 'nat-type' in fields:
+                from ffn_ipv6_translation import FIELDS,LEGACY_FIELDS
+                keep=({'nat64-prefix','nat64-pool'} if s['nat-type']=='nat64' else
+                      {'nptv6-internal-prefix','nptv6-external-prefix'} if s['nat-type']=='nptv6' else LEGACY_FIELDS)
+                for key in (FIELDS|LEGACY_FIELDS)-keep-set(fields):
+                    s[key]=[] if schema[key]['mode']=='list' else 'none' if key in ('source-type','destination-type') else ''
             if s['source-type']=='none':s.update({'translated-source':[],'source-interface':''})
             elif 'source-interface' in fields and fields['source-interface']:s['translated-source']=[]
             elif 'translated-source' in fields or s['source-type'] not in ('dynamic-ip-and-port','persistent-dynamic-ip-and-port'):s['source-interface']=''

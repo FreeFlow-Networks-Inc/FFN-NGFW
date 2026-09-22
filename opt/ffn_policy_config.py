@@ -68,7 +68,11 @@ SCHEMAS={
      select('log-end','Log at Session End',['yes','no'],tab='Logging'),
      field('log-setting','Log Forwarding Profile','Logging',mode='text',ref='log-settings/profiles')]),
  'nat':dict(label='NAT',fields=MATCH+[SERVICE,
-     select('nat-type','NAT Type',['ipv4'],tab='General'),
+     select('nat-type','NAT Type',['ipv4','nat64','nptv6'],tab='General'),
+     field('nat64-prefix','IPv6 Translation Prefix','Translated Packet','text',ref='address',path='nat64/prefix'),
+     field('nat64-pool','IPv4 Source Pool','Translated Packet',default=[],ref='address',path='nat64/source-pool'),
+     field('nptv6-internal-prefix','Internal IPv6 Prefix','Translated Packet','text',ref='address',path='nptv6/internal-prefix'),
+     field('nptv6-external-prefix','External IPv6 Prefix','Translated Packet','text',ref='address',path='nptv6/external-prefix'),
      field('to-interface','Destination Interface','Original Packet','text','any',ref='layer3-interface'),
      field('source-type','Translation Type','Translated Packet','branch','none',
            ['none','static-ip','dynamic-ip','dynamic-ip-and-port','persistent-dynamic-ip-and-port'],path='source-translation'),
@@ -287,6 +291,10 @@ def validate(kind,spec,root,scope):
         if s['icmp-unreachable']=='yes' and s['action']=='allow':raise PolicyError('ICMP Unreachable requires a blocking action')
         if s['rule-type']=='intrazone' and s['to']!=['any']:raise PolicyError('Intrazone rules use the source zone as destination; set Destination Zone to any')
     if kind=='nat':
+        from ffn_ipv6_translation import validate_settings
+        from ffn_nat_policy import Resolver
+        try:validate_settings(s,lambda values,family:Resolver(root,owners(root)[scope],family).addresses(values))
+        except ValueError as error:raise PolicyError(str(error)) from error
         mode=s['source-type'];addresses=s['translated-source'];iface=s['source-interface']
         if mode=='none' and (addresses or iface):raise PolicyError('Source translation must be selected')
         if mode!='none' and bool(addresses)==bool(iface):raise PolicyError('Select translated source addresses or an interface address')

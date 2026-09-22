@@ -1963,7 +1963,7 @@ ENGINE_BACKENDS = {
     "ipsec_decrypt":   {"backend": "kernel", "module": "xfrm(+crypto-assist)",  "offload": True,  "role": "IPsec ESP dec"},
     "ipsec_encrypt":   {"backend": "kernel", "module": "xfrm(+crypto-assist)",  "offload": True,  "role": "IPsec ESP enc"},
     "nat44":           {"backend": "kernel", "module": "conntrack/nftables",    "offload": True,  "role": "NAT44"},
-    "nat64":           {"backend": "kernel", "module": "conntrack/nftables",    "offload": True,  "role": "NAT64"},
+    "nat64":           {"backend": "uncommissioned", "module": "stateful IPv6/IPv4 translator required", "offload": False, "role": "NAT64"},
     "tcam_lookup":     {"backend": "dpdk",   "module": "ffn_fastpath_fwd",      "offload": True,  "role": "policy classify (rte_acl)"},
     "fib_lookup":      {"backend": "kernel", "module": "vrf/fib",               "offload": True,  "role": "routing (per-VRF, Axis 3)"},
     "dpi_l7":          {"backend": "python", "module": "inline_payload_det",    "offload": True,  "role": "L7 content sigs (IPS)"},

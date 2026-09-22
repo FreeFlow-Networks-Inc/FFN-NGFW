@@ -81,7 +81,7 @@ tar xzf /payload/etc-ffn-ngfw.tgz -C /etc
 # running on the image harvesting host. No platform channels are auto-enabled.
 for dir in /opt/ffn-ngfw /opt/ffn-ngfw-v2 /usr/local/lib/ffn; do
   install -d -m 0755 "$dir"
-  for name in ffn_controld_client.py ffn_control_plane.py ffn_agent_protocol.py ffn_agent_resources.py ffn_planed.py ffn_policy_config.py ffn_policy_plan.py ffn_policy_profiles.py ffn_qos_config.py ffn_nat_policy.py; do
+  for name in ffn_controld_client.py ffn_control_plane.py ffn_agent_protocol.py ffn_agent_resources.py ffn_planed.py ffn_policy_config.py ffn_policy_plan.py ffn_policy_profiles.py ffn_qos_config.py ffn_nat_policy.py ffn_ipv6_translation.py; do
     install -m 0644 "/payload/control-code/$name" "$dir/$name"
   done
 done
