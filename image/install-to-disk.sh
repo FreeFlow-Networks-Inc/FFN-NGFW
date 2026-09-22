@@ -293,11 +293,12 @@ stop_arrays_on(){
 
 # Partition numbers, named once so the shift from the old msdos layout cannot
 # be got wrong in one place and not another. p1 is the BIOS boot partition.
-OS_P_BIOS=1
-OS_P_ROOT=2
-OS_P_RECOVERY=3
-OS_P_NFS=4
-OS_P_LOGS=5
+# MBR: four primaries, exactly what the layout needs, and no bios_grub
+# partition because MBR keeps the post-MBR gap that core.img embeds into.
+OS_P_ROOT=1
+OS_P_RECOVERY=2
+OS_P_NFS=3
+OS_P_LOGS=4
 
 # Fixed sizes, not proportions. Root matches the image build's
 # IMG_P1_END so a disk installed here and one installed from the image
@@ -315,19 +316,26 @@ NFS_LABEL=ffn-nfs
 
 part_os(){   # $1 = disk, $2 = root end, $3 = recovery end, $4 = nfs end, $5 = logs end ("" = none)
 	wipefs -a "$1"
-	# GPT, not msdos. On a GPT disk there is no post-MBR gap for core.img, so
-	# BIOS-mode GRUB needs a 1 MiB ef02 partition or grub-install --target=i386-pc
-	# fails. It gets NO filesystem: GRUB writes raw bytes there, and an mkfs on it
-	# breaks the boot.
+	# MBR with metadata 0.90 and partition type 0xfd -- the combination the
+	# KERNEL assembles by itself, before any userspace runs.
 	#
-	# It is also deliberately NOT a RAID member. GRUB writes it per disk, so each
-	# disk carries its own copy and the box still boots with either one pulled --
-	# which is the whole reason for the mirror. Inside the array, core.img would
-	# have to be read through an md that is not assembled yet.
-	parted -s "$1" mklabel gpt
-	parted -s "$1" mkpart bios_grub 1MiB 2MiB
-	parted -s "$1" set $OS_P_BIOS bios_grub on
-	parted -s "$1" mkpart primary ext4 2MiB "$2"
+	# That is not a style preference. On this chassis 1.2 arrays built by two
+	# different mdadm versions were BOTH refused at boot ("does not have a valid
+	# v1.2 superblock, not importing!") while the appliance own PAN-OS log pair
+	# -- MBR, 0.90, 0xfd -- assembled unattended on the very same boot. In-kernel
+	# autodetect needs no mdadm, no mdadm.conf, no initramfs assembly and no udev
+	# incremental claim, which removes every moving part that failed here.
+	#
+	# No bios_grub partition: MBR keeps the ~1 MiB post-MBR gap that core.img is
+	# embedded into, which frees a primary. Four primaries is exactly the layout
+	# -- root, recovery, nfs, logs -- so no extended partition is needed either.
+	#
+	# 0.90 also puts the superblock at the END of the member with data at offset
+	# 0, so each half still mounts as a plain ext4 partition when the array will
+	# not start. That rescue route is not theoretical: it is how a stranded box
+	# was recovered twice.
+	parted -s "$1" mklabel msdos
+	parted -s "$1" mkpart primary ext4 1MiB "$2"
 	parted -s "$1" mkpart primary ext4 "$2" "$3"
 	# The remainder: mirrored NFS space for the OCTEON control and data plane
 	# root filesystems. Their own initramfs is RAM-backed, so anything they
@@ -340,11 +348,18 @@ part_os(){   # $1 = disk, $2 = root end, $3 = recovery end, $4 = nfs end, $5 = l
 		parted -s "$1" mkpart primary ext4 "$4" "$5"
 	fi
 	if [ "$OS_RAID" = 1 ]; then
+		# On an msdos label "raid on" is partition type 0xfd, Linux raid
+		# autodetect. That type is what the kernel scans for at boot, and with
+		# 0.90 metadata it is what makes the array appear with no userspace
+		# involved at all.
 		parted -s "$1" set $OS_P_ROOT raid on
 		parted -s "$1" set $OS_P_RECOVERY raid on
 		parted -s "$1" set $OS_P_NFS raid on
 		[ -n "${5:-}" ] && parted -s "$1" set $OS_P_LOGS raid on
 	fi
+	# Active flag on the first primary. Separate byte from the partition type so
+	# it coexists with 0xfd; some BIOSes refuse an MBR disk without it.
+	parted -s "$1" set $OS_P_ROOT boot on
 	partprobe "$1"; sleep 2
 }
 
@@ -390,19 +405,19 @@ if [ "$OS_RAID" = 1 ]; then
 	for d in "${OS_DISKS[@]}"; do
 		part_os "$d" "${OS_ROOT_END_MIB}MiB" "${OS_RECOVERY_END_MIB}MiB" "$NFS_END" "$OS_LOG_ARG"
 	done
-	echo "-- creating OS mirrors (metadata 1.2) --"
+	echo "-- creating OS mirrors (metadata 0.90, kernel-autodetectable) --"
 	mdadm --create --run --verbose /dev/md0 --level=1 --raid-devices=2 \
-	      --metadata=1.2 --homehost=ffn --name=ffn-root \
+	      --metadata=0.90 \
 	      "$(pname "${OS_DISKS[0]}" $OS_P_ROOT)" "$(pname "${OS_DISKS[1]}" $OS_P_ROOT)"
 	mdadm --create --run --verbose /dev/md1 --level=1 --raid-devices=2 \
-	      --metadata=1.2 --homehost=ffn --name=ffn-recovery \
+	      --metadata=0.90 \
 	      "$(pname "${OS_DISKS[0]}" $OS_P_RECOVERY)" "$(pname "${OS_DISKS[1]}" $OS_P_RECOVERY)"
 	mdadm --create --run --verbose /dev/md2 --level=1 --raid-devices=2 \
-	      --metadata=1.2 --homehost=ffn --name=$NFS_LABEL \
+	      --metadata=0.90 \
 	      "$(pname "${OS_DISKS[0]}" $OS_P_NFS)" "$(pname "${OS_DISKS[1]}" $OS_P_NFS)"
 	if [ -n "$OS_LOG_ARG" ]; then
 		mdadm --create --run --verbose /dev/md3 --level=1 --raid-devices=2 \
-		      --metadata=1.2 --homehost=ffn --name=$LOG_LABEL \
+		      --metadata=0.90 \
 		      "$(pname "${OS_DISKS[0]}" $OS_P_LOGS)" "$(pname "${OS_DISKS[1]}" $OS_P_LOGS)"
 		OS_LOG_DEV=/dev/md3
 	fi
@@ -456,7 +471,7 @@ if [ "${#LOG_DISKS[@]}" -ge 1 ]; then
 	for d in "${LOG_DISKS[@]}"; do
 		wipefs -a "$d" >/dev/null 2>&1 || true
 		mdadm --zero-superblock "$d" >/dev/null 2>&1 || true
-		parted -s "$d" mklabel gpt
+		parted -s "$d" mklabel msdos
 		# One whole-disk partition. GPT because these are typically multi-TB
 		# spindles, where MBR cannot address the full device.
 		parted -s "$d" mkpart primary ext4 1MiB 100%
@@ -474,8 +489,8 @@ if [ "${#LOG_DISKS[@]}" -ge 1 ]; then
 		# a member as a bare filesystem before the array is assembled, because
 		# the log volume is mounted by fstab long after the initramfs is done.
 		mdadm --create --run --verbose "$LOG_MD" --level="$LOG_LEVEL" \
-		      --raid-devices="${#members[@]}" --metadata=1.2 \
-		      --homehost=ffn --name="$LOG_LABEL" "${members[@]}"
+		      --raid-devices="${#members[@]}" --metadata=0.90 \
+		      "${members[@]}"
 		LOG_DEV="$LOG_MD"
 	fi
 	mkfs.ext4 -q -F $EXT4_OFF -L "$LOG_LABEL" "$LOG_DEV"
@@ -575,11 +590,11 @@ if [ "$OS_RAID" = 1 ]; then
 	echo "BOOT_DEGRADED=true" > "$MNT/etc/initramfs-tools/conf.d/mdadm"
 	echo "-- BOOT_DEGRADED=true (boots on one leg rather than halting) --"
 	chroot "$MNT" update-initramfs -u -k all
-	# core.img must read a 1.x superblock member before the initrd exists, and
+	# core.img must read a 0.90 superblock member before the initrd exists, and
 	# GRUB goes on BOTH disks so the box still boots with either one pulled.
 	# That is the entire point of the mirror.
 	for d in "${OS_DISKS[@]}"; do
-		grub-install --target=i386-pc --modules="mdraid1x part_gpt ext2" \
+		grub-install --target=i386-pc --modules="mdraid09 part_msdos ext2" \
 		             --boot-directory="$MNT/boot" "$d"
 	done
 else
