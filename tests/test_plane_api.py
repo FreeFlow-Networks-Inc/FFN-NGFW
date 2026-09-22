@@ -40,5 +40,35 @@ class APITests(unittest.TestCase):
         self.assertNotIn('private diagnostic',result.text)
         self.assertNotIn('must-not-be-audited',str(self.audit.call_args_list))
 
+    def test_resource_vocabulary_is_read_from_the_daemon(self):
+        described={'role':'mp','relays':True,'resources':{'network':{'actions':['status'],'blocked':[]}},
+                   'peer':{'reachable':True,'role':'cp','relays':False,
+                           'resources':{'nif':{'actions':['status'],'blocked':[]}}}}
+        with patch.object(ffn_plane_api,'rpc',new_callable=AsyncMock) as rpc:
+            rpc.return_value={'v':1,'ok':True,'state':'observed','result':described}
+            result=self.client.get('/api/system/planes')
+            sent=rpc.await_args.args[1]
+        self.assertEqual(result.status_code,200)
+        self.assertEqual(result.json(),described)
+        self.assertEqual((sent['resource'],sent['action'],sent['payload']),('planes','inventory',{}))
+
+    def test_readonly_cannot_read_the_vocabulary(self):
+        self.role='readonly'
+        with patch.object(ffn_plane_api,'rpc',new_callable=AsyncMock) as rpc:
+            self.assertEqual(self.client.get('/api/system/planes').status_code,403)
+            rpc.assert_not_called()
+
+    def test_no_selection_and_silent_daemon_are_distinguishable(self):
+        with patch.dict(os.environ,{'FFN_PLANE_SOCKET':''}):
+            self.assertEqual(self.client.get('/api/system/planes').status_code,503)
+        with patch.object(ffn_plane_api,'rpc',side_effect=OSError('private diagnostic')):
+            silent=self.client.get('/api/system/planes')
+        self.assertEqual(silent.status_code,502)
+        self.assertNotIn('private diagnostic',silent.text)
+        # A daemon that rejects the action must not be reported as a description.
+        with patch.object(ffn_plane_api,'rpc',new_callable=AsyncMock) as rpc:
+            rpc.return_value={'v':1,'ok':False,'state':'rejected','result':None,'error':'invalid action'}
+            self.assertEqual(self.client.get('/api/system/planes').status_code,502)
+
 
 if __name__=='__main__': unittest.main()

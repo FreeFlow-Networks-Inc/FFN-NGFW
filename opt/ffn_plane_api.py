@@ -4,33 +4,45 @@ import asyncio
 import os
 import uuid
 from fastapi import Depends, HTTPException, Request
-from ffn_planed import LIMIT, check, decode, encode
+from ffn_planed import INVENTORY, check, decode, rpc
 
 
-async def rpc(path, request):
-    check(request)
-    reader, writer = await asyncio.open_unix_connection(path, limit=LIMIT+1)
-    try:
-        writer.write(encode(request))
-        await writer.drain()
-        raw = await asyncio.wait_for(reader.readline(), 125)
-        result = decode(raw)
-        if not isinstance(result, dict) or result.get('id') != request['id'] or result.get('v') != 1:
-            raise ValueError('invalid daemon response')
-        return result
-    finally:
-        writer.close()
-        await writer.wait_closed()
+def selected():
+    path = os.environ.get('FFN_PLANE_SOCKET', '')
+    if not path or not os.path.isabs(path):
+        raise HTTPException(503, 'No MP control daemon selected')
+    return path
 
 
 def install(app, current_user, require_admin, audit):
+    @app.get('/api/system/planes')
+    async def inventory(user=Depends(current_user)):
+        """Which resources the selected daemons offer, and what is blocking them.
+
+        The core learns the vocabulary from the daemons rather than carrying a
+        list of its own, so an installed platform's resources appear without a
+        core change. Admin-only like the command endpoint below: this is the
+        administration surface of the same daemon, and a blocked request ID is
+        operational state. No saved configuration or controller path is
+        returned, and nothing here probes hardware.
+        """
+        require_admin(user)
+        path = selected()
+        request = {'v': 1, 'id': str(uuid.uuid4()), 'resource': INVENTORY,
+                   'action': 'inventory', 'payload': {}}
+        try:
+            result = await rpc(path, request)
+        except (OSError, asyncio.TimeoutError, ValueError, ConnectionError):
+            raise HTTPException(502, 'Control daemon did not answer')
+        if not result.get('ok') or not isinstance(result.get('result'), dict):
+            raise HTTPException(502, 'Control daemon did not describe itself')
+        return result['result']
+
     @app.post('/api/system/planes')
     async def command(request: Request, user=Depends(current_user)):
         # All operations require admin: results may contain saved configuration.
         require_admin(user)
-        path = os.environ.get('FFN_PLANE_SOCKET', '')
-        if not path or not os.path.isabs(path):
-            raise HTTPException(503, 'No MP control daemon selected')
+        path = selected()
         raw = bytearray()
         async for chunk in request.stream():
             raw.extend(chunk)

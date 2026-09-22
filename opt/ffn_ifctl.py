@@ -1,30 +1,28 @@
 #!/usr/bin/env python3
-"""ffn_ifctl -- bridge FFN's interface configuration to the dataplane port table.
+"""ffn_ifctl -- the DP command-ring port table. LEGACY, and not the appliance path.
 
-FFN already has an interface config model (ethernet / aggregate-ethernet /
-sub-interfaces, xpath, virtual-router) and the WebUI already renders
-Devices > Setup > Interfaces from `_discover_interfaces()`. What was missing is
-the path from that model down to the DP's port table, and status back up.
+This drives the port table of a DP application over the command/event ring. It
+predates the MP/CP/DP control daemons, and on a PA-5200 it is NOT how interfaces
+are configured: that goes through `ffn_planed.py` to the platform's own
+controllers, which reach the OCTEON forwarder, the switch and the front-end ASIC.
+Reading a result from here as evidence about a faceplate port is reading the
+wrong backend -- the historical failure this header now exists to prevent.
 
-This is that bridge. It does NOT introduce a second config model.
+What it is still good for: driving and inspecting a file-backed region, which is
+how `dp_serve` runs the real C dispatch loop on a host for development.
 
-    WebUI / configd  --(this module)-->  CMD ring  -->  DP port table
-                     <--(status)-------  EVT ring  <--
+    region in /etc/ffn-ngfw/dp-ports.json
+      "file:/path"  -- file-backed region. This is the mode that works and the
+                       one the tests use.
+      "bar:PCI:N"   -- an Octeon BAR through the paged BAR1 window
+                       (tools/ffn_octdram.py). Wired up, not qualified.
 
-Where the region lives (`region` in /etc/ffn-ngfw/dp-ports.json):
-  * "file:/path"  -- a file-backed region, which is how `dp_serve` runs the real
-    C dispatch loop on the host. This is the mode that works today and is what
-    the tests use.
-  * "bar:PCI:N"   -- an Octeon BAR. Reaching the region there needs the paged
-    BAR1 window (see tools/ffn_octdram.py); it also needs FFN's DP app to be
-    running on the Octeon, which needs the CVMX headers. Wired up, not yet
-    usable.
-
-Honesty about what applying means: the DP advertises `PORT_HW` in `dp_caps` only
-when it was built with the chip accessors. Without it the DP maintains the port
-table faithfully but drives no registers -- so `apply()` reports
-`hardware_applied: False` and the UI must not claim a port is live. Front-panel
-ports are on the FE100 anyway, so BGX-level control is not the whole story.
+Two further honesties. The DP advertises `PORT_HW` in `dp_caps` only when it was
+built with the chip accessors; without it the port table is tracked state and no
+register is driven, so `hardware_applied` is False and nothing may be presented
+as live. And this module carries no faceplate of its own: a plan comes from the
+configuration file, because the port complement of a chassis belongs to that
+chassis's platform module, not to a core tool that cannot see the hardware.
 """
 import json
 import os
@@ -242,21 +240,40 @@ def _cmd_ports(a):
         return 0
 
 
+def _owned_elsewhere(a):
+    """A plane daemon and this ring must not both own the same ports.
+
+    A selected control daemon is the interface owner on that host. Applying here
+    as well is the split-ownership failure the plane architecture warns about,
+    and it is silent: both writers succeed and the survivor is whichever wrote
+    last. Refuse by default and make overriding it deliberate.
+    """
+    socket = os.environ.get("FFN_PLANE_SOCKET", "")
+    if not socket or "--force" in a:
+        return False
+    print("refusing: a control daemon is selected (FFN_PLANE_SOCKET=%s) and owns\n"
+          "these interfaces. Configure them through it -- ffn_plane_network.py, or\n"
+          "the Control Planes page. Pass --force only to drive a development\n"
+          "region that no daemon is managing." % socket)
+    return True
+
+
 def _cmd_apply(a):
-    """Apply the plan in the config file, or the 5220's own complement."""
+    """Apply the plan in the config file.
+
+    There is deliberately no built-in plan. The one that used to live here
+    described a per-Octeon PA-5220 complement that the chassis does not have,
+    and a core tool that cannot see the hardware has no business asserting a
+    faceplate. The platform module owns the port complement.
+    """
+    if _owned_elsewhere(a):
+        return 1
     conf = _load_conf()
     plan = conf.get("plan")
     if not plan:
-        # The 5220 per-Octeon complement: 2 RJ-45, 8 SFP+, 2 QSFP+.
-        # The QSFP+ pair is HSCI (HA2/HA3), so not bridgeable as data.
-        plan = ([{"lport": i, "form_factor": "RJ45", "role": "data",
-                  "speed_mbps": 1000, "mtu": 1500} for i in range(2)] +
-                [{"lport": 2 + i, "form_factor": "SFP+", "role": "data",
-                  "speed_mbps": 10000, "mtu": 9216} for i in range(8)] +
-                [{"lport": 10 + i, "form_factor": "QSFP+", "role": "HSCI",
-                  "speed_mbps": 40000, "mtu": 9216} for i in range(2)])
-        print("no plan in %s -- using the PA-5220 complement "
-              "(2 RJ-45, 8 SFP+, 2 QSFP+/HSCI)" % CONF)
+        print("no \"plan\" in %s. This tool has no default port complement: "
+              "take the plan from the platform module for this chassis." % CONF)
+        return 2
     with IfCtl(_region(a)) as c:
         if not c.ok:
             print("not available: %s" % c.error)
@@ -284,11 +301,14 @@ def main():
     if not a or a[0] not in CMDS:
         print(__doc__.strip().split("\n")[0])
         print()
-        print("usage: ffn_ifctl.py {status|ports|apply} [--region file:PATH]")
+        print("usage: ffn_ifctl.py {status|ports|apply} [--region file:PATH] [--force]")
         print()
         print("  status  region reachability and DP capabilities")
         print("  ports   the DP port table, in the WebUI's own shape")
         print("  apply   push the configured plan to the DP")
+        print()
+        print("  LEGACY. On an appliance the interface owner is the selected")
+        print("  control daemon; use ffn_plane_network.py or the WebUI instead.")
         return 2
     return CMDS[a[0]](a[1:])
 

@@ -5,6 +5,12 @@
 Unix sockets are root-only. Remote hops use locally configured pinned SSH argv.
 Only the leaf executes controllers; its durable journal prevents blind replay
 after a crash or lost reply. Relays forward the original request unchanged.
+
+The resource vocabulary is the node configuration's, not this daemon's: a
+platform installs its own controllers and budgets and is then described by the
+`inventory` action, so adding hardware needs no change here. Description is
+separate from control -- it names resources, permitted actions and blocked
+request IDs, and never the executables behind them.
 """
 import argparse
 import asyncio
@@ -18,7 +24,25 @@ import sys
 import uuid
 
 LIMIT = 1024 * 1024
-ACTIONS = {'status', 'validate', 'apply', 'lookup', 'result', 'resolve'}
+ACTIONS = {'status', 'validate', 'apply', 'lookup', 'result', 'resolve', 'inventory'}
+# Actions that run a controller. result, resolve and inventory are answered
+# from this node's journal and configuration and never start a process.
+COMMANDS = ('status', 'validate', 'apply', 'lookup')
+DEFAULT_TIMEOUT = {'apply': 90}
+FALLBACK_TIMEOUT = 20
+# The response ladder is fixed and a configured budget has to stay inside it:
+# controller <= 110 < relayed peer 120 < client wait 125 < socket read 130. A
+# controller permitted to outlive its caller produces exactly the unknown
+# outcome this protocol exists to make rare and recoverable.
+MAX_TIMEOUT = 110
+PEER_WAIT = 120
+CLIENT_WAIT = 125
+# Reserved. A node configuration may not name a resource this, so describing a
+# node can never be confused with driving one.
+INVENTORY = 'planes'
+# How many blocking request IDs a description lists per resource. A leaf holds
+# at most one -- it refuses the next write -- but a relay can accumulate them.
+BLOCKED_SHOWN = 32
 
 
 def encode(value):
@@ -42,8 +66,10 @@ def check(request):
         raise ValueError('invalid resource')
     if request['action'] not in ACTIONS or not isinstance(request['payload'], dict):
         raise ValueError('invalid action or payload')
-    if request['action'] == 'status' and request['payload']:
-        raise ValueError('status takes no payload')
+    if (request['action'] == 'inventory') != (request['resource'] == INVENTORY):
+        raise ValueError('inventory is the only action on the reserved %r resource' % INVENTORY)
+    if request['action'] in ('status', 'inventory') and request['payload']:
+        raise ValueError('%s takes no payload' % request['action'])
     if request['action'] in ('apply', 'validate'):
         revision = request['payload'].get('revision')
         if type(revision) is not int or revision < 0:
@@ -88,6 +114,34 @@ async def process(argv, data, timeout):
             await proc.wait()
 
 
+def timeouts(configured, commands):
+    """Per-resource controller budgets, checked against the response ladder.
+
+    A platform whose status probe is slower than the default would otherwise
+    have to be accommodated by editing this daemon, which is the opposite of an
+    independently installed platform. Unknown resource and action names are
+    rejected rather than ignored: a typo that silently keeps the default reads
+    exactly like a budget that was applied.
+    """
+    if not isinstance(configured, dict):
+        raise ValueError('timeouts must be an object')
+    table = {}
+    for resource, actions in configured.items():
+        if resource != 'default' and resource not in commands:
+            raise ValueError('timeout for unconfigured resource')
+        if not isinstance(actions, dict) or not actions:
+            raise ValueError('timeouts for a resource must be a nonempty object')
+        for action, seconds in actions.items():
+            if action not in COMMANDS:
+                raise ValueError('timeout for something that is not a controller command')
+            if resource != 'default' and action not in commands[resource]:
+                raise ValueError('timeout for an operation this resource does not configure')
+            if type(seconds) is not int or not 1 <= seconds <= MAX_TIMEOUT:
+                raise ValueError('timeout must be a whole number of seconds, 1 to %d' % MAX_TIMEOUT)
+            table[(resource, action)] = seconds
+    return table
+
+
 class Plane:
     def __init__(self, config, journal, runner=process):
         self.config, self.runner = config, runner
@@ -95,6 +149,9 @@ class Plane:
             raise ValueError('role must be mp, cp or dp')
         self.role = config['role']
         self.commands = config.get('commands', {})
+        if INVENTORY in self.commands:
+            raise ValueError('%r is reserved for describing a node' % INVENTORY)
+        self.timeouts = timeouts(config.get('timeouts', {}), self.commands)
         self.peer = config.get('peer')
         if not self.peer and not self.commands:
             raise ValueError('select peer argv or local commands')
@@ -115,12 +172,72 @@ class Plane:
         return {'v':1, 'id':request.get('id'), 'ok':error is None, 'state':state,
                 'result':result, 'error':error, 'trace':[self.role]}
 
+    def timeout(self, resource, action):
+        return (self.timeouts.get((resource, action)) or self.timeouts.get(('default', action)) or
+                DEFAULT_TIMEOUT.get(action, FALLBACK_TIMEOUT))
+
     async def command(self, resource, action, payload):
         argv = self.commands.get(resource, {}).get(action)
         if not argv: raise ValueError('unsupported resource operation')
-        result = await self.runner(argv, encode(payload), 90 if action == 'apply' else 20)
+        result = await self.runner(argv, encode(payload), self.timeout(resource, action))
         if not isinstance(result, dict): raise ValueError('controller response must be an object')
         return result
+
+    def describe(self):
+        """What a client may ask this node, and what is currently blocking it.
+
+        Controller argv is deliberately absent. A caller never needs the
+        executable path, and returning it would turn reading a description into
+        reading a map of the box. Blocked request IDs are included because an
+        unknown outcome bars further writes to that resource, and the only
+        client that held the ID may be a browser tab that has since closed --
+        without this, recovery needs the journal and a root shell.
+        """
+        blocked = {}
+        for resource, ident in self.db.execute(
+                "SELECT resource, id FROM requests WHERE state='unknown' ORDER BY rowid"):
+            blocked.setdefault(resource, []).append(ident)
+        resources = {}
+        for name in sorted(set(self.commands) | set(blocked)):
+            controller = sorted(self.commands.get(name, {}))
+            actions = set(controller)
+            # Recovery is a property of the journal, not of a controller, so a
+            # resource this node only relays still offers it.
+            if 'apply' in actions or name in blocked:
+                actions |= {'result', 'resolve'}
+            # The list is capped but the count is not: an operator who
+            # reconciles every ID shown must not be left with a resource that
+            # is still blocked by ones that were quietly dropped.
+            waiting = blocked.get(name, [])
+            resources[name] = {'controller': controller, 'actions': sorted(actions),
+                               'timeouts': {a: self.timeout(name, a) for a in controller},
+                               'relayed': name not in self.commands,
+                               'blocked': waiting[:BLOCKED_SHOWN], 'blocked_total': len(waiting)}
+        return {'role': self.role, 'relays': bool(self.peer), 'resources': resources}
+
+    async def inventory(self):
+        """This node, plus the next one when it can be asked.
+
+        A peer that does not answer -- including one predating this action --
+        is reported unreachable rather than omitted. Silence about a downstream
+        node must never read as a node that has no resources.
+        """
+        local = self.describe()
+        if not self.peer:
+            return local
+        peer = {'reachable': False}
+        probe = {'v': 1, 'id': str(uuid.uuid4()), 'resource': INVENTORY,
+                 'action': 'inventory', 'payload': {}}
+        try:
+            result = await self.runner(self.peer, encode(probe), FALLBACK_TIMEOUT)
+            if (isinstance(result, dict) and result.get('v') == 1 and result.get('ok') and
+                    result.get('id') == probe['id'] and isinstance(result.get('trace'), list) and
+                    len(result['trace']) < 3 and self.role not in result['trace'] and
+                    isinstance(result.get('result'), dict)):
+                peer = dict(result['result'], reachable=True)
+        except Exception:
+            pass
+        return dict(local, peer=peer)
 
     def stored(self, ident):
         return self.db.execute('SELECT digest, resource, response FROM requests WHERE id=?', (ident,)).fetchone()
@@ -133,6 +250,8 @@ class Plane:
         try: check(request)
         except (ValueError, TypeError, AttributeError):
             return self.response({}, 'rejected', error='Invalid plane request')
+        if request['action'] == 'inventory':
+            return self.response(request, 'observed', await self.inventory())
         if self.peer and request['resource'] not in self.commands:
             if request['action'] == 'apply':
                 digest = hashlib.sha256(encode(request)).hexdigest()
@@ -149,7 +268,7 @@ class Plane:
                         request['resource'], encode(pending).decode(), 'unknown', encode(request).decode()))
                     self.db.commit()
             try:
-                result = await self.runner(self.peer, encode(request), 120)
+                result = await self.runner(self.peer, encode(request), PEER_WAIT)
                 if (not isinstance(result, dict) or result.get('v') != 1 or
                         result.get('id') != request['id'] or not isinstance(result.get('trace'), list) or
                         len(result['trace']) >= 3 or self.role in result['trace']):
@@ -248,6 +367,27 @@ async def serve(config, journal, path):
         lock.close()
 
 
+async def rpc(path, request):
+    """One request on a root-only socket, with the reply checked against it.
+
+    Lives here rather than beside the HTTP layer so that recovering a blocked
+    resource never depends on the management API's own dependencies: the tool
+    an operator needs when the manager is unhappy must not import it.
+    """
+    check(request)
+    reader, writer = await asyncio.open_unix_connection(path, limit=LIMIT+1)
+    try:
+        writer.write(encode(request))
+        await writer.drain()
+        result = decode(await asyncio.wait_for(reader.readline(), CLIENT_WAIT))
+        if not isinstance(result, dict) or result.get('id') != request['id'] or result.get('v') != 1:
+            raise ValueError('invalid daemon response')
+        return result
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
 async def call(path):
     raw = sys.stdin.buffer.readline(LIMIT+1)
     check(decode(raw))
@@ -255,7 +395,7 @@ async def call(path):
     try:
         writer.write(raw if raw.endswith(b'\n') else raw+b'\n')
         await writer.drain()
-        result = await asyncio.wait_for(reader.readline(), 125)
+        result = await asyncio.wait_for(reader.readline(), CLIENT_WAIT)
         if not result: raise RuntimeError('plane daemon disconnected')
         sys.stdout.buffer.write(encode(decode(result)))
         sys.stdout.buffer.flush()

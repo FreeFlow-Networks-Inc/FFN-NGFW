@@ -7,7 +7,7 @@ import tempfile
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'opt'))
 from ffn_planed import serve, encode, decode
-from test_planes import request
+from test_planes import describe, request
 
 
 @unittest.skipIf(sys.platform=='win32','Unix sockets target Linux plane daemons')
@@ -39,6 +39,15 @@ class SocketTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(result['result']['config']['revision'],1)
                     writer.write(encode(req));await writer.drain()
                     self.assertEqual(decode(await asyncio.wait_for(reader.readline(),10)),result)
+                    # One description walks the whole chain: each node answers
+                    # for itself and asks the next, so the MP never has to hold
+                    # a list of what its downstream planes can do.
+                    writer.write(encode(describe()));await writer.drain()
+                    described=decode(await asyncio.wait_for(reader.readline(),30))['result']
+                    self.assertEqual(described['role'],'mp')
+                    self.assertEqual(described['peer']['role'],'cp')
+                    self.assertIn('network',described['peer']['peer']['resources'])
+                    self.assertEqual(described['peer']['peer']['resources']['network']['blocked'],[])
                 finally:
                     writer.close();await writer.wait_closed()
             finally:
