@@ -299,6 +299,33 @@ mkfs.ext4 -q $EXT4_OFF -L "$IMG_LABEL_RECOVERY" "${LOOP}p${P_REC}"
 MNT=$(mktemp -d); MNT2=$(mktemp -d)
 mount "${LOOP}p${P_ROOT}" "$MNT";  tar -C "$ROOTFS"   -cf - . | tar --xattrs -C "$MNT"  -xf -
 mount "${LOOP}p${P_REC}"  "$MNT2"; tar -C "$RECOVERY" -cf - . | tar --xattrs -C "$MNT2" -xf -
+
+# ---- installer media --------------------------------------------------------
+# This image is BOTH a runnable appliance and the medium that installs it.
+# What makes it an installer is /etc/ffn-installer-mode, and that marker is
+# written HERE -- into the image only -- never into $ROOTFS.
+#
+# That distinction is the whole design. Stage 4 already packaged the tarballs
+# from $ROOTFS, so the payload a target disk receives carries no marker and no
+# menu: install from this USB and the installed box boots straight into the
+# firewall. Put the marker in $ROOTFS instead and every appliance you ever
+# install would come up asking which disk to install to.
+#
+# image/README.md has described this medium for some time; nothing built it,
+# so a stick written from the qcow2 booted into an appliance with no way to
+# install itself.
+install -d -m 0755 "$MNT/opt/ffn-installer"
+install -m 0755 "$HERE/ffn-installer.sh" "$HERE/install-to-disk.sh" "$MNT/opt/ffn-installer/"
+cp "$OUT/$VERSION-rootfs.tar.zst" "$OUT/$VERSION-recovery.tar.zst" "$MNT/opt/ffn-installer/"
+echo "$VERSION" > "$MNT/opt/ffn-installer/VERSION"
+install -m 0644 "$HERE/ffn-installer.service" "$MNT/etc/systemd/system/"
+# Linked rather than `systemctl enable`d in a chroot: the unit's own
+# ConditionPathExists is what actually gates it, and this keeps the build from
+# running the target's systemd on the build host.
+install -d -m 0755 "$MNT/etc/systemd/system/multi-user.target.wants"
+ln -sf ../ffn-installer.service "$MNT/etc/systemd/system/multi-user.target.wants/ffn-installer.service"
+printf '%s\n' "$VERSION" > "$MNT/etc/ffn-installer-mode"
+echo "  installer media: marker + /opt/ffn-installer ($(du -sh "$MNT/opt/ffn-installer" | cut -f1))"
 # GRUB on the main partition, with a manual recovery menu entry (root=partition 2)
 KVER=$(ls "$MNT/boot"/vmlinuz-* 2>/dev/null | sed 's#.*/vmlinuz-##' | sort | tail -1)
 cat > "$MNT/etc/grub.d/40_custom" <<EOF
@@ -334,7 +361,15 @@ safe_umount_tree "$MNT"; safe_umount_tree "$MNT2"
 rmdir "$MNT" "$MNT2"; MNT=""; MNT2=""
 losetup -d "$LOOP"; LOOP=""
 qemu-img convert -f raw -O qcow2 -c "$RAW" "$OUT/$VERSION.qcow2"
-rm -f "$RAW"
+# Keep the raw as the USB image. The build used to convert to qcow2 and delete
+# it, so writing a stick meant knowing to convert back first -- an easy step to
+# get wrong for the one artifact an operator actually needs at the appliance.
+# It is sparse, so on disk it costs about what the qcow2 does.
+if [ "${IMG_KEEP_RAW:-1}" = 1 ]; then
+  mv "$RAW" "$OUT/$VERSION.img"
+else
+  rm -f "$RAW"
+fi
 
 # ---------------------------------------------------------------- 6. manifest
 stage "6. checksums + manifest"
@@ -344,3 +379,5 @@ ls -la "$OUT"
 echo -e "\n\033[1;32mBUILD COMPLETE: $VERSION\033[0m"
 echo "  bare-metal: $OUT/$VERSION-rootfs.tar.zst + $VERSION-recovery.tar.zst + install-to-disk.sh"
 echo "  vm image  : $OUT/$VERSION.qcow2  (main + recovery partitions)"
+[ -f "$OUT/$VERSION.img" ] && \
+echo "  USB image : $OUT/$VERSION.img    (dd to a stick; boots and offers the installer)"
