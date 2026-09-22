@@ -96,10 +96,25 @@ export FFN_SERIAL_BAUD="${FFN_SERIAL_BAUD:-115200}"
 # --- console / SSH access -------------------------------------------------
 # The image used to ship with no root password and no authorized_keys, which
 # made local login impossible (admin/admin is the WebUI account, not a Unix
-# one). Set at build time:
+# one). Worse, the build only WARNED about it, so an image would be written to
+# disk, carried to an appliance and booted before anyone discovered there was
+# no way to log in -- on a chassis whose only console is 9600 baud serial.
+#
+# So there is a default now. image/PUBLISH-POLICY permits exactly this and says
+# why: "A default setup credential is allowed BECAUSE a headless appliance needs
+# a first console login." It stays permissible only while it is a SETUP
+# credential -- provision.sh runs `chage -d 0` on root and the admin account, so
+# it must be changed before either account is usable for anything else. A
+# non-expiring shared password would be a standing credential and is not
+# allowed. Do not remove that expiry to make automation easier.
+#
+# The value matches the WebUI's own default so there is one thing to remember,
+# and both are meant to be changed on the first login.
+#
+# Override at build time for anything you intend to keep:
 #     FFN_ROOT_PW='...' FFN_SSH_PUBKEY="$(cat ~/.ssh/id_ed25519.pub)" ./build.sh
-# Leaving FFN_ROOT_PW empty keeps the accounts locked (previous behaviour).
-export FFN_ROOT_PW="${FFN_ROOT_PW:-}"
+# FFN_ROOT_PW= (explicitly empty) restores the old locked-account behaviour.
+export FFN_ROOT_PW="${FFN_ROOT_PW-admin}"
 export FFN_SSH_PUBKEY="${FFN_SSH_PUBKEY:-}"
 
 # --- FFN payload updater ------------------------------------------------------
