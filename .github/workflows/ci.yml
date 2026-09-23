@@ -56,6 +56,9 @@ jobs:
       - name: ffn_ed25519 selftest
         run: python3 opt/ffn_ed25519.py --selftest
 
+      - name: Verified processor image staging
+        run: python3 -m unittest discover -s tests -p test_plane_images.py
+
       - name: hardware inventory and tuning regressions (no hardware required)
         run: |
           python3 tests/test_hwdetect.py

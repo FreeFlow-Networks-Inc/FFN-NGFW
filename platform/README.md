@@ -53,6 +53,20 @@ datapath works.
 
 ## What a platform declares
 
+An optional `plane-images.json` pins a GitHub release manifest and its CP/DP
+images. `ffn_platform.py select NAME` stages a published pair over the management
+plane connection after checkout. `ffn_platform.py images NAME` retries staging;
+`--offline` verifies the cache without Internet access and `--image-cache PATH`
+overrides its location. Platforms without an image lock retain their existing
+behavior. A disabled lock explicitly reports that no qualified release exists.
+
+The downloader verifies the locally trusted manifest hash, architecture, runtime
+ABI, source revisions and both asset hashes before publishing a cache directory.
+It never extracts images, runs release scripts or changes the active boot path.
+Deployments without git can install the MP startup service with
+`image/install-plane-images.sh SELECTED_PLATFORM_DIRECTORY`. See the selected
+platform's image documentation for clean-build prerequisites and qualification.
+
 Each platform ships `platform.json` at its root. FFN reads it to decide how to
 tune the host:
 

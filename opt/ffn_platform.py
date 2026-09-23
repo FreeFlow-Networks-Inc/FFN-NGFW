@@ -200,7 +200,25 @@ def cmd_current(root: str) -> int:
     return 0
 
 
-def cmd_select(root: str, name: str) -> int:
+def stage_images(root: str, entry: Dict, cache=None, offline=False) -> int:
+    """A selected platform may pin a pair of ready-made processor images."""
+    from pathlib import Path
+    from ffn_plane_images import CACHE, stage
+    lock_path = Path(root) / entry['path'] / 'plane-images.json'
+    if not lock_path.is_file():
+        return 0
+    try:
+        lock = json.loads(lock_path.read_text())
+        if lock.get('platform') != entry['name']:
+            raise ValueError('Image lock belongs to another platform')
+        print(json.dumps(stage(lock, Path(cache or CACHE), offline), indent=2))
+    except (ValueError, OSError, KeyError, TypeError) as error:
+        print('Platform selected, but processor images are not ready: ' + str(error), file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_select(root: str, name: str, cache=None, offline=False) -> int:
     e = find(root, name)
     if not e.get("path"):
         print("%r is builtin -- it is what runs with no platform selected, so "
@@ -241,7 +259,7 @@ def cmd_select(root: str, name: str) -> int:
             print("  reason        : %s" % decl["reason"])
     print()
     print("next: ffn_cpuisol.py show     # what this means for the kernel cmdline")
-    return 0
+    return stage_images(root, e, cache, offline)
 
 
 def cmd_deselect(root: str, name: str) -> int:
@@ -377,10 +395,12 @@ def selftest() -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="list and select hardware platforms")
     ap.add_argument("cmd", choices=["list", "current", "select", "deselect",
-                                    "verify", "selftest"])
+                                    "verify", "selftest", "images"])
     ap.add_argument("name", nargs="?")
     ap.add_argument("--root", default=None)
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--image-cache", default=None, help="MP cache directory for verified processor images")
+    ap.add_argument("--offline", action="store_true", help="Require an already verified local image pair")
     a = ap.parse_args(argv)
     if a.root is None:
         a.root = _repo_root()
@@ -398,7 +418,13 @@ def main(argv=None) -> int:
               file=sys.stderr)
         return 2
     if a.cmd == "select":
-        return cmd_select(a.root, a.name)
+        return cmd_select(a.root, a.name, a.image_cache, a.offline)
+    if a.cmd == "images":
+        entry = find(a.root, a.name)
+        if not entry.get('path') or not is_selected(a.root, entry):
+            print('Select a hardware platform before staging its images', file=sys.stderr)
+            return 2
+        return stage_images(a.root, entry, a.image_cache, a.offline)
     return cmd_deselect(a.root, a.name)
 
 
