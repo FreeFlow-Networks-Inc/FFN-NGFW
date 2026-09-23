@@ -5,6 +5,7 @@ let policyWorkspaceGeneration=0;
 let policyEditorGeneration=0;
 function policySpec(row){return {name:row.name,description:row.description||'',enabled:row.enabled,settings:structuredClone(row.settings)};}
 const policyOptionLabels={'universal':'Universal','intrazone':'Intrazone','interzone':'Interzone',
+  ipv4:'IPv4',nat64:'NAT64',nptv6:'NPTv6',
   allow:'Allow',deny:'Deny',drop:'Drop','reset-client':'Reset Client','reset-server':'Reset Server',
   'reset-both':'Reset Both Client and Server',none:'None',group:'Group',profiles:'Profiles',yes:'Yes',no:'No',
   'static-ip':'Static IP','dynamic-ip':'Dynamic IP','dynamic-ip-and-port':'Dynamic IP and Port',
@@ -19,6 +20,25 @@ function natModeNotice(source,destination,distribution,capabilities){
   if(!support)return 'Destination distribution availability is unverified. Commit will validate the current dataplane.';
   return support.supported?'Destination distribution is available. Commit validates and applies this rule.':
     (support.reason||'Destination distribution is unavailable')+'. Save this rule disabled until support is available.';
+}
+function ipv6NatNotice(type,capabilities){
+  if(!['nat64','nptv6'].includes(type))return '';
+  const capability=capabilities?.translation_types?.[type],label=policyOptionLabels[type];
+  if(!capability)return label+' dataplane availability is unverified. Commit requires a translation-provider acknowledgment.';
+  return capability.supported?label+' is available; Commit validates current runtime state.':
+    (capability.reason||label+' is not commissioned')+'. Save disabled until runtime support is available.';
+}
+function normalizeNatSettings(settings){
+  const type=settings['nat-type']||'ipv4';
+  if(type!=='nat64'){settings['nat64-prefix']='';settings['nat64-pool']=[];}
+  if(type!=='nptv6'){settings['nptv6-internal-prefix']='';settings['nptv6-external-prefix']='';}
+  if(type!=='ipv4')Object.assign(settings,{'source-type':'none','source-interface':'','translated-source':[],
+    'destination-type':'none','translated-destination':'','translated-port':'','session-distribution':''});
+  return settings;
+}
+function ipv6TranslationText(translation){
+  if(translation.type==='nat64')return 'NAT64 '+translation.prefix+' → IPv4 pool '+translation.pool.join(', ');
+  return 'NPTv6 '+translation.internal+' ↔ '+translation.external+' (checksum-neutral)';
 }
 function policyUsage(r,fast=false){
   // Stored SQL counters have no agent identity, configuration generation or
@@ -44,6 +64,8 @@ function securityCells(r,fast,source){
   return values.map(cell).join('')+`<td title="${text(u.reason)}">${text(u.count)}</td><td>${text(u.last)}</td><td>${text(u.first)}</td>`;
 }
 function policyActionText(kind,s){
+  if(kind==='nat'&&s['nat-type']==='nat64')return 'NAT64 '+(s['nat64-prefix']||'')+' → '+(s['nat64-pool']||[]).join(', ');
+  if(kind==='nat'&&s['nat-type']==='nptv6')return 'NPTv6 '+(s['nptv6-internal-prefix']||'')+' ↔ '+(s['nptv6-external-prefix']||'');
   if(kind==='nat')return 'Source: '+(s['source-type']||'none')+' '+(s['translated-source']||[]).join(', ')+' '+(s['source-interface']||'')+'; Destination: '+(s['translated-destination']||'unchanged')+(s['translated-port']?':'+s['translated-port']:'');
   if(kind==='qos')return 'Class '+(s.class||'');
   if(kind==='application-override')return (s.protocol||'')+'/'+(s.port||'')+' → '+(s.application||'');
@@ -251,6 +273,7 @@ function bindPolicyReferences(form,editable){
 }
 function policyPlanAction(kind,action){
   if(!action)return 'Unavailable';
+  if(kind==='nat'&&action.translation)return ipv6TranslationText(action.translation);
   if(kind==='security'){
     const profiles=action.profiles,logging=action.logging;
     return (policyOptionLabels[action.type]||action.type)+(action.icmp_unreachable?' · ICMP Unreachable':'')+
@@ -318,8 +341,9 @@ async function previewNatWorkspace(){
     target.innerHTML=`<p><strong>${active?'This rule plan is applied':report.valid?'Compilation passed':'Compilation blocked'}</strong> · ${text(source)} configuration</p>
       <p>${state.available?'Dataplane: '+text(state.provider)+' · '+text(state.machine)+' · '+text(state.byteorder)+' endian':text(state.error||'Dataplane unavailable')}</p>
       <p>${report.commissioned?'Commit validates and applies this plan through the MP control daemon.':'NAT activation is not commissioned. Rules can be staged; enabled rules cannot be committed yet.'}</p>
+      <ul>${[...new Set(report.plan.rules.filter(r=>r.translation).map(r=>r.translation.type))].map(type=>'<li>'+text(ipv6NatNotice(type,state.capabilities))+'</li>').join('')}</ul>
       ${report.blockers.length?'<ul>'+report.blockers.map(b=>'<li>'+text(b.scope+' / '+b.name+': '+b.reason)+'</li>').join('')+'</ul>':''}
-      <div class="table-wrap"><table><thead><tr><th>Rule</th><th>Original packet</th><th>Source translation</th><th>Destination translation</th></tr></thead><tbody>${report.plan.rules.map(r=>`<tr><td>${text(r.scope+' / '+r.name)}</td><td>${text(r.source.join(', '))} → ${text(r.destination.join(', '))}<br>${text(r.ingress.join(', '))} → ${text(r.egress.join(', '))}</td><td>${text(r.snat.type==='none'?'None':r.snat.interface?'Interface '+r.snat.interface:r.snat.type+' '+r.snat.address)}</td><td>${text(r.dnat?r.dnat.address+(r.dnat.port?':'+r.dnat.port:''):'None')}</td></tr>`).join('')}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Rule</th><th>Original packet</th><th>Source translation</th><th>Destination translation</th></tr></thead><tbody>${report.plan.rules.map(r=>`<tr><td>${text(r.scope+' / '+r.name)}</td><td>${text(r.source.join(', '))} → ${text(r.destination.join(', '))}<br>${text(r.ingress.join(', '))} → ${text(r.egress.join(', '))}</td><td>${text(r.translation?ipv6TranslationText(r.translation):r.snat.type==='none'?'None':r.snat.interface?'Interface '+r.snat.interface:r.snat.type+' '+r.snat.address)}</td><td>${text(r.dnat?r.dnat.address+(r.dnat.port?':'+r.dnat.port:''):'None')}</td></tr>`).join('')}</tbody></table></div>
       <p class="text-dim">${report.disabled_rules} disabled rule(s) excluded. First matching NAT rule wins. NAT does not permit traffic through Security policy. Existing sessions retain their translations.</p>`;
     target.innerHTML+='<p><strong>NAT connection counters</strong></p><p>Counters measure initial connection packets, not total session traffic. They reset when a new NAT generation is applied.</p><ul>'+report.plan.rules.map(r=>{
       const u=usage.get(JSON.stringify([r.scope,r.name])),known=active&&u?.available;
@@ -364,20 +388,24 @@ async function editPolicyWorkspace(snapshot,url,existing,reload,clone=false){
       const group=document.createElement('fieldset'),legend=document.createElement('legend');legend.textContent=title;group.append(legend);
       for(const key of keys)group.append(form.elements['pf-'+key].closest('label'));translated.append(group);
     }
-    const mode=form.elements['pf-source-type'],iface=form.elements['pf-source-interface'];
+    const mode=form.elements['pf-source-type'],iface=form.elements['pf-source-interface'],natType=form.elements['pf-nat-type'];
     const method=document.createElement('label');method.innerHTML='Address Type<select id="pw-nat-method"><option value="pool">Translated Address</option><option value="interface">Interface Address</option></select>';
     mode.closest('label').after(method);const choice=method.querySelector('select');choice.value=iface.value?'interface':'pool';
     const warning=document.createElement('p');warning.className='text-dim';warning.setAttribute('role','status');translated.after(warning);
     const destination=form.elements['pf-destination-type'],distribution=form.elements['pf-session-distribution'];
     let capabilities=null;
     const sync=()=>{
+      const ipv4=natType.value==='ipv4',nat64=natType.value==='nat64',npt=natType.value==='nptv6';
+      for(const group of translated.querySelectorAll('fieldset'))group.hidden=!ipv4;
+      for(const key of ['nat64-prefix','nat64-pool'])show(key,nat64);
+      for(const key of ['nptv6-internal-prefix','nptv6-external-prefix'])show(key,npt);
       const dipp=['dynamic-ip-and-port','persistent-dynamic-ip-and-port'].includes(mode.value);
       method.hidden=!dipp;show('source-interface',dipp&&choice.value==='interface');show('translated-source',mode.value!=='none'&&(!dipp||choice.value==='pool'));
       show('translated-destination',destination.value!=='none');show('translated-port',destination.value!=='none');show('session-distribution',destination.value==='dynamic-ip');
       if(destination.value==='dynamic-ip'&&!distribution.value)distribution.value='round-robin';
-      warning.textContent=natModeNotice(mode.value,destination.value,distribution.value,capabilities);warning.hidden=!warning.textContent;
+      warning.textContent=ipv4?natModeNotice(mode.value,destination.value,distribution.value,capabilities):ipv6NatNotice(natType.value,capabilities);warning.hidden=!warning.textContent;
     };
-    mode.onchange=choice.onchange=destination.onchange=distribution.onchange=sync;sync();
+    natType.onchange=mode.onchange=choice.onchange=destination.onchange=distribution.onchange=sync;sync();
     consoleRequest('/api/config/nat/preview?source=candidate').then(report=>{
       if(form.isConnected&&editorGeneration===policyEditorGeneration){capabilities=report.runtime?.capabilities;sync();}
     }).catch(()=>{});
@@ -415,6 +443,7 @@ async function editPolicyWorkspace(snapshot,url,existing,reload,clone=false){
     for(const f of snapshot.schema.fields){const value=data.get('pf-'+f.key)||'';rule.settings[f.key]=f.mode==='list'?value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean):value;}
     const settings=rule.settings;
     if(snapshot.kind==='nat'){
+      normalizeNatSettings(settings);
       if(settings['source-type']==='none'){settings['translated-source']=[];settings['source-interface']='';}
       else if(['dynamic-ip-and-port','persistent-dynamic-ip-and-port'].includes(settings['source-type'])&&document.getElementById('pw-nat-method').value==='interface')settings['translated-source']=[];
       else settings['source-interface']='';

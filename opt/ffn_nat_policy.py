@@ -41,7 +41,7 @@ def ports(value):
 
 
 class Resolver:
-    def __init__(self,root,owner):self.root,self.owner=root,owner
+    def __init__(self,root,owner,family=4):self.root,self.owner,self.family=root,owner,family
 
     def find(self,kind,name):
         # Local objects shadow shared objects, without interpolating XML paths.
@@ -52,21 +52,28 @@ class Resolver:
 
     def addresses(self,values,stack=()):
         out=[]
+        def address(value):
+            if self.family==4:return ipv4(value)
+            try:
+                network=ipaddress.ip_network(value,strict=True)
+                if network.version!=6:raise ValueError()
+                return str(network)
+            except (ValueError,TypeError):raise NatError('Expected an IPv6 address or network prefix: '+str(value))
         for value in values:
             if len(stack)>16 or value in stack:raise NatError('Address group cycle or excessive nesting: '+value)
-            if value=='any':out.append('0.0.0.0/0');continue
+            if value=='any':out.append('0.0.0.0/0' if self.family==4 else '::/0');continue
             entry=self.find('address',value)
             group=self.find('address-group',value)
             if entry is not None:
                 child=entry.find('ip-netmask')
                 if child is None:child=entry.find('ip-range')
-                if child is None:raise NatError('NAT requires static IPv4 objects; unresolved object: '+value)
-                out.append(ipv4(child.text or ''))
+                if child is None:raise NatError('NAT requires static address objects; unresolved object: '+value)
+                out.append(address(child.text or ''))
             elif group is not None:
                 members=group.findall('static/member')
                 if group.find('dynamic') is not None or not members:raise NatError('NAT requires a nonempty static address group: '+value)
                 out.extend(self.addresses([m.text or '' for m in members],stack+(value,)))
-            else:out.append(ipv4(value))
+            else:out.append(address(value))
             if len(out)>256:raise NatError('Expanded address list exceeds 256 entries')
         return sorted(set(out))
 
@@ -113,7 +120,22 @@ class Resolver:
 def compile_rule(root,owner,spec,position):
     s=spec['settings'];r=Resolver(root,owner)
     if not spec['editable']:raise NatError('Imported NAT rule contains unsupported XML fields')
-    if s.get('nat-type') not in ('','ipv4'):raise NatError('Only IPv4 NAT is supported')
+    from ffn_ipv6_translation import validate_settings
+    translation=validate_settings(s,lambda values,family:Resolver(root,owner,family).addresses(values))
+    if translation:
+        r=Resolver(root,owner,6);source=r.addresses(s['source']);destination=r.addresses(s['destination'])
+        if translation['type']=='nat64':
+            target=translation['prefix']
+            if destination==['::/0']:destination=[target]
+            if any(not ipaddress.IPv6Network(n).subnet_of(ipaddress.IPv6Network(target)) for n in destination):
+                raise NatError('NAT64 destination matches must be within the translation prefix')
+        else:source=[translation['internal']]
+        ingress=r.interfaces(s['from']);egress=r.interfaces(s['to'])
+        if s.get('to-interface') not in (None,'','any'):
+            if s['to-interface'] not in egress:raise NatError('Destination interface is not in the selected destination zone')
+            egress=[s['to-interface']]
+        return dict(name=spec['name'],scope=owner.get('name'),position=position,ingress=ingress,egress=egress,
+                    source=source,destination=destination,services=r.services(s['service']),snat={'type':'none'},dnat=None,translation=translation)
     if s.get('source-type')=='persistent-dynamic-ip-and-port':raise NatError('Persistent Dynamic IP and Port requires a dataplane persistent-binding allocator; activation is not supported by this provider')
     dynamic=s.get('destination-type')=='dynamic-ip'
     if dynamic and s.get('session-distribution') not in ('round-robin','source-ip-hash','ip-hash'):
@@ -177,5 +199,5 @@ def compile_policy(xml):
             try:rules.append(compile_rule(root,owner,describe('nat',entry),i+1))
             except (NatError,ValueError,KeyError,TypeError) as error:errors.append({'scope':scope,'kind':'nat','name':entry.get('name',''),'reason':str(error)})
     if len(rules)>1024:errors.append(dict(scope='all',kind='nat',name='',reason='NAT supports at most 1024 enabled rules'))
-    plan={'version':1,'rules':rules}
+    plan={'version':2 if any('translation' in r for r in rules) else 1,'rules':rules}
     return {'valid':not errors,'blockers':errors,'disabled_rules':disabled,'plan':plan,'digest':digest(plan),'configuration_revision':revision(xml),'applied':False}

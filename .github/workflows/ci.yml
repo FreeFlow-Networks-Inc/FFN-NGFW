@@ -56,6 +56,9 @@ jobs:
       - name: ffn_ed25519 selftest
         run: python3 opt/ffn_ed25519.py --selftest
 
+      - name: Verified processor image staging
+        run: python3 -m unittest discover -s tests -p test_plane_images.py
+
       - name: hardware inventory and tuning regressions (no hardware required)
         run: |
           python3 tests/test_hwdetect.py
@@ -65,6 +68,12 @@ jobs:
 
       - name: conntrack accounting and acknowledged session observations
         run: python3 -m unittest discover -s tests -p 'test_session*.py'
+
+      - name: NAT64 and NPTv6 address and packet primitives
+        run: python3 -m unittest discover -s tests -p 'test_nat_ipv6.py'
+
+      - name: NAT editor dynamic references and translation modes
+        run: node tests/test_policy_selectors.cjs
 
       # Exercises the update trust model itself: wrong key, tampered payload,
       # unsigned manifest, and the hmac-to-ed25519 downgrade refusal. It rebinds
@@ -238,6 +247,7 @@ jobs:
         run: |
           python tests/test_config_objects.py
           python tests/test_policy_config.py
+          python -m unittest discover -s tests -p 'test_nat_ipv6_workflows.py'
           python tests/test_partial_commit.py
           python tests/test_policy_barrier.py
           python tests/test_commit_review.py
@@ -250,6 +260,7 @@ jobs:
           "$RUNNER_TEMP/objects-browser/node_modules/.bin/playwright" install --with-deps chromium
           NODE_PATH="$RUNNER_TEMP/objects-browser/node_modules" TEST_PYTHON=python node tests/test_objects_browser.cjs
           NODE_PATH="$RUNNER_TEMP/objects-browser/node_modules" TEST_PYTHON=python node tests/test_policies_browser.cjs
+          NODE_PATH="$RUNNER_TEMP/objects-browser/node_modules" TEST_PYTHON=python node tests/test_nat_ipv6_browser.cjs
           NODE_PATH="$RUNNER_TEMP/objects-browser/node_modules" node tests/test_commit_review_browser.cjs
 
       - name: plane protocol, transport and Linux networking

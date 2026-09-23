@@ -1,0 +1,20 @@
+[Unit]
+Description=Stage pinned CP and DP images through the management plane
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/ffn-ngfw/plane-images.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/ffn/ffn_plane_images.py --lock /etc/ffn-ngfw/plane-images.json
+StateDirectory=ffn-ngfw/plane-images
+UMask=0077
+TimeoutStartSec=65min
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/ffn-ngfw/plane-images
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

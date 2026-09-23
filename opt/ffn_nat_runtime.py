@@ -75,11 +75,17 @@ def bindings():
 
 
 def validate_plan(plan):
-    if not isinstance(plan,dict) or set(plan)!={'version','rules'} or type(plan['version']) is not int or plan['version']!=1 or not isinstance(plan['rules'],list) or len(plan['rules'])>1024:raise NatError('Invalid NAT plan')
+    if not isinstance(plan,dict) or set(plan)!={'version','rules'} or type(plan['version']) is not int or plan['version'] not in (1,2) or not isinstance(plan['rules'],list) or len(plan['rules'])>1024:raise NatError('Invalid NAT plan')
     if len(json.dumps(plan))>65536:raise NatError('NAT plan exceeds 64 KiB')
     identities=set();owners={}
     for rule in plan['rules']:
-        if not isinstance(rule,dict) or set(rule)!={'name','scope','position','ingress','egress','source','destination','services','snat','dnat'}:raise NatError('Invalid NAT rule fields')
+        fields={'name','scope','position','ingress','egress','source','destination','services','snat','dnat'}
+        if isinstance(rule,dict) and 'translation' in rule and plan['version']==2:fields.add('translation')
+        if not isinstance(rule,dict) or set(rule)!=fields:raise NatError('Invalid NAT rule fields')
+        translation=rule.get('translation')
+        if 'translation' in rule:
+            from ffn_ipv6_translation import validate_translation
+            validate_translation(translation)
         if not all(isinstance(rule[k],str) and 1<=len(rule[k])<=63 for k in ('name','scope')) or type(rule['position']) is not int:raise NatError('Invalid NAT rule identity')
         key=(rule['scope'],rule['name'])
         if key in identities:raise NatError('Duplicate NAT rule')
@@ -90,7 +96,9 @@ def validate_plan(plan):
             if not re.fullmatch(r'(?:ethernet[0-9]+/[0-9]+|ae[0-9]+|vlan|tunnel|loopback)(?:\.[0-9]+)?',iface):raise NatError('Invalid logical interface')
             if iface in owners and owners[iface]!=rule['scope']:raise NatError('Interface belongs to multiple virtual systems')
             owners[iface]=rule['scope']
-        for addr in rule['source']+rule['destination']:ipv4(addr)
+        for addr in rule['source']+rule['destination']:
+            if translation:ipaddress.IPv6Network(addr,strict=True)
+            else:ipv4(addr)
         if not isinstance(rule['services'],list) or not 1<=len(rule['services'])<=256:raise NatError('Invalid NAT services')
         for service in rule['services']:
             if not isinstance(service,dict) or set(service)!={'protocol','source_ports','destination_ports'} or service['protocol'] not in ('any','tcp','udp'):raise NatError('Invalid NAT service')
@@ -101,6 +109,10 @@ def validate_plan(plan):
                     ports(part)
                 if service['protocol']=='any' and service[key]:raise NatError('Port matches require TCP or UDP')
         snat=rule['snat'];dnat=rule['dnat']
+        if translation:
+            if snat!={'type':'none'} or dnat is not None:raise NatError('IPv6 translation cannot include IPv4 NAT actions')
+            if translation['type']=='nat64' and any(not ipaddress.IPv6Network(n).subnet_of(ipaddress.IPv6Network(translation['prefix'])) for n in rule['destination']):raise NatError('NAT64 destination is outside its prefix')
+            if translation['type']=='nptv6' and (rule['source']!=[translation['internal']] or rule['destination']!=['::/0'] or rule['services']!=[{'protocol':'any','source_ports':[],'destination_ports':[]}]):raise NatError('NPTv6 requires a complete transport-independent prefix mapping')
         if not isinstance(snat,dict) or snat.get('type') not in ('none','static','snat','masquerade'):raise NatError('Invalid source translation')
         expected={'type'}|({'interface'} if snat['type']=='masquerade' else {'address'} if snat['type'] in ('static','snat') else set())
         if set(snat)!=expected:raise NatError('Invalid source translation fields')
@@ -125,8 +137,29 @@ def validate_plan(plan):
 def elements(values,quoted=False):return '{ '+', '.join(json.dumps(v) if quoted else v for v in values)+' }'
 
 
+def translation_capabilities(module_root=Path('/sys/module')):
+    # Discovery is evidence, never permission to bypass coordinated Security.
+    return {
+        'ipv4':dict(supported=True,hardware_offload=False,reason='Commit validates current interface bindings and nftables'),
+        'nat64':dict(supported=False,hardware_offload=False,
+            userspace_installed=bool(executable('jool')),module_loaded=(module_root/'jool').is_dir(),
+            reason='NAT64 needs a commissioned stateful translator with IPv6 Security, ICMP/PMTU, fragment handling and acknowledged session lifecycle'),
+        'nptv6':dict(supported=False,hardware_offload=False,
+            module_loaded=(module_root/'ip6t_NPT').is_dir(),
+            reason='NPTv6 needs a commissioned checksum-neutral IPv6 forwarding provider with Security, hairpin and ICMP error translation'),
+    }
+
+
+def require_translation_provider(plan):
+    for rule in plan['rules']:
+        if 'translation' in rule:
+            kind=rule['translation']['type']
+            raise NatError(rule['scope']+'/'+rule['name']+': '+translation_capabilities()[kind]['reason']+'; no settings applied')
+
+
 def render(plan,mapping,links,revision):
     validate_plan(plan)
+    require_translation_provider(plan)
     if not 1<=revision<16384:raise NatError('NAT generation space exhausted; reconcile conntrack before reset')
     used={i for r in plan['rules'] for i in r['ingress']+r['egress']}
     used.update(r['snat']['interface'] for r in plan['rules'] if r['snat']['type']=='masquerade')
@@ -215,7 +248,8 @@ def status():
         distribution[method]=dict(supported=supported,reason='Commit validates the current dataplane' if supported else
             'Dataplane allocator is not implemented' if method in ('ip-modulo','least-sessions') else 'Required kernel feature is unavailable or unverified')
     state=saved();result={'revision':state['revision'],'digest':state['digest'],'available':False,'applied':False,'provider':'linux-nftables','byteorder':sys.byteorder,'machine':os.uname().machine,'rules':[],
-        'capabilities':{'destination_distribution':distribution,'persistent_source_binding':False},'kernel':kernel}
+        'capabilities':{'destination_distribution':distribution,'persistent_source_binding':False,
+                        'translation_types':translation_capabilities()},'kernel':kernel}
     try:
         mapping=bindings();table,data=inspect()
         result.update(available=True,interfaces=mapping,applied=bool(table and table.get('comment')=='ffn-nat:'+str(state['digest']) and state.get('kernel_digest')==kernel_digest(data)))
@@ -243,6 +277,7 @@ def rule_usage(state,data,applied):
 def prepare(request,allow_restore=False):
     if not isinstance(request,dict) or set(request)!={'revision','plan'}:raise NatError('NAT request requires revision and plan')
     validate_plan(request['plan'])
+    require_translation_provider(request['plan'])
     dynamic=[r['dnat'] for r in request['plan']['rules'] if r['dnat'] and r['dnat'].get('type')=='dynamic']
     if dynamic:
         from ffn_kernel_capabilities import inspect as inspect_kernel
