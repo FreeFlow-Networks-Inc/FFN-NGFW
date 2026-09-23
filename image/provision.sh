@@ -3,6 +3,8 @@
 # into the FFN NGFW appliance: deps, custom builds, FFN install, services.
 set -euo pipefail
 source /config.sh
+grep -Eq '^ID="?ubuntu"?$' /usr/lib/os-release || { echo 'MP images require Ubuntu' >&2; exit 1; }
+[ "$(dpkg --print-architecture)" = amd64 ] || { echo 'MP images require amd64' >&2; exit 1; }
 export DEBIAN_FRONTEND=noninteractive
 log(){ echo -e "\n\033[1;36m[provision] $*\033[0m"; }
 

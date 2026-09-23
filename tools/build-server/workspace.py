@@ -51,9 +51,6 @@ def compiler_paths(root):
     patterns = (
         "home-tools/toolchains/*/*/bin/*gcc",
         "clones/fwdport/gcc-*/*/bin/*gcc",
-        "clones/openwrt-toolchain/*/bin/*gcc",
-        "clones/sdk51/OCTEON-SDK/tools*/bin/*gcc",
-        "clones/octeon-sdk-all/**/bin/*gcc",
     )
     found = {}
     for pattern in patterns:
@@ -69,6 +66,14 @@ def compiler_paths(root):
 def catalog(root):
     initialize(root)
     imports = root / "private/imports/vm"
+    previous = root / "private/catalog/tools.json"
+    if previous.exists():
+        for entry in json.loads(previous.read_text()).get("entries", []):
+            target, alias = Path(entry["path"]), Path(entry["shortcut"])
+            if (target.is_relative_to(imports) and alias.is_relative_to(root / "private/tools")
+                    and not target.exists() and alias.is_symlink()
+                    and os.readlink(alias) == os.path.relpath(target, alias.parent)):
+                alias.unlink()
     entries = []
     for source in sorted(imports.iterdir()):
         if not source.is_dir() or source.is_symlink():

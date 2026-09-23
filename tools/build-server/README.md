@@ -48,3 +48,23 @@ do not run them blindly on the new host. The platform's
 `image/build.sh` requires a clean, explicit preseed for full MP images, and
 `opt/ffn_patch.py` creates code-only patch candidates. Imported tools alone are
 not a validated full-image or patch release.
+
+## PA-5200 OS policy
+
+Full MP images use Ubuntu amd64. CP and DP candidates use source-built Debian
+MIPS64 big-endian, glibc and Linux 6.18+; the OCTEON minimum does not change the
+Ubuntu MP kernel. The platform's `octeon/images/os-policy.json` and image input
+checks enforce this split. OpenWrt/musl, CentOS, old SDK kernels and mixed
+Buildroot initramfs are not eligible inputs. Old OpenWrt/SDK compilers are no
+longer discovered by `doctor`.
+
+After an explicitly requested import cleanup, regenerate the catalog. It removes
+only stale aliases it previously created, not unrelated symlinks. Keep the
+original migration checksum report as historical evidence and record deliberate
+cleanup separately; the cleaned copy no longer matches the original snapshot.
+Preserve modern board drivers, BCM/FE100 references, SDK hardware interface
+headers and Debian package sources separately from retired OS trees.
+
+A successful compiler probe is not a qualified image. Clean packaged runtime
+seeds, pinned board patches and native Debian hardware integration still need
+CP/DP boot, agent, LACP and policy/NAT validation before release promotion.
