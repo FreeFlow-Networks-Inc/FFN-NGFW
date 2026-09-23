@@ -1,5 +1,8 @@
 # Linux build workspace
 
+For the signed code-patch service, publishing and firewall enrollment, see
+[PATCH-SERVER.md](PATCH-SERVER.md).
+
 Keep recovered development inputs separate from release sources and artifacts.
 `workspace.py` organizes a dedicated server directory without installing imports
 into `/usr/local`, changing running services, or rewriting legacy build scripts.

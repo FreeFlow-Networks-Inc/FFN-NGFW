@@ -84,6 +84,9 @@ jobs:
       - name: ffn_payload selftest
         run: python3 opt/ffn_payload.py selftest
 
+      - name: Atomic patch repository and serving boundary
+        run: python3 -m unittest discover -s tests -p test_patch_repository.py
+
       # Fetch only the public engine, before any step reads its files. Keep the
       # full history so a pinned gitlink behind the remote tip can be resolved.
       - name: fetch the crucible submodule

@@ -1,0 +1,32 @@
+[Unit]
+Description=FFN signed code patch repository
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ffn-patches
+Group=ffn-patches
+EnvironmentFile=/etc/ffn-patch-server/server.conf
+ExecStart=/usr/bin/python3 -u ${FFN_PATCH_SERVER} --dir ${FFN_PATCH_PUBLISHED} --bind ${FFN_PATCH_BIND} --port ${FFN_PATCH_PORT} --host-hint ${FFN_PATCH_HOST} --cert ${FFN_PATCH_CERT} --key ${FFN_PATCH_TLS_KEY} --pubkey ${FFN_PATCH_PUBLIC_KEY}
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+InaccessiblePaths=-/etc/ffn-ngfw -/root
+TasksMax=64
+MemoryMax=256M
+LimitNOFILE=512
+
+[Install]
+WantedBy=multi-user.target
