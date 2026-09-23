@@ -9,6 +9,8 @@ window.ffnPlanes = {
     }
     node('h2', resource === 'nif' ? 'NIF link control' : 'Control planes');
     node('p', 'Changes apply through the selected MP control daemon. Review validation before applying. These changes are separate from XML candidate/commit.');
+    const bootMessage = node('p', 'MP hardware startup: checking…');
+    bootMessage.setAttribute('role', 'status');
     const message = node('p', 'Reading execution-plane state…'); message.setAttribute('role','status');
     const observed = node('pre'); observed.style.whiteSpace='pre-wrap'; observed.style.maxHeight='320px'; observed.style.overflow='auto';
     const refresh = node('button', 'Refresh runtime state'); refresh.className='btn';
@@ -29,6 +31,17 @@ window.ffnPlanes = {
     }
     async function load() {
       buttons(true); validated=null;
+      // Status comes from controld. The browser never initiates detection or boot.
+      try {
+        const control = await window.ffnExtensions.request('/api/system/control');
+        const boot = control.hardware_boot || {phase: 'unavailable'};
+        bootMessage.textContent = 'MP hardware startup: ' + boot.phase +
+          (boot.platform ? ' · ' + boot.platform : '') +
+          (boot.current_step ? ' · ' + boot.current_step : '') +
+          (boot.error ? ' · ' + boot.error : '') +
+          (boot.waiting_for?.length ? ' · ' + boot.waiting_for.join('; ') : '') +
+          (boot.hardware_ready ? ' · Hardware acknowledged; traffic enforcement is checked separately.' : '');
+      } catch (e) { bootMessage.textContent = 'MP hardware startup: status unavailable.'; }
       try {
         const response=await call('status',{});
         if(!parent.isConnected) return;

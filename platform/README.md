@@ -53,6 +53,10 @@ datapath works.
 
 ## What a platform declares
 
+An optional `boot.json` declares MP hardware matching, ordered hardware owner
+services and CP/DP acknowledgment requirements. The MP boot worker selects a
+locally installed matching profile at boot; see [hardware startup](../docs/hardware-boot.md).
+
 An optional `plane-images.json` pins a GitHub release manifest and its CP/DP
 images. `ffn_platform.py select NAME` stages a published pair over the management
 plane connection after checkout. `ffn_platform.py images NAME` retries staging;
