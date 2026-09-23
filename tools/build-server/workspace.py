@@ -148,7 +148,14 @@ def environment(root, toolchain):
     if len(matches) != 1:
         raise ValueError("Select one working compiler ID from private/catalog/doctor.json")
     compiler = matches[0]["path"]
-    for name, value in {"FFN_BUILD_ROOT": str(root), "ARCH": "mips", "CROSS_COMPILE": compiler[:-3]}.items():
+    target = matches[0]["target"]
+    arch = next((arch for prefix, arch in (("mips", "mips"), ("aarch64", "arm64"),
+                ("arm", "arm"), ("powerpc", "powerpc"), ("riscv", "riscv"),
+                ("x86_64", "x86"), ("i686", "x86"), ("i386", "x86"))
+                if target.startswith(prefix)), None)
+    if arch is None:
+        raise ValueError("No kernel architecture mapping for compiler target: " + target)
+    for name, value in {"FFN_BUILD_ROOT": str(root), "ARCH": arch, "CROSS_COMPILE": compiler[:-3]}.items():
         print("export " + name + "=" + shlex.quote(value))
 
 
