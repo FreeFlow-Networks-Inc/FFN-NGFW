@@ -73,7 +73,11 @@ def publish(directory, seed_path, public_path, archive, notes='', imported=None)
                 stamp = max(stamp, previous.get('published', 0) + 1)
         meta = dict(file='patch-' + sha + '.tgz', version=package['version'],
                     sha256=sha, size=len(data), published=stamp, notes=notes)
-        manifest = dict(payloads={'patch': meta}, updated=stamp)
+        # Platform image releases share the signed catalog. Publishing a code
+        # patch must not remove independently selected CP/DP image releases.
+        manifest = dict(current or {})
+        manifest['payloads'] = dict(manifest.get('payloads', {}), patch=meta)
+        manifest['updated'] = max(stamp, manifest.get('updated', 0))
         signature, algorithm = payload.sign_manifest(manifest, seed=seed)
         manifest.update(signature=signature, sig_alg=algorithm)
         # Make the immutable payload durable before exposing its signed catalog.

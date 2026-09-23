@@ -230,7 +230,9 @@ def page():
     pays = api_payloads()["payloads"]
 
     rows = ""
-    for kind in ("content", "software", "image", "patch"):
+    kinds = ["content", "software", "image", "patch"]
+    kinds += sorted({p["kind"] for p in pays} - set(kinds))
+    for kind in kinds:
         p = next((x for x in pays if x["kind"] == kind), None)
         if not p:
             rows += ('<tr><td><b>%s</b></td><td colspan="4" class="empty">'
@@ -239,7 +241,7 @@ def page():
         rows += (
             '<tr><td><b>%s</b></td><td>%s</td><td class="mono">%s</td>'
             '<td class="mono">%s&hellip;</td><td>%s</td></tr>' % (
-                kind, html.escape(str(p["version"])), fmt_size(p["size"] or 0),
+                html.escape(kind), html.escape(str(p["version"])), fmt_size(p["size"] or 0),
                 html.escape((p["sha256"] or "")[:16]),
                 ('<a href="%s">download</a>' % html.escape(p["url"]))
                 if p["available"] else '<span class="crit">file missing</span>'))
