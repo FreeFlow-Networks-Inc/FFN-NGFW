@@ -6909,6 +6909,7 @@ function renderDeviceFPGA(c) {
   const hasDpdk = platformApplies('dpdk');
   const hasCard = platformApplies('fpga_card');
   const hasPlanes = platformApplies('cpu_isolation');
+  const hasPlatformControls = typeof window.ffnExtensions?.renderDataplaneControls === 'function';
   const title = (hasDpdk || hasCard) ? 'FPGA / Dataplane'
               : 'Dataplane &amp; Engines';
   c.innerHTML = `
@@ -6920,6 +6921,7 @@ function renderDeviceFPGA(c) {
     </div></div>` : `<div class="section"><div class="card">
       <div id="fpga-firmware" style="font-size:12px;line-height:2.2"></div></div></div>`}
     <div class="section"><div class="section-title">Dataplane Control</div><div class="card">
+      ${hasPlatformControls ? '<div id="platform-dataplane-controls"></div>' : ''}
       <div class="grid grid-3" style="gap:16px">
         ${!hasDpdk ? '' : `<div style="border:1px solid var(--accent);border-radius:var(--radius);padding:16px">
           <h3 style="margin-bottom:8px">DPDK Fast-Path <span class="badge badge-info" style="font-size:9px">primary</span></h3>
@@ -6933,7 +6935,7 @@ function renderDeviceFPGA(c) {
         <div style="border:1px solid var(--border);border-radius:var(--radius);padding:16px">
           <h3 style="margin-bottom:8px">${hasCard ? 'FPGA Dataplane <span class="badge" style="font-size:9px;background:var(--text-muted);color:#000">optional offload</span>' : 'Forwarding Complex'}</h3>
           <div id="dp-fpga-status" style="font-size:12px;line-height:2;margin-bottom:10px">Loading...</div>
-          ${!hasCard ? `<p class="text-dim" style="font-size:10px;margin-top:6px">This chassis forwards on its own silicon. There is no host-side reset for it here: the switch and the dataplane are brought up by the control plane, not by this page.</p>` : `<div style="display:flex;gap:8px">
+          ${!hasCard ? `<p class="text-dim" style="font-size:10px;margin-top:6px">${hasPlatformControls ? 'Processor restart controls above report availability and acknowledgment through the management control daemon.' : 'This chassis forwards on its own silicon. Restart controls require a supported hardware module.'}</p>` : `<div style="display:flex;gap:8px">
             <button class="btn btn-sm btn-danger" onclick="restartDataplane('fpga')">Restart FPGA (PCIe Reset)</button>
             <button class="btn btn-sm" onclick="restartDataplane('fpga-warm')">Warm Reset</button>
           </div>
@@ -6995,6 +6997,7 @@ function renderDeviceFPGA(c) {
       <div class="section-title">DPDK Workers / Zygote <span class="text-dim" style="font-size:11px;text-transform:none;letter-spacing:0">— symmetric-MP workers + shared dpmem (Pass 2 fills live data)</span></div>
       <div id="dpdk-workers-body" class="card"><div class="text-dim">Loading&hellip;</div></div>
     </div>`;
+  if (hasPlatformControls) window.ffnExtensions.renderDataplaneControls(document.getElementById('platform-dataplane-controls'));
   loadFPGAStatus();
   loadDataplaneStatus();
   loadCpuPlanes();
