@@ -2051,7 +2051,8 @@ function renderPatchManagement(c) {
   c.innerHTML = `<div class="page-header"><h2>Patch Management</h2><button class="btn btn-sm" onclick="patchLegacyUpdates()">Full image / content updates</button></div>
     <div id="patch-page"><p class="text-dim">Stage and review signed code updates before installation. Installing or rolling back briefly restarts management services. Configuration and dataplane firmware are outside the patch package.</p>
     <div class="card"><div class="section-title">Update server</div><div style="display:flex;gap:8px;flex-wrap:wrap"><input id="patch-url" class="form-input" style="flex:1;min-width:260px" placeholder="https://updates.example/ffn"><button id="patch-save" class="btn btn-sm" onclick="patchSaveServer()">Save</button></div><div id="patch-notice" role="status" class="text-dim" style="margin-top:8px"></div></div>
-    <div id="patch-state">Loading patch state…</div><div id="patch-platform-images"></div></div>`;
+    <div id="patch-platform-images"></div><h3>Appliance code patches</h3>
+    <div id="patch-state">Loading patch state…</div></div>`;
   if (window.ffnExtensions && window.ffnExtensions.renderPatchImages) window.ffnExtensions.renderPatchImages(document.getElementById('patch-platform-images'));
   _patchData = null;
   loadPatches();
