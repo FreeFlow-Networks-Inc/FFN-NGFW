@@ -8,6 +8,7 @@ class Node {
 (async()=>{
   let n=0, calls=[];
   const ctx={window:{ffnExtensions:{request:async(path,opts)=>{
+    if(path==='/api/system/control')return {hardware_boot:{phase:'ready',owner:'mp',platform:'demo',hardware_ready:true}};
     const req=JSON.parse(opts.body);calls.push(req);
     if(req.action==='status')return {ok:true,trace:['mp','dp'],result:{config:{revision:7}}};
     if(req.action==='validate')return {ok:true,state:'validated',result:{}};
@@ -15,6 +16,7 @@ class Node {
   }}},document:{createElement:t=>new Node(t)},crypto:{randomUUID:()=>String(++n)},JSON,Error};
   vm.runInNewContext(fs.readFileSync(__dirname+'/../static/plane-control.js','utf8'),ctx);
   const root=new Node('main');await ctx.window.ffnPlanes.render(root);
+  assert(root.all().some(x=>x.textContent.includes('MP hardware startup: ready · demo')));
   const button=name=>root.all().find(x=>x.tag==='button'&&x.textContent===name);
   const input=root.all().find(x=>x.tag==='textarea');
   assert(button('Apply validated configuration').disabled);

@@ -28,7 +28,9 @@ import html
 import http.server
 import json
 import os
+import re
 import ssl
+import stat
 import threading
 import time
 
@@ -43,6 +45,24 @@ STARTED = time.time()
 _clients = {}
 _clients_lock = threading.Lock()
 MAX_CLIENTS = 256
+
+
+def payload_name(name):
+    return isinstance(name, str) and re.fullmatch(r'[A-Za-z0-9_-][A-Za-z0-9_.-]{0,150}', name) is not None
+
+
+def open_payload(name):
+    """Never follow a link out of the publication directory, even if listed."""
+    if not payload_name(name):
+        raise ValueError('Invalid payload name')
+    path = os.path.join(DIR, name)
+    if os.path.islink(path):
+        raise ValueError('Symlink payload rejected')
+    fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise ValueError('Payload is not a regular file')
+    return os.fdopen(fd, 'rb')
 
 
 def note_client(ip, ua, path):
@@ -73,7 +93,7 @@ def note_client(ip, ua, path):
 
 def manifest():
     try:
-        with open(os.path.join(DIR, "manifest.json")) as f:
+        with open_payload("manifest.json") as f:
             return json.load(f)
     except Exception:
         return {}
@@ -88,7 +108,8 @@ def pubkey():
 
 
 def allowed_files():
-    return {p["file"] for p in manifest().get("payloads", {}).values() if p.get("file")}
+    return {p["file"] for p in manifest().get("payloads", {}).values()
+            if isinstance(p, dict) and payload_name(p.get("file"))}
 
 
 def fmt_size(n):
@@ -115,11 +136,18 @@ def api_status():
     man = manifest()
     pk = pubkey()
     pays = man.get("payloads", {})
+    from ffn_payload import verify_manifest
+    try:
+        verified, verification = verify_manifest(man, pub=bytes.fromhex(pk)) if pk else (False, 'No public key')
+    except (ValueError, TypeError):
+        verified, verification = False, 'Invalid public key'
     return {
         "service": "ffn-update-server",
         "uptime_seconds": int(time.time() - STARTED),
         "payload_dir": DIR,
         "signed": bool(man.get("signature")),
+        "signature_verified": verified,
+        "verification": verification,
         "sig_alg": man.get("sig_alg"),
         "public_key": pk,
         "manifest_updated": man.get("updated"),
@@ -134,7 +162,11 @@ def api_payloads():
     man = manifest()
     out = []
     for kind, p in sorted(man.get("payloads", {}).items()):
-        f = os.path.join(DIR, p.get("file", ""))
+        try:
+            with open_payload(p.get("file")):
+                available = True
+        except (OSError, ValueError):
+            available = False
         out.append({
             "kind": kind,
             "version": p.get("version"),
@@ -143,7 +175,7 @@ def api_payloads():
             "sha256": p.get("sha256"),
             "published": p.get("published"),
             "notes": p.get("notes"),
-            "available": os.path.isfile(f),
+            "available": available,
             "url": "/%s" % p.get("file", ""),
         })
     return {"payloads": out, "sig_alg": man.get("sig_alg"),
@@ -194,11 +226,13 @@ def page():
     man = manifest()
     pk = pubkey()
     alg = man.get("sig_alg", "none")
-    signed = bool(man.get("signature"))
+    signed = api_status()["signature_verified"]
     pays = api_payloads()["payloads"]
 
     rows = ""
-    for kind in ("content", "software", "image", "patch"):
+    kinds = ["content", "software", "image", "patch"]
+    kinds += sorted({p["kind"] for p in pays} - set(kinds))
+    for kind in kinds:
         p = next((x for x in pays if x["kind"] == kind), None)
         if not p:
             rows += ('<tr><td><b>%s</b></td><td colspan="4" class="empty">'
@@ -207,7 +241,7 @@ def page():
         rows += (
             '<tr><td><b>%s</b></td><td>%s</td><td class="mono">%s</td>'
             '<td class="mono">%s&hellip;</td><td>%s</td></tr>' % (
-                kind, html.escape(str(p["version"])), fmt_size(p["size"] or 0),
+                html.escape(kind), html.escape(str(p["version"])), fmt_size(p["size"] or 0),
                 html.escape((p["sha256"] or "")[:16]),
                 ('<a href="%s">download</a>' % html.escape(p["url"]))
                 if p["available"] else '<span class="crit">file missing</span>'))
@@ -258,7 +292,8 @@ def page():
 <tbody>%s</tbody></table>
 <div style="color:var(--muted);font-size:12.5px;margin-top:10px">
 <b>content</b> applies live &middot; <b>software</b> restarts services and keeps a
-rollback copy &middot; <b>image</b> is written to the appliance's <i>inactive</i> A/B
+rollback copy &middot; <b>patch</b> stages code for administrator installation
+with rollback &middot; <b>image</b> is written to the appliance's <i>inactive</i> A/B
 slot, so a bad update is escaped by picking the other GRUB entry.</div></div>
 
 <div class="card"><h2>Signing</h2>%s</div>
@@ -266,13 +301,15 @@ slot, so a bad update is escaped by picking the other GRUB entry.</div></div>
 <div class="card"><h2>Appliance check-ins</h2>%s</div>
 
 <div class="card"><h2>Point an appliance here</h2>
-<pre>ffn_payload.py check  --url %s
-ffn_payload.py update --url %s --kind content --apply
-ffn_payload.py update --url %s --kind image   --apply</pre>
+<pre>ffn_payload.py check --url %s
+ffn_patch.py check --url %s
+ffn_patch.py status</pre>
 <div style="color:var(--muted);font-size:12.5px;margin-top:10px">
-Or in the appliance WebUI: <b>Device &rsaquo; Software Updates</b>, set the server to
+First install the trusted TLS issuing CA and verify the signing public key.
+In the appliance WebUI: <b>Device &rsaquo; Software &rsaquo; Patch Management</b>, set the server to
 <span class="mono">%s</span>. Every payload must match both the signed manifest and
-its SHA-256 before anything is written.</div></div>
+its SHA-256 before anything is written. Check, download and validate first;
+installation requires a separate administrator action.</div></div>
 
 <div class="card"><h2>API</h2>
 <div class="grid mono" style="font-size:12px">
@@ -282,12 +319,16 @@ its SHA-256 before anything is written.</div></div>
 <div><a href="/manifest.json">/manifest.json</a></div>
 </div></div>
 </div></body></html>""" % (CSS, sig_pill, when, len(cl), rows, key_html,
-                           clients_html, base, base, base, base)
+                           clients_html, html.escape(base), html.escape(base), html.escape(base))
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "ffn-update/2"
     protocol_version = "HTTP/1.1"
+
+    def setup(self):
+        self.request.settimeout(30)
+        super().setup()
 
     def log_message(self, fmt, *a):
         print("[%s] %s" % (self.address_string(), fmt % a))
@@ -336,32 +377,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._json({"error": "no such endpoint"}, 404)
 
         if path == "/manifest.json":
-            p = os.path.join(DIR, "manifest.json")
-            if not os.path.isfile(p):
+            try:
+                with open_payload("manifest.json") as f:
+                    body = f.read()
+            except (OSError, ValueError):
                 return self._send(404, b"no manifest\n", "text/plain")
-            with open(p, "rb") as f:
-                return self._send(200, f.read(), "application/json")
+            return self._send(200, body, "application/json")
 
         # Payloads: only files the manifest names. Not a general file server, so
         # an unrelated file in the directory is unreachable and traversal has
         # nothing to reach.
-        name = os.path.basename(path.lstrip("/"))
+        name = path[1:]
         if name not in allowed_files():
             return self._send(404, b"not found\n", "text/plain")
-        full = os.path.join(DIR, name)
-        if not os.path.isfile(full):
+        try:
+            stream = open_payload(name)
+        except (OSError, ValueError):
             return self._send(404, b"payload missing\n", "text/plain")
 
-        size = os.path.getsize(full)
-        self.send_response(200)
-        self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Length", str(size))
-        self.send_header("Content-Disposition",
-                         'attachment; filename="%s"' % name)
-        self.end_headers()
-        if self.command == "HEAD":
-            return
-        with open(full, "rb") as f:
+        with stream as f:
+            size = os.fstat(f.fileno()).st_size
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(size))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Disposition", 'attachment; filename="%s"' % name)
+            self.end_headers()
+            if self.command == "HEAD":
+                return
             while True:
                 b = f.read(1 << 20)
                 if not b:
@@ -373,7 +416,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 def main():
-    global DIR, PORT, HOSTHINT
+    global DIR, PORT, HOSTHINT, PUBKEY
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", default="/srv/ffn-updates")
     ap.add_argument("--port", type=int, default=8444)
@@ -381,15 +424,18 @@ def main():
     ap.add_argument("--cert", default="/etc/ffn-ngfw/tls/server.crt")
     ap.add_argument("--key", default="/etc/ffn-ngfw/tls/server.key")
     ap.add_argument("--host-hint", default="")
+    ap.add_argument("--pubkey", default=PUBKEY)
     a = ap.parse_args()
 
     DIR = a.dir
     PORT = a.port
+    PUBKEY = a.pubkey
     HOSTHINT = a.host_hint or os.environ.get("FFN_UPDATE_HOST") or "update-server.example"
 
     os.makedirs(DIR, exist_ok=True)
     srv = http.server.ThreadingHTTPServer((a.bind, a.port), Handler)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.load_cert_chain(a.cert, a.key)
     srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
     print("FFN update server on https://%s:%d serving %s" % (a.bind, a.port, DIR))

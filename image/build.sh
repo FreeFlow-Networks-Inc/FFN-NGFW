@@ -155,7 +155,7 @@ cp "$HERE/config.sh" "$HERE/provision.sh" "$HERE/ffn-firstboot.sh" "$HERE/ffn-hw
    "$HERE/requirements-v1.frozen" "$HERE/requirements-v2.frozen" "$PAYLOAD/"
 mkdir -p "$PAYLOAD/control-code"
 cp "$HERE/install-control-api.py" "$PAYLOAD/control-code/"
-for name in ffn_controld.py ffn_controld_client.py ffn_control_plane.py ffn_agent_protocol.py ffn_agent_resources.py ffn_planed.py ffn_plane_api.py ffn_policy_config.py ffn_policy_plan.py ffn_policy_profiles.py ffn_qos_config.py ffn_nat_policy.py ffn_ipv6_translation.py; do
+for name in ffn_controld.py ffn_controld_client.py ffn_control_plane.py ffn_hardware_boot.py ffn_agent_protocol.py ffn_agent_resources.py ffn_planed.py ffn_plane_api.py ffn_policy_config.py ffn_policy_plan.py ffn_policy_profiles.py ffn_qos_config.py ffn_nat_policy.py ffn_ipv6_translation.py; do
   cp "$HERE/../opt/$name" "$PAYLOAD/control-code/$name"
 done
 # pinned external sources — slow; skip on resume

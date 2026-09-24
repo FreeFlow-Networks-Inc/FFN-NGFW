@@ -132,6 +132,9 @@ def main():
     env=dict(item.split('=',1) for item in Path('/proc/'+pid+'/environ').read_text().split('\0') if '=' in item)
     values={k:v for k,v in env.items() if k.startswith('FFN_') and k not in
             ('FFN_MANAGER_FRONTEND','FFN_CONSOLE_ENABLED','FFN_CONSOLE_IDENTITIES')}
+    # Both frontends use the daemon's configured worker selection. Never
+    # silently fall back to a direct plane socket after console migration.
+    values['FFN_CONTROL_GATEWAY']='controld'
     if any('\n' in v or '\r' in v for v in values.values()):raise ValueError('Multiline service environment unsupported')
     updates={
         '/usr/local/bin/ffn-cli':merge_cli(Path('/usr/local/bin/ffn-cli').read_text()),
@@ -143,7 +146,7 @@ def main():
             '[Unit]\nWants=ffn-managementd.service\nAfter=ffn-managementd.service\n[Service]\nEnvironment=FFN_CONSOLE_ENABLED=1\n',
         '/etc/systemd/system/ffn-manager-v2.service.d/50-backend.conf':
             '[Unit]\nWants=ffn-managementd.service\nAfter=ffn-managementd.service\n[Service]\nEnvironment=FFN_MANAGER_FRONTEND=1\n'}
-    for name in ('ffn_management_ipc.py','ffn_cli_transport.py','ffn_console_identity.py','ffn_console_accounts.py','ffn_pam_console.py','ffn_authorization.py','ffn_config_lock.py'):
+    for name in ('ffn_management_ipc.py','ffn_cli_transport.py','ffn_console_identity.py','ffn_console_accounts.py','ffn_pam_console.py','ffn_authorization.py','ffn_config_lock.py','ffn_plane_api.py'):
         for base in ('/opt/ffn-ngfw','/opt/ffn-ngfw-v2'):updates[base+'/'+name]=(root/'opt'/name).read_text()
     for name,body in updates.items():
         if name.endswith('.py') or name.endswith('/ffn-cli'):compile(body,name,'exec')

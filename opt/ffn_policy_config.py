@@ -334,6 +334,8 @@ def runtime_report(xml,check_runtime=False):
     root=parse(xml);blockers=[];disabled=0;nat_enabled=[];security_enabled=[];plans={}
     from ffn_security_control import commissioned as security_commissioned, preflight as security_preflight
     coordinated=security_commissioned()
+    from ffn_interface_addresses import reference_blockers
+    blockers.extend(reference_blockers(root))
     from ffn_qos_config import activation_blockers
     blockers.extend(activation_blockers(root))
     for scope,node in owners(root).items():

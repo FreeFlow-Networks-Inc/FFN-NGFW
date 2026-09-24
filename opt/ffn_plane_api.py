@@ -30,7 +30,7 @@ def install(app, current_user, require_admin, audit):
         # All operations require admin: results may contain saved configuration.
         require_admin(user)
         path = os.environ.get('FFN_PLANE_SOCKET', '')
-        if not path or not os.path.isabs(path):
+        if os.environ.get('FFN_CONTROL_GATEWAY') != 'controld' and (not path or not os.path.isabs(path)):
             raise HTTPException(503, 'No MP control daemon selected')
         raw = bytearray()
         async for chunk in request.stream():

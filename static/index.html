@@ -2051,7 +2051,9 @@ function renderPatchManagement(c) {
   c.innerHTML = `<div class="page-header"><h2>Patch Management</h2><button class="btn btn-sm" onclick="patchLegacyUpdates()">Full image / content updates</button></div>
     <div id="patch-page"><p class="text-dim">Stage and review signed code updates before installation. Installing or rolling back briefly restarts management services. Configuration and dataplane firmware are outside the patch package.</p>
     <div class="card"><div class="section-title">Update server</div><div style="display:flex;gap:8px;flex-wrap:wrap"><input id="patch-url" class="form-input" style="flex:1;min-width:260px" placeholder="https://updates.example/ffn"><button id="patch-save" class="btn btn-sm" onclick="patchSaveServer()">Save</button></div><div id="patch-notice" role="status" class="text-dim" style="margin-top:8px"></div></div>
+    <div id="patch-platform-images"></div><h3>Appliance code patches</h3>
     <div id="patch-state">Loading patch state…</div></div>`;
+  if (window.ffnExtensions && window.ffnExtensions.renderPatchImages) window.ffnExtensions.renderPatchImages(document.getElementById('patch-platform-images'));
   _patchData = null;
   loadPatches();
   refreshTimer = setInterval(loadPatches, 2500);
@@ -2267,6 +2269,7 @@ async function loadVendorFW(){
   </div>
 
   <div class="card"><div class="section-title">Octeon Bring-up &mdash; ${b?b.ready:0}/${b?b.total:9} steps ready</div>
+    <button class="btn" onclick="loadVendorFW()">Refresh status</button>
     <table class="data-table"><thead><tr><th style="width:36px">#</th><th style="width:92px">State</th><th>Step</th></tr></thead>
     <tbody>${stepRows}</tbody></table>
   </div>
@@ -2479,16 +2482,17 @@ function hardwareDriverHTML(observation) {
   const driver = observation.userspace || {};
   const bool = value => value === true ? 'Yes' : value === false ? 'No' : 'Unknown';
   const rows = (observation.devices || []).map(d => `<tr><td class="mono">${_escSP(d.pci)}</td>
-    <td>${d.kernel_state === 'bound' ? _escSP(d.kernel_driver || 'Bound; name unavailable') : d.kernel_state === 'unbound' ? 'Unbound (userspace access)' : 'Unknown'}
+    <td>${d.kernel_state === 'bound' ? _escSP(d.kernel_driver || 'Bound; name unavailable') : d.kernel_state === 'unbound' ? 'Unbound' : 'Unknown'}
     ${d.kernel_module ? '<div>Module: '+_escSP(d.kernel_module)+'</div>' : ''}${d.kernel_version ? '<div>Version: '+_escSP(d.kernel_version)+'</div>' : ''}</td>
-    <td>${bool(d.memory_decode)}</td><td>${hwNumber(d.bar0_bytes, ' bytes')}</td></tr>`).join('');
+    <td>${bool(d.memory_decode)}</td><td>${hwNumber(d.bar0_bytes, ' bytes')}<div>Resource available: ${bool(d.resource_present)}</div></td></tr>`).join('');
   return `<div class="card" id="fe100-driver-status">${heading}
     <div class="text-dim">Source: CP agent ${_escSP(observation.agent || '')} via ffn-controld; ${Number.isFinite(observation.age_seconds) ? Math.floor(observation.age_seconds) : 'Unknown'} seconds old</div>
     ${observation.available === false ? '<div role="status">PCI driver observation incomplete</div>' : ''}
     <div class="table-wrap"><table><thead><tr><th>PCI device</th><th>Kernel driver</th><th>Memory decoding enabled</th><th>BAR0</th></tr></thead><tbody>${rows || '<tr><td colspan="4">No FE100 device reported by this observation</td></tr>'}</tbody></table></div>
     <div>Userspace driver: <strong>ffn_fe100.py</strong> (${driver.installed === true ? 'Installed' : driver.installed === false ? 'Unavailable' : 'Unknown'})</div>
     <div>Register access: <strong>${driver.state === 'responding' ? 'Responding (non-clearing register probe)' : 'Unverified'}</strong></div>
-    <div>Reader installed: ${bool(driver.reader_installed)} &middot; Register map installed: ${bool(driver.register_map_installed)} &middot; Memory device present: ${bool(driver.memory_device_present)}</div>
+    <div>Access path: ${driver.access === 'pci-resource0' ? 'Bound PCI BAR0 (resource0)' : driver.access === 'devmem-mmio' ? 'Legacy physical-memory adapter' : 'Unknown'}</div>
+    <div>Reader installed: ${bool(driver.reader_installed)} &middot; Register map installed: ${bool(driver.register_map_installed)}</div>
     ${driver.sha256 ? '<details><summary>Driver fingerprint</summary><span class="mono">SHA-256: '+_escSP(driver.sha256)+'</span></details>' : ''}
     <div class="text-dim">Register access confirms driver communication. It does not establish hardware flow offload or forwarding readiness.</div>
   </div>`;
@@ -4169,8 +4173,7 @@ function switchIfaceEditorTab(name) {
   });
 }
 function addIfaceAddress(family,value='') {
-  const row=document.createElement('tr');
-  row.innerHTML=`<td><input aria-label="IPv${family} address with prefix" data-family="${family}" required placeholder="${family===4?'192.0.2.1/24':'2001:db8::1/64'}" value="${_escSP(value)}"></td><td><button class="btn btn-sm" type="button" aria-label="Remove IPv${family} address">Remove</button></td>`;
+  const row=interfaceAddressRow(family,value,document.getElementById('interface-form').snapshot);
   row.querySelector('button').onclick=()=>{row.remove();document.getElementById('ifm-add-'+family).focus();};
   document.getElementById('ifm-addresses-'+family).appendChild(row);
   if(!value)row.querySelector('input').focus();
@@ -4220,7 +4223,7 @@ async function openIfaceModal(name) {
         <div id="ifm-dhcp-block"><div class="form-row"><div class="form-group"><label for="ifm-dhcp-route">DHCP Default Route</label><select id="ifm-dhcp-route"><option value="yes">Install received default route</option><option value="no">Do not install default route</option></select></div>
         <div class="form-group"><label for="ifm-dhcp-metric">Default Route Metric</label><input id="ifm-dhcp-metric" type="number" min="1" max="65535" required value="${_escSP(cur.dhcp_route_metric)}"></div></div>
         <p class="text-dim">DHCP replaces static interface addresses when saved. This client does not configure static IPv6 addresses alongside DHCP.</p></div>
-        <div id="ifm-static4"><p class="text-dim">Enter each IPv4 address with its prefix length.</p><table><thead><tr><th>Address / Prefix</th><th>Actions</th></tr></thead><tbody id="ifm-addresses-4"></tbody></table><button id="ifm-add-4" class="btn btn-sm" type="button" onclick="addIfaceAddress(4)">Add IPv4 Address</button></div>
+        <div id="ifm-static4"><p class="text-dim">Select an IP/netmask address object or enter an IPv4 address with its prefix length.</p><table><thead><tr><th>Address / Prefix</th><th>Actions</th></tr></thead><tbody id="ifm-addresses-4"></tbody></table><button id="ifm-add-4" class="btn btn-sm" type="button" onclick="addIfaceAddress(4)">Add IPv4 Address</button></div>
       </section>
       <section id="ifm-panel-ipv6" role="tabpanel" aria-labelledby="ifm-tab-ipv6" hidden>
         <div class="form-group"><label for="ifm-ipv6-enabled">IPv6</label><select id="ifm-ipv6-enabled"><option value="no">Disabled</option><option value="yes">Enabled</option></select></div>
@@ -4244,7 +4247,7 @@ async function openIfaceModal(name) {
     const form=document.getElementById('interface-form');form.snapshot=snapshot;form.cap=cap;
     const values={'mode':cur.mode,'addressing':cur.dhcp_client?'dhcp':'static','dhcp-route':cur.dhcp_default_route?'yes':'no','ipv6-enabled':cur.ipv6_enabled?'yes':'no','speed':cur.link_speed,'duplex':cur.link_duplex,'state':cur.mode==='none'&&!isAE?'auto':cur.link_state,'lldp':cur.lldp_enabled?'yes':'no','bondmode':cur.bond_mode};
     Object.entries(values).forEach(([id,value])=>document.getElementById('ifm-'+id).value=value);
-    cur.ip_addresses.forEach(address=>addIfaceAddress(address.includes(':')?6:4,address));
+    cur.ip_addresses.forEach(address=>addIfaceAddress(interfaceAddressFamily(snapshot,address),address));
     form.onsubmit=event=>{event.preventDefault();saveIface();};
     _ifmToggle();document.getElementById('ifm-mode').focus();
   } catch(error){if(generation===openIfaceModal.generation&&loading.isConnected)box.textContent=error.message;}
@@ -4281,7 +4284,7 @@ async function saveIface() {
   const get=id=>document.getElementById('ifm-'+id).value,mode=get('mode'),l3=mode==='layer3',dhcp=l3&&get('addressing')==='dhcp';
   for(const input of form.querySelectorAll('input[data-family]')){
     const value=input.value.trim(),family=Number(input.dataset.family);
-    input.setCustomValidity(value.includes('/')&&(family===6?value.includes(':'):!value.includes(':'))?'':'Enter an IPv'+family+' address with its prefix length.');
+    input.setCustomValidity(validInterfaceAddressChoice(form.snapshot,value,family)?'':'Select an IPv'+family+' IP/netmask object or enter an address with its prefix length.');
   }
   const invalid=Array.from(form.elements).find(el=>el.willValidate&&!el.validity.valid);
   if(invalid){const panel=invalid.closest('[role="tabpanel"]');if(panel)switchIfaceEditorTab(panel.id.replace('ifm-panel-',''));invalid.reportValidity();return;}
@@ -4364,10 +4367,28 @@ function subinterfaceOptions(choices,current) {
   if(current&&!names.includes(current)) names.push(current);
   return '<option value="">None</option>'+names.map(name=>`<option value="${_escSP(name)}" ${name===current?'selected':''}>${_escSP(name)}${!(choices||[]).includes(name)?' (unresolved; retained)':''}</option>`).join('');
 }
+function interfaceAddressFamily(snapshot,value) {
+  return (snapshot.address_choices||[]).find(o=>o.name===value)?.family || (value.includes(':')?6:4);
+}
+function validInterfaceAddressChoice(snapshot,value,family) {
+  const object=(snapshot.address_choices||[]).find(o=>o.name===value);
+  return object?object.family===family:value.includes('/')&&(family===6?value.includes(':'):!value.includes(':'));
+}
+function interfaceAddressRow(family,value,snapshot) {
+  const objects=(snapshot.address_choices||[]).filter(o=>o.family===family);
+  const selected=objects.find(o=>o.name===value);
+  const unresolved=value&&!value.includes('/')&&!selected;
+  const row=document.createElement('tr');
+  row.innerHTML=`<td><select aria-label="IPv${family} address object"><option value="">Enter IP address / prefix</option>${objects.map(o=>`<option value="${_escSP(o.name)}" ${o.name===value?'selected':''}>${_escSP(o.name)} — ${_escSP(o.value)} (${_escSP(o.scope)})</option>`).join('')}${unresolved?`<option value="${_escSP(value)}" selected>${_escSP(value)} (unresolved)</option>`:''}</select><input aria-label="IPv${family} address with prefix" data-family="${family}" required placeholder="${family===4?'192.0.2.1/24':'2001:db8::1/64'}" value="${_escSP(value)}" ${selected||unresolved?'readonly':''}><small class="text-dim" role="status"></small></td><td><button type="button" class="btn btn-sm" aria-label="Remove IPv${family} address">Remove</button></td>`;
+  const menu=row.querySelector('select'),input=row.querySelector('input'),detail=row.querySelector('small');
+  const describe=()=>{const object=objects.find(o=>o.name===menu.value);detail.textContent=object?'Resolves to '+object.value+' at Commit':menu.value?'Object unavailable in this virtual system. Select a valid object.':'Select an object from Objects > Addresses, or enter an IP address / prefix.';};
+  menu.onchange=()=>{input.readOnly=!!menu.value;input.value=menu.value;input.setCustomValidity('');describe();if(!menu.value)input.focus();};
+  input.oninput=()=>input.setCustomValidity('');describe();
+  return row;
+}
 function addSubinterfaceAddress(family,value='') {
   const body=document.getElementById('sif-addresses-'+family);
-  const row=document.createElement('tr');
-  row.innerHTML=`<td><input aria-label="IPv${family} address with prefix" data-family="${family}" required placeholder="${family===4?'192.0.2.1/24':'2001:db8::1/64'}" value="${_escSP(value)}"></td><td><button type="button" class="btn btn-sm" aria-label="Remove IPv${family} address">Remove</button></td>`;
+  const row=interfaceAddressRow(family,value,document.getElementById('subinterface-form').snapshot);
   row.querySelector('button').onclick=()=>{row.remove();document.getElementById('sif-add-'+family).focus();};
   body.appendChild(row);
   if(!value) row.querySelector('input').focus();
@@ -4404,7 +4425,7 @@ async function openSubinterfaceModal(parent, childName = null) {
         <p class="text-dim">Selections use candidate configuration. Create missing objects in Network before assigning them here.</p>
       </section>
       ${l3?[4,6].map(family=>`<section id="sif-panel-ipv${family}" role="tabpanel" aria-labelledby="sif-tab-ipv${family}" hidden>
-        <p>Static IPv${family} addresses</p><p class="text-dim">Enter each address with its prefix length. Remove a row to clear that address.</p>
+        <p>Static IPv${family} addresses</p><p class="text-dim">Select an IP/netmask address object or enter an address with its prefix length. Remove a row to clear that address.</p>
         <table class="data-table"><thead><tr><th>Address / Prefix</th><th>Actions</th></tr></thead><tbody id="sif-addresses-${family}"></tbody></table>
         <button id="sif-add-${family}" class="btn btn-sm" type="button" onclick="addSubinterfaceAddress(${family})">Add IPv${family} Address</button>
       </section>`).join(''):''}
@@ -4418,7 +4439,8 @@ async function openSubinterfaceModal(parent, childName = null) {
       </fieldset>
       <p class="text-dim">${_escSP(snapshot.runtime_note)}</p>
       <div class="settings-toolbar"><span id="sif-msg" role="status"></span><button class="btn" type="button" onclick="closeModal('modal-info')">Cancel</button><button id="sif-save" class="btn btn-primary" type="submit" ${snapshot.can_edit?'':'disabled'}>OK</button></div></form>`;
-    if(l3) entry.ip_addresses.forEach(address=>addSubinterfaceAddress(address.includes(':')?6:4,address));
+    document.getElementById('subinterface-form').snapshot=snapshot;
+    if(l3) entry.ip_addresses.forEach(address=>addSubinterfaceAddress(interfaceAddressFamily(snapshot,address),address));
     if(!snapshot.can_edit) box.querySelectorAll('input,select,textarea,.sif-fields button:not([role="tab"])').forEach(control=>control.disabled=true);
     document.getElementById('subinterface-form').onsubmit = event => {event.preventDefault();saveSubinterface(parent,snapshot,existing);};
     document.getElementById(existing?'sif-tag':'sif-unit').focus();
@@ -4432,7 +4454,7 @@ async function saveSubinterface(parent,snapshot,existing) {
   const form=document.getElementById('subinterface-form');
   for(const input of form.querySelectorAll('input[data-family]')) {
     const address=input.value.trim(), family=Number(input.dataset.family);
-    input.setCustomValidity(address.includes('/') && (family===6?address.includes(':'):!address.includes(':'))?'':'Enter an IPv'+family+' address with its prefix length.');
+    input.setCustomValidity(validInterfaceAddressChoice(snapshot,address,family)?'':'Select an IPv'+family+' IP/netmask object or enter an address with its prefix length.');
   }
   const invalid=Array.from(form.elements).find(input=>input.willValidate&&!input.validity.valid);
   if(invalid){const panel=invalid.closest('[role="tabpanel"]');if(panel)switchSubinterfaceTab(panel.id.replace('sif-panel-',''));invalid.reportValidity();return;}
@@ -6907,6 +6929,7 @@ function renderDeviceFPGA(c) {
   const hasDpdk = platformApplies('dpdk');
   const hasCard = platformApplies('fpga_card');
   const hasPlanes = platformApplies('cpu_isolation');
+  const hasPlatformControls = typeof window.ffnExtensions?.renderDataplaneControls === 'function';
   const title = (hasDpdk || hasCard) ? 'FPGA / Dataplane'
               : 'Dataplane &amp; Engines';
   c.innerHTML = `
@@ -6918,6 +6941,7 @@ function renderDeviceFPGA(c) {
     </div></div>` : `<div class="section"><div class="card">
       <div id="fpga-firmware" style="font-size:12px;line-height:2.2"></div></div></div>`}
     <div class="section"><div class="section-title">Dataplane Control</div><div class="card">
+      ${hasPlatformControls ? '<div id="platform-dataplane-controls"></div>' : ''}
       <div class="grid grid-3" style="gap:16px">
         ${!hasDpdk ? '' : `<div style="border:1px solid var(--accent);border-radius:var(--radius);padding:16px">
           <h3 style="margin-bottom:8px">DPDK Fast-Path <span class="badge badge-info" style="font-size:9px">primary</span></h3>
@@ -6931,7 +6955,7 @@ function renderDeviceFPGA(c) {
         <div style="border:1px solid var(--border);border-radius:var(--radius);padding:16px">
           <h3 style="margin-bottom:8px">${hasCard ? 'FPGA Dataplane <span class="badge" style="font-size:9px;background:var(--text-muted);color:#000">optional offload</span>' : 'Forwarding Complex'}</h3>
           <div id="dp-fpga-status" style="font-size:12px;line-height:2;margin-bottom:10px">Loading...</div>
-          ${!hasCard ? `<p class="text-dim" style="font-size:10px;margin-top:6px">This chassis forwards on its own silicon. There is no host-side reset for it here: the switch and the dataplane are brought up by the control plane, not by this page.</p>` : `<div style="display:flex;gap:8px">
+          ${!hasCard ? `<p class="text-dim" style="font-size:10px;margin-top:6px">${hasPlatformControls ? 'Processor restart controls above report availability and acknowledgment through the management control daemon.' : 'This chassis forwards on its own silicon. Restart controls require a supported hardware module.'}</p>` : `<div style="display:flex;gap:8px">
             <button class="btn btn-sm btn-danger" onclick="restartDataplane('fpga')">Restart FPGA (PCIe Reset)</button>
             <button class="btn btn-sm" onclick="restartDataplane('fpga-warm')">Warm Reset</button>
           </div>
@@ -6993,6 +7017,7 @@ function renderDeviceFPGA(c) {
       <div class="section-title">DPDK Workers / Zygote <span class="text-dim" style="font-size:11px;text-transform:none;letter-spacing:0">— symmetric-MP workers + shared dpmem (Pass 2 fills live data)</span></div>
       <div id="dpdk-workers-body" class="card"><div class="text-dim">Loading&hellip;</div></div>
     </div>`;
+  if (hasPlatformControls) window.ffnExtensions.renderDataplaneControls(document.getElementById('platform-dataplane-controls'));
   loadFPGAStatus();
   loadDataplaneStatus();
   loadCpuPlanes();
@@ -7188,14 +7213,19 @@ function _offloadHTML(o) {
        dataplane from an idle one, and a green dot claiming otherwise would be
        an invention. It is reported as present, with what is genuinely known. */
     rows.push(`<div>${_dpDot('up')}<strong>Data plane</strong> `
-      + `<span class="mono" style="font-size:11px">${_escSP(dp.pci)}</span> `
+      + `<span class="mono" style="font-size:11px">${_escSP(dp.pci||'')}</span> `
       + `<span class="text-green">present</span>`
       + (dp.liveness ? ` <span class="text-dim" style="font-size:10px">(running state ${_escSP(dp.liveness)})</span>` : '')
       + `</div>`
       + `<div class="text-dim" style="font-size:10px;margin-left:14px">${_escSP(dp.model||'')}`
       + (dp.pci_enabled === false ? ' · PCI decode off' : '') + `</div>`);
+    if (dp.agent_acknowledged) {
+      rows.push(`<div style="font-size:11px;margin-left:14px">Agent ${dp.ready?'ready':'not ready'} · Boot <span class="mono">${_escSP(dp.boot_id)}</span>`
+        + (Number.isInteger(dp.cpu_count)?` · ${dp.cpu_count} cores`:'') + `</div>`
+        + `<div class="text-dim" style="font-size:11px;margin-left:14px">Forwarding ${dp.forwarding_verified?'verified':'not verified'}</div>`);
+    }
   } else if (cp.reachable) {
-    rows.push(`<div>${_dpDot('down')}<strong>Data plane</strong> <span class="text-dim">not found on the control plane's bus</span></div>`);
+    rows.push(`<div>${_dpDot('idle')}<strong>Data plane</strong> <span class="text-dim">${dp.inventory_status==='available'?'not found on the control plane’s bus':'inventory unavailable'}</span></div>`);
   }
 
   if (sw.present)
@@ -7315,7 +7345,7 @@ async function loadFPGAStatus() {
       const dp = off.dp || {}, sw = off.switch || {}, fe = off.fe100 || {};
       fwEl.innerHTML = `
         <div><strong>Dataplane:</strong> <span class="${dp.present?'text-green':''}">`
-        + `${dp.present ? 'Offload complex' : 'Offload complex (no DP found)'}</span></div>
+        + `${dp.present ? 'Offload complex' : dp.inventory_status==='available'?'Offload complex (no DP found)':'Offload complex (DP inventory unavailable)'}</span></div>
         <div><strong>Control plane:</strong> ${off.generation||'OCTEON'}${off.cp&&off.cp.kernel?` <span class="text-dim">(${off.cp.kernel})</span>`:''}</div>
         ${dp.present ? `<div><strong>Forwarding:</strong> ${dp.model||''}</div>` : ''}
         ${sw.present ? `<div><strong>Switch:</strong> ${sw.model||''}</div>` : ''}

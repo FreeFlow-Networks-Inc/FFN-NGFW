@@ -115,8 +115,10 @@ class ControlPlane:
                 'error': (state['error'] or 'Observation expired') if not fresh else None, 'reconnects': state['reconnects'],
                 # Historic reports are retained only as explicitly labelled last observations.
                 'last_observation': sample}
+        from ffn_hardware_boot import status as hardware_boot_status
         return {'owner': 'ffn-controld', 'worker_configured': bool(self.config['worker_socket']),
-                'agents': observed, 'event_count': len(self.events)}
+                'agents': observed, 'event_count': len(self.events),
+                'hardware_boot': hardware_boot_status({'agents': observed})}
 
     async def request(self, args):
         if set(args) != {'request'}:

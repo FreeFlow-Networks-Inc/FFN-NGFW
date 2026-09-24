@@ -52,10 +52,10 @@ class Resolver:
 
     def addresses(self,values,stack=()):
         out=[]
-        def address(value):
+        def address(value, object_value=False):
             if self.family==4:return ipv4(value)
             try:
-                network=ipaddress.ip_network(value,strict=True)
+                network=ipaddress.ip_network(value,strict=not object_value)
                 if network.version!=6:raise ValueError()
                 return str(network)
             except (ValueError,TypeError):raise NatError('Expected an IPv6 address or network prefix: '+str(value))
@@ -68,7 +68,7 @@ class Resolver:
                 child=entry.find('ip-netmask')
                 if child is None:child=entry.find('ip-range')
                 if child is None:raise NatError('NAT requires static address objects; unresolved object: '+value)
-                out.append(address(child.text or ''))
+                out.append(address(child.text or '', object_value=child.tag=='ip-netmask'))
             elif group is not None:
                 members=group.findall('static/member')
                 if group.find('dynamic') is not None or not members:raise NatError('NAT requires a nonempty static address group: '+value)

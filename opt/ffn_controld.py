@@ -645,6 +645,7 @@ class IPCServer:
             "plane/request":            self.planes.request,
             "state/control":            self.planes.status,
             "state/agents":             self.planes.status,
+            "state/hardware-boot":      lambda a: self.planes.status()['hardware_boot'],
             "state/control-events":     lambda a: list(self.planes.events),
             # Read-only state
             "state/interfaces":         lambda a: self.state.interfaces(),

@@ -59,6 +59,9 @@ jobs:
       - name: Verified processor image staging
         run: python3 -m unittest discover -s tests -p test_plane_images.py
 
+      - name: MP hardware discovery and boot ownership
+        run: python3 -m unittest discover -s tests -p test_hardware_boot.py
+
       - name: hardware inventory and tuning regressions (no hardware required)
         run: |
           python3 tests/test_hwdetect.py
@@ -80,6 +83,9 @@ jobs:
       # its key paths into a tmpdir, so it cannot touch real key material.
       - name: ffn_payload selftest
         run: python3 opt/ffn_payload.py selftest
+
+      - name: Atomic patch repository and serving boundary
+        run: python3 -m unittest discover -s tests -p test_patch_repository.py
 
       # Fetch only the public engine, before any step reads its files. Keep the
       # full history so a pinned gitlink behind the remote tip can be resolved.
@@ -246,6 +252,9 @@ jobs:
       - name: candidate objects and selected runtime providers
         run: |
           python tests/test_config_objects.py
+          python tests/test_interface_addresses.py
+          python tests/test_config_interfaces.py
+          python tests/test_config_subinterfaces.py
           python tests/test_policy_config.py
           python -m unittest discover -s tests -p 'test_nat_ipv6_workflows.py'
           python tests/test_partial_commit.py

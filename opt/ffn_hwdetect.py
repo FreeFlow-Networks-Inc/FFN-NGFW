@@ -126,13 +126,16 @@ def fe100_driver_observation(control):
         row = {key: string(device.get(key)) for key in ("pci", "kernel_driver", "kernel_module", "kernel_version")}
         row.update(model="FE100", kernel_state=device.get("kernel_state") if device.get("kernel_state") in
                    ("bound", "unbound") else "unknown", memory_decode=boolean(device.get("memory_decode")))
+        row["resource_present"] = boolean(device.get("resource_present"))
         size = device.get("bar0_bytes")
         row["bar0_bytes"] = size if type(size) is int and 0 <= size <= 2**40 else None
         devices.append(row)
     driver = report.get("userspace") or {}
     userspace = {key: boolean(driver.get(key)) for key in
                  ("installed", "reader_installed", "register_map_installed", "memory_device_present", "read_verified")}
-    userspace.update(name="ffn_fe100.py", access="devmem-mmio", target_pci=string(driver.get("target_pci")))
+    access = driver.get("access")
+    userspace.update(name="ffn_fe100.py", access=access if access in ("pci-resource0", "devmem-mmio") else "unknown",
+                     target_pci=string(driver.get("target_pci")))
     digest = driver.get("sha256")
     userspace["sha256"] = digest if isinstance(digest, str) and re.fullmatch('[0-9a-f]{64}', digest) else None
     userspace["state"] = ("responding" if userspace["read_verified"] is True and driver.get("state") == "responding"
