@@ -22,6 +22,9 @@ hook='''        # FFN selected platform reconciliation
                 spec.loader.exec_module(module)
                 provider = module.PlatformApplier(RUNNING_CONFIG)
                 provider.reconcile(status)
+                if status.errors or status.validation_errors:
+                    status.finish(); status.write()
+                    return status
                 changes = {p:c for p,c in changes.items() if not provider.claims(p)}
             except Exception as error:
                 status.fail('platform', 'platform', str(error))
