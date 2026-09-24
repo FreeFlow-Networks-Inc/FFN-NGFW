@@ -4173,8 +4173,7 @@ function switchIfaceEditorTab(name) {
   });
 }
 function addIfaceAddress(family,value='') {
-  const row=document.createElement('tr');
-  row.innerHTML=`<td><input aria-label="IPv${family} address with prefix" data-family="${family}" required placeholder="${family===4?'192.0.2.1/24':'2001:db8::1/64'}" value="${_escSP(value)}"></td><td><button class="btn btn-sm" type="button" aria-label="Remove IPv${family} address">Remove</button></td>`;
+  const row=interfaceAddressRow(family,value,document.getElementById('interface-form').snapshot);
   row.querySelector('button').onclick=()=>{row.remove();document.getElementById('ifm-add-'+family).focus();};
   document.getElementById('ifm-addresses-'+family).appendChild(row);
   if(!value)row.querySelector('input').focus();
@@ -4224,7 +4223,7 @@ async function openIfaceModal(name) {
         <div id="ifm-dhcp-block"><div class="form-row"><div class="form-group"><label for="ifm-dhcp-route">DHCP Default Route</label><select id="ifm-dhcp-route"><option value="yes">Install received default route</option><option value="no">Do not install default route</option></select></div>
         <div class="form-group"><label for="ifm-dhcp-metric">Default Route Metric</label><input id="ifm-dhcp-metric" type="number" min="1" max="65535" required value="${_escSP(cur.dhcp_route_metric)}"></div></div>
         <p class="text-dim">DHCP replaces static interface addresses when saved. This client does not configure static IPv6 addresses alongside DHCP.</p></div>
-        <div id="ifm-static4"><p class="text-dim">Enter each IPv4 address with its prefix length.</p><table><thead><tr><th>Address / Prefix</th><th>Actions</th></tr></thead><tbody id="ifm-addresses-4"></tbody></table><button id="ifm-add-4" class="btn btn-sm" type="button" onclick="addIfaceAddress(4)">Add IPv4 Address</button></div>
+        <div id="ifm-static4"><p class="text-dim">Select an IP/netmask address object or enter an IPv4 address with its prefix length.</p><table><thead><tr><th>Address / Prefix</th><th>Actions</th></tr></thead><tbody id="ifm-addresses-4"></tbody></table><button id="ifm-add-4" class="btn btn-sm" type="button" onclick="addIfaceAddress(4)">Add IPv4 Address</button></div>
       </section>
       <section id="ifm-panel-ipv6" role="tabpanel" aria-labelledby="ifm-tab-ipv6" hidden>
         <div class="form-group"><label for="ifm-ipv6-enabled">IPv6</label><select id="ifm-ipv6-enabled"><option value="no">Disabled</option><option value="yes">Enabled</option></select></div>
@@ -4248,7 +4247,7 @@ async function openIfaceModal(name) {
     const form=document.getElementById('interface-form');form.snapshot=snapshot;form.cap=cap;
     const values={'mode':cur.mode,'addressing':cur.dhcp_client?'dhcp':'static','dhcp-route':cur.dhcp_default_route?'yes':'no','ipv6-enabled':cur.ipv6_enabled?'yes':'no','speed':cur.link_speed,'duplex':cur.link_duplex,'state':cur.mode==='none'&&!isAE?'auto':cur.link_state,'lldp':cur.lldp_enabled?'yes':'no','bondmode':cur.bond_mode};
     Object.entries(values).forEach(([id,value])=>document.getElementById('ifm-'+id).value=value);
-    cur.ip_addresses.forEach(address=>addIfaceAddress(address.includes(':')?6:4,address));
+    cur.ip_addresses.forEach(address=>addIfaceAddress(interfaceAddressFamily(snapshot,address),address));
     form.onsubmit=event=>{event.preventDefault();saveIface();};
     _ifmToggle();document.getElementById('ifm-mode').focus();
   } catch(error){if(generation===openIfaceModal.generation&&loading.isConnected)box.textContent=error.message;}
@@ -4285,7 +4284,7 @@ async function saveIface() {
   const get=id=>document.getElementById('ifm-'+id).value,mode=get('mode'),l3=mode==='layer3',dhcp=l3&&get('addressing')==='dhcp';
   for(const input of form.querySelectorAll('input[data-family]')){
     const value=input.value.trim(),family=Number(input.dataset.family);
-    input.setCustomValidity(value.includes('/')&&(family===6?value.includes(':'):!value.includes(':'))?'':'Enter an IPv'+family+' address with its prefix length.');
+    input.setCustomValidity(validInterfaceAddressChoice(form.snapshot,value,family)?'':'Select an IPv'+family+' IP/netmask object or enter an address with its prefix length.');
   }
   const invalid=Array.from(form.elements).find(el=>el.willValidate&&!el.validity.valid);
   if(invalid){const panel=invalid.closest('[role="tabpanel"]');if(panel)switchIfaceEditorTab(panel.id.replace('ifm-panel-',''));invalid.reportValidity();return;}
@@ -4368,10 +4367,28 @@ function subinterfaceOptions(choices,current) {
   if(current&&!names.includes(current)) names.push(current);
   return '<option value="">None</option>'+names.map(name=>`<option value="${_escSP(name)}" ${name===current?'selected':''}>${_escSP(name)}${!(choices||[]).includes(name)?' (unresolved; retained)':''}</option>`).join('');
 }
+function interfaceAddressFamily(snapshot,value) {
+  return (snapshot.address_choices||[]).find(o=>o.name===value)?.family || (value.includes(':')?6:4);
+}
+function validInterfaceAddressChoice(snapshot,value,family) {
+  const object=(snapshot.address_choices||[]).find(o=>o.name===value);
+  return object?object.family===family:value.includes('/')&&(family===6?value.includes(':'):!value.includes(':'));
+}
+function interfaceAddressRow(family,value,snapshot) {
+  const objects=(snapshot.address_choices||[]).filter(o=>o.family===family);
+  const selected=objects.find(o=>o.name===value);
+  const unresolved=value&&!value.includes('/')&&!selected;
+  const row=document.createElement('tr');
+  row.innerHTML=`<td><select aria-label="IPv${family} address object"><option value="">Enter IP address / prefix</option>${objects.map(o=>`<option value="${_escSP(o.name)}" ${o.name===value?'selected':''}>${_escSP(o.name)} — ${_escSP(o.value)} (${_escSP(o.scope)})</option>`).join('')}${unresolved?`<option value="${_escSP(value)}" selected>${_escSP(value)} (unresolved)</option>`:''}</select><input aria-label="IPv${family} address with prefix" data-family="${family}" required placeholder="${family===4?'192.0.2.1/24':'2001:db8::1/64'}" value="${_escSP(value)}" ${selected||unresolved?'readonly':''}><small class="text-dim" role="status"></small></td><td><button type="button" class="btn btn-sm" aria-label="Remove IPv${family} address">Remove</button></td>`;
+  const menu=row.querySelector('select'),input=row.querySelector('input'),detail=row.querySelector('small');
+  const describe=()=>{const object=objects.find(o=>o.name===menu.value);detail.textContent=object?'Resolves to '+object.value+' at Commit':menu.value?'Object unavailable in this virtual system. Select a valid object.':'Select an object from Objects > Addresses, or enter an IP address / prefix.';};
+  menu.onchange=()=>{input.readOnly=!!menu.value;input.value=menu.value;input.setCustomValidity('');describe();if(!menu.value)input.focus();};
+  input.oninput=()=>input.setCustomValidity('');describe();
+  return row;
+}
 function addSubinterfaceAddress(family,value='') {
   const body=document.getElementById('sif-addresses-'+family);
-  const row=document.createElement('tr');
-  row.innerHTML=`<td><input aria-label="IPv${family} address with prefix" data-family="${family}" required placeholder="${family===4?'192.0.2.1/24':'2001:db8::1/64'}" value="${_escSP(value)}"></td><td><button type="button" class="btn btn-sm" aria-label="Remove IPv${family} address">Remove</button></td>`;
+  const row=interfaceAddressRow(family,value,document.getElementById('subinterface-form').snapshot);
   row.querySelector('button').onclick=()=>{row.remove();document.getElementById('sif-add-'+family).focus();};
   body.appendChild(row);
   if(!value) row.querySelector('input').focus();
@@ -4408,7 +4425,7 @@ async function openSubinterfaceModal(parent, childName = null) {
         <p class="text-dim">Selections use candidate configuration. Create missing objects in Network before assigning them here.</p>
       </section>
       ${l3?[4,6].map(family=>`<section id="sif-panel-ipv${family}" role="tabpanel" aria-labelledby="sif-tab-ipv${family}" hidden>
-        <p>Static IPv${family} addresses</p><p class="text-dim">Enter each address with its prefix length. Remove a row to clear that address.</p>
+        <p>Static IPv${family} addresses</p><p class="text-dim">Select an IP/netmask address object or enter an address with its prefix length. Remove a row to clear that address.</p>
         <table class="data-table"><thead><tr><th>Address / Prefix</th><th>Actions</th></tr></thead><tbody id="sif-addresses-${family}"></tbody></table>
         <button id="sif-add-${family}" class="btn btn-sm" type="button" onclick="addSubinterfaceAddress(${family})">Add IPv${family} Address</button>
       </section>`).join(''):''}
@@ -4422,7 +4439,8 @@ async function openSubinterfaceModal(parent, childName = null) {
       </fieldset>
       <p class="text-dim">${_escSP(snapshot.runtime_note)}</p>
       <div class="settings-toolbar"><span id="sif-msg" role="status"></span><button class="btn" type="button" onclick="closeModal('modal-info')">Cancel</button><button id="sif-save" class="btn btn-primary" type="submit" ${snapshot.can_edit?'':'disabled'}>OK</button></div></form>`;
-    if(l3) entry.ip_addresses.forEach(address=>addSubinterfaceAddress(address.includes(':')?6:4,address));
+    document.getElementById('subinterface-form').snapshot=snapshot;
+    if(l3) entry.ip_addresses.forEach(address=>addSubinterfaceAddress(interfaceAddressFamily(snapshot,address),address));
     if(!snapshot.can_edit) box.querySelectorAll('input,select,textarea,.sif-fields button:not([role="tab"])').forEach(control=>control.disabled=true);
     document.getElementById('subinterface-form').onsubmit = event => {event.preventDefault();saveSubinterface(parent,snapshot,existing);};
     document.getElementById(existing?'sif-tag':'sif-unit').focus();
@@ -4436,7 +4454,7 @@ async function saveSubinterface(parent,snapshot,existing) {
   const form=document.getElementById('subinterface-form');
   for(const input of form.querySelectorAll('input[data-family]')) {
     const address=input.value.trim(), family=Number(input.dataset.family);
-    input.setCustomValidity(address.includes('/') && (family===6?address.includes(':'):!address.includes(':'))?'':'Enter an IPv'+family+' address with its prefix length.');
+    input.setCustomValidity(validInterfaceAddressChoice(snapshot,address,family)?'':'Select an IPv'+family+' IP/netmask object or enter an address with its prefix length.');
   }
   const invalid=Array.from(form.elements).find(input=>input.willValidate&&!input.validity.valid);
   if(invalid){const panel=invalid.closest('[role="tabpanel"]');if(panel)switchSubinterfaceTab(panel.id.replace('sif-panel-',''));invalid.reportValidity();return;}

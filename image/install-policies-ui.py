@@ -62,6 +62,15 @@ def merge_control(live):
 
 
 def merge_configd(live):
+    anchor='        return ET.parse(str(path)).getroot(), None\n'
+    replacement="""        # Resolve execution addresses without rewriting candidate/running XML.
+        from ffn_interface_addresses import resolved_config
+        try:
+            return resolved_config(ET.parse(str(path)).getroot()), None
+        except ValueError as error:
+            return None, 'Interface address resolution failed: ' + str(error)
+"""
+    live=replace_once(live,anchor,replacement)
     anchor='        # 5. Compute diff vs last-applied (or against empty if forced).\n'
     hook='        # FFN policy activation boundary (before any platform side effects)\n        from ffn_policy_config import configd_validate\n        if not configd_validate(RUNNING_CONFIG, status):\n            return status\n\n'
     live=replace_once(live,anchor,hook+anchor)
@@ -127,10 +136,10 @@ def main():
             manager/'static/index.html':merge_html((manager/'static/index.html').read_text(),(root/'static/index.html').read_text()),
             daemon/'ffn_controld.py':merge_control((daemon/'ffn_controld.py').read_text()),
             daemon/'ffn_configd.py':merge_configd((daemon/'ffn_configd.py').read_text()),cli:merge_cli(cli.read_text())}
-    for name in ('ffn_policy_api.py','ffn_policy_config.py','ffn_policy_plan.py','ffn_policy_profiles.py','ffn_qos_config.py','ffn_nat_policy.py','ffn_ipv6_translation.py','ffn_policy_cli.py','ffn_config_objects.py'):
+    for name in ('ffn_policy_api.py','ffn_policy_config.py','ffn_interface_addresses.py','ffn_policy_plan.py','ffn_policy_profiles.py','ffn_qos_config.py','ffn_nat_policy.py','ffn_ipv6_translation.py','ffn_policy_cli.py','ffn_config_objects.py'):
         writes[manager/name]=(root/'opt'/name).read_text()
     writes[daemon/'ffn_policy_config.py']=(root/'opt/ffn_policy_config.py').read_text()
-    for name in ('ffn_policy_plan.py','ffn_policy_profiles.py','ffn_qos_config.py','ffn_nat_policy.py','ffn_ipv6_translation.py'):
+    for name in ('ffn_interface_addresses.py','ffn_policy_plan.py','ffn_policy_profiles.py','ffn_qos_config.py','ffn_nat_policy.py','ffn_ipv6_translation.py'):
         writes[daemon/name]=(root/'opt'/name).read_text()
     for name in ('config-policies.js','policy-profiles.js','config-objects.css'):writes[manager/'static'/name]=(root/'static'/name).read_text()
     backup=manager/('policies-backup-'+str(time.time_ns()));backup.mkdir()

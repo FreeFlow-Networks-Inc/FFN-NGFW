@@ -44,10 +44,18 @@ class ObjectTests(unittest.TestCase):
     def test_candidate_only_normalizes_and_conflicts(self):
         old = self.manager.xml
         self.assertEqual(self.create().status_code, 200)
-        self.assertIn('192.0.2.0/24', self.manager.xml)
+        self.assertIn('192.0.2.3/24', self.manager.xml)
         self.assertEqual(self.manager.running, old)
         self.assertEqual(self.create(name='other', revision=revision(old)).status_code,409)
         self.assertEqual(self.create().status_code,409)
+    def test_interface_reference_prevents_deleting_address_object(self):
+        self.create()
+        root=ET.fromstring(self.manager.xml)
+        root.find('devices/entry').append(ET.fromstring('<network><interface><ethernet><entry name="ethernet1/1"><layer3><ip><entry name="net"/></ip></layer3></entry></ethernet></interface></network>'))
+        self.manager.xml=ET.tostring(root,encoding='unicode')
+        result=self.client.get('/api/config/objects/address/net/references')
+        self.assertEqual(len(result.json()['references']),1)
+        self.assertEqual(self.client.delete('/api/config/objects/address/net',params={'revision':revision(self.manager.xml)}).status_code,409)
 
     def test_groups_references_cycles_and_delete(self):
         self.create()

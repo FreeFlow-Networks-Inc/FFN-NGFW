@@ -244,6 +244,9 @@ jobs:
       - name: candidate objects and selected runtime providers
         run: |
           python tests/test_config_objects.py
+          python tests/test_interface_addresses.py
+          python tests/test_config_interfaces.py
+          python tests/test_config_subinterfaces.py
           python tests/test_policy_config.py
           python -m unittest discover -s tests -p 'test_nat_ipv6_workflows.py'
           python tests/test_partial_commit.py
