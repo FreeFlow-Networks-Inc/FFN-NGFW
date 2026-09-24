@@ -2269,6 +2269,7 @@ async function loadVendorFW(){
   </div>
 
   <div class="card"><div class="section-title">Octeon Bring-up &mdash; ${b?b.ready:0}/${b?b.total:9} steps ready</div>
+    <button class="btn" onclick="loadVendorFW()">Refresh status</button>
     <table class="data-table"><thead><tr><th style="width:36px">#</th><th style="width:92px">State</th><th>Step</th></tr></thead>
     <tbody>${stepRows}</tbody></table>
   </div>
@@ -2481,16 +2482,17 @@ function hardwareDriverHTML(observation) {
   const driver = observation.userspace || {};
   const bool = value => value === true ? 'Yes' : value === false ? 'No' : 'Unknown';
   const rows = (observation.devices || []).map(d => `<tr><td class="mono">${_escSP(d.pci)}</td>
-    <td>${d.kernel_state === 'bound' ? _escSP(d.kernel_driver || 'Bound; name unavailable') : d.kernel_state === 'unbound' ? 'Unbound (userspace access)' : 'Unknown'}
+    <td>${d.kernel_state === 'bound' ? _escSP(d.kernel_driver || 'Bound; name unavailable') : d.kernel_state === 'unbound' ? 'Unbound' : 'Unknown'}
     ${d.kernel_module ? '<div>Module: '+_escSP(d.kernel_module)+'</div>' : ''}${d.kernel_version ? '<div>Version: '+_escSP(d.kernel_version)+'</div>' : ''}</td>
-    <td>${bool(d.memory_decode)}</td><td>${hwNumber(d.bar0_bytes, ' bytes')}</td></tr>`).join('');
+    <td>${bool(d.memory_decode)}</td><td>${hwNumber(d.bar0_bytes, ' bytes')}<div>Resource available: ${bool(d.resource_present)}</div></td></tr>`).join('');
   return `<div class="card" id="fe100-driver-status">${heading}
     <div class="text-dim">Source: CP agent ${_escSP(observation.agent || '')} via ffn-controld; ${Number.isFinite(observation.age_seconds) ? Math.floor(observation.age_seconds) : 'Unknown'} seconds old</div>
     ${observation.available === false ? '<div role="status">PCI driver observation incomplete</div>' : ''}
     <div class="table-wrap"><table><thead><tr><th>PCI device</th><th>Kernel driver</th><th>Memory decoding enabled</th><th>BAR0</th></tr></thead><tbody>${rows || '<tr><td colspan="4">No FE100 device reported by this observation</td></tr>'}</tbody></table></div>
     <div>Userspace driver: <strong>ffn_fe100.py</strong> (${driver.installed === true ? 'Installed' : driver.installed === false ? 'Unavailable' : 'Unknown'})</div>
     <div>Register access: <strong>${driver.state === 'responding' ? 'Responding (non-clearing register probe)' : 'Unverified'}</strong></div>
-    <div>Reader installed: ${bool(driver.reader_installed)} &middot; Register map installed: ${bool(driver.register_map_installed)} &middot; Memory device present: ${bool(driver.memory_device_present)}</div>
+    <div>Access path: ${driver.access === 'pci-resource0' ? 'Bound PCI BAR0 (resource0)' : driver.access === 'devmem-mmio' ? 'Legacy physical-memory adapter' : 'Unknown'}</div>
+    <div>Reader installed: ${bool(driver.reader_installed)} &middot; Register map installed: ${bool(driver.register_map_installed)}</div>
     ${driver.sha256 ? '<details><summary>Driver fingerprint</summary><span class="mono">SHA-256: '+_escSP(driver.sha256)+'</span></details>' : ''}
     <div class="text-dim">Register access confirms driver communication. It does not establish hardware flow offload or forwarding readiness.</div>
   </div>`;
