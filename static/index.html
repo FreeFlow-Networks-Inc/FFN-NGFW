@@ -7193,14 +7193,19 @@ function _offloadHTML(o) {
        dataplane from an idle one, and a green dot claiming otherwise would be
        an invention. It is reported as present, with what is genuinely known. */
     rows.push(`<div>${_dpDot('up')}<strong>Data plane</strong> `
-      + `<span class="mono" style="font-size:11px">${_escSP(dp.pci)}</span> `
+      + `<span class="mono" style="font-size:11px">${_escSP(dp.pci||'')}</span> `
       + `<span class="text-green">present</span>`
       + (dp.liveness ? ` <span class="text-dim" style="font-size:10px">(running state ${_escSP(dp.liveness)})</span>` : '')
       + `</div>`
       + `<div class="text-dim" style="font-size:10px;margin-left:14px">${_escSP(dp.model||'')}`
       + (dp.pci_enabled === false ? ' · PCI decode off' : '') + `</div>`);
+    if (dp.agent_acknowledged) {
+      rows.push(`<div style="font-size:11px;margin-left:14px">Agent ${dp.ready?'ready':'not ready'} · Boot <span class="mono">${_escSP(dp.boot_id)}</span>`
+        + (Number.isInteger(dp.cpu_count)?` · ${dp.cpu_count} cores`:'') + `</div>`
+        + `<div class="text-dim" style="font-size:11px;margin-left:14px">Forwarding ${dp.forwarding_verified?'verified':'not verified'}</div>`);
+    }
   } else if (cp.reachable) {
-    rows.push(`<div>${_dpDot('down')}<strong>Data plane</strong> <span class="text-dim">not found on the control plane's bus</span></div>`);
+    rows.push(`<div>${_dpDot('idle')}<strong>Data plane</strong> <span class="text-dim">${dp.inventory_status==='available'?'not found on the control plane’s bus':'inventory unavailable'}</span></div>`);
   }
 
   if (sw.present)
@@ -7320,7 +7325,7 @@ async function loadFPGAStatus() {
       const dp = off.dp || {}, sw = off.switch || {}, fe = off.fe100 || {};
       fwEl.innerHTML = `
         <div><strong>Dataplane:</strong> <span class="${dp.present?'text-green':''}">`
-        + `${dp.present ? 'Offload complex' : 'Offload complex (no DP found)'}</span></div>
+        + `${dp.present ? 'Offload complex' : dp.inventory_status==='available'?'Offload complex (no DP found)':'Offload complex (DP inventory unavailable)'}</span></div>
         <div><strong>Control plane:</strong> ${off.generation||'OCTEON'}${off.cp&&off.cp.kernel?` <span class="text-dim">(${off.cp.kernel})</span>`:''}</div>
         ${dp.present ? `<div><strong>Forwarding:</strong> ${dp.model||''}</div>` : ''}
         ${sw.present ? `<div><strong>Switch:</strong> ${sw.model||''}</div>` : ''}
