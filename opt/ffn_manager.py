@@ -78,6 +78,7 @@ except Exception:
 def _platform_paths():
     here = os.path.dirname(os.path.abspath(__file__))
     return [
+        "/opt/ffn-platforms/pa5200-management",                 # selected platform package
         "/opt/ffn-ngfw-v2",                                   # installed, flat
         "/opt/ffn-ngfw",
         os.path.join(here, "..", "platform", "pa5200"),       # repo, submodule
