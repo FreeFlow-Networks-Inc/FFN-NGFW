@@ -70,6 +70,12 @@ class NatPolicyTests(unittest.TestCase):
     def test_plan_rejects_command_injection_and_unknown_fields(self):
         plan=compile_policy(configuration())['plan'];plan['rules'][0]['source']=['0.0.0.0/0; flush ruleset']
         with self.assertRaises(ValueError):runtime.validate_plan(plan)
+
+    def test_disconnected_interfaces_and_dhcp_without_lease_do_not_block_rules(self):
+        plan=compile_policy(configuration())['plan']
+        links={p:dict(addr_info=[],operstate='DOWN',flags=[]) for p in ('p1','p2')}
+        script=runtime.render(plan,{'ethernet1/1':'p1','ethernet1/2':'p2'},links,1)
+        self.assertIn('masquerade',script)
         plan=compile_policy(configuration())['plan'];plan['command']='anything'
         with self.assertRaises(ValueError):runtime.validate_plan(plan)
 

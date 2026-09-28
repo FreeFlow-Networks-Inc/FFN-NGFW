@@ -1100,6 +1100,9 @@ async function doCommit() {
         (planes?.published ? 'Published to plane agents; check Tasks and agent status for convergence.' : 'Plane distribution is unconfirmed. Check Tasks before retrying.');
       msg.style.color = applied && planes?.published ? 'var(--green)' : 'var(--orange)';
       if (data.warnings?.length) { msg.textContent += ' ' + data.warnings.join(' '); msg.style.color = 'var(--orange)'; }
+      if (apply?.phases?.length) {
+        msg.textContent += ' Apply stages: ' + apply.phases.map(p => `${p.name}: ${p.state}`).join(' → ') + '.';
+      }
       await refreshCommitIndicator();
     } else if (data.status === 'no-changes') {
       msg.textContent = 'No changes in the selected scope.';

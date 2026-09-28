@@ -9126,7 +9126,7 @@ async def config_review(partial_xpath: Optional[str] = None, validate: bool = Fa
                 validation=report, validated=validate, lock=lock,
                 can_commit=user.get('role') in ('admin','superuser') and
                     (not lock['locked'] or lock.get('holder') == user['username']),
-                validation_scope='Policy compilation and commissioned policy-provider checks. Other settings are checked by configd during apply.',
+                validation_scope='Candidate policy and interface-reference validation; carrier and LACP negotiation are not commit prerequisites. Configd applies and verifies dependencies before activating Security/NAT.',
                 applied=False)
 
 
@@ -9208,8 +9208,9 @@ async def _config_commit_serial(req, user):
                     for a in apply_status.get("applied", [])
                 ]
             except Exception as exc:
-                logger.warning("controld apply_config failed: %s — falling back", exc)
-                result["applied_to_system"] = _apply_running_config()
+                logger.warning("controld apply_config failed: %s", exc)
+                result["apply_status"] = dict(overall='unconfirmed', errors=[dict(xpath='commit',applier='controld',error=_public_error(exc))])
+                result["applied_to_system"] = []
         else:
             result["applied_to_system"] = _apply_running_config()
 
@@ -9217,7 +9218,10 @@ async def _config_commit_serial(req, user):
         # apply on purpose: the MP is the first hop of the chain, and publishing
         # a config the MP itself has not accepted would put the planes ahead of
         # their own management plane.
-        result["planes"] = _publish_to_planes()
+        apply_result=result.get('apply_status',{})
+        result["planes"] = (_publish_to_planes() if apply_result.get('overall')=='applied' and
+            not apply_result.get('errors') and not apply_result.get('validation_errors') else
+            dict(published=False,error='Distribution held until configd acknowledges the committed generation'))
         result["changes_committed"] = d["total_changes"]
 
         async with aiosqlite.connect(DB_PATH) as db:

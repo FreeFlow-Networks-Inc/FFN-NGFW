@@ -27,7 +27,8 @@ def merge_control(text):
 
 def merge_configd(text):
     if '# FFN NAT is reconciled as one ordered rulebase' in text:
-        if text.count('reconcile_nat(RUNNING_CONFIG, status)')!=2:raise ValueError('Incomplete NAT configd integration')
+        expected=1 if '# FFN ordered configuration apply' in text else 2
+        if text.count('reconcile_nat(RUNNING_CONFIG, status)')!=expected:raise ValueError('Incomplete NAT configd integration')
         compile(text,'ffn_configd.py','exec');return text
     anchor='        if not changes:\n            logger.info("No changes vs last-applied'
     start=text.find(anchor)

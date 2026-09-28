@@ -74,6 +74,9 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_session*.py'
           python3 -m unittest discover -s tests -p 'test_l3_offload.py'
 
+      - name: Dependency ordered commits and verified checkpoints
+        run: python3 -m unittest discover -s tests -p 'test_commit_apply.py'
+
       - name: NAT64 and NPTv6 address and packet primitives
         run: |
           python3 -m unittest discover -s tests -p 'test_nat_ipv6.py'
