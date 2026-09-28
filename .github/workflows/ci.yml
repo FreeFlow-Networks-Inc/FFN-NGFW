@@ -70,7 +70,9 @@ jobs:
           python3 opt/ffn_cpu_planes.py selftest
 
       - name: conntrack accounting and acknowledged session observations
-        run: python3 -m unittest discover -s tests -p 'test_session*.py'
+        run: |
+          python3 -m unittest discover -s tests -p 'test_session*.py'
+          python3 -m unittest discover -s tests -p 'test_l3_offload.py'
 
       - name: NAT64 and NPTv6 address and packet primitives
         run: |
@@ -286,7 +288,9 @@ jobs:
           python tests/test_vr_route_api.py
 
       - name: native L2 and L3 packet forwarding in disposable namespaces
-        run: sudo python3 tests/test_network_namespace.py
+        run: |
+          sudo python3 tests/test_network_namespace.py
+          sudo python3 tests/test_l3_namespace.py
 
       - name: candidate policy validation and supervised Security/NAT packets
         run: |

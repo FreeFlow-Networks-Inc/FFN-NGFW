@@ -11,11 +11,13 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import sys
 import time
 import uuid
 
 import ffn_security_runtime as runtime
+import ffn_l3_offload as l3
 from ffn_nat_policy import Resolver
 from ffn_policy_config import owners,parse
 from ffn_policy_plan import compile_policy
@@ -119,18 +121,29 @@ def observe(nonce):
         if row['event']=='end':live.pop(ident,None)
         elif row['token'] is not None:live[ident]=row
         else:live.pop(ident,None)
+    owned=sorted(live.values(),key=lambda row:(row['id'],json.dumps(row['original'],sort_keys=True)))
+    sessions=[assess(row,rules,producer['boot_id']) for row in owned[:LIMIT]]
+    candidates=[row for row in sessions if row['software_candidate']]
+    if candidates:
+        try:
+            topology=l3.snapshot(start+7)
+            for row in candidates:row['l3']=l3.plan(row,state['bindings'],topology)
+            if l3.snapshot(start+7)!=topology:
+                raise ValueError('Routes, neighbors or interface ownership changed during observation')
+        except (ValueError,OSError,subprocess.SubprocessError) as error:
+            for row in candidates:
+                row['l3']=dict(available=False,hardware_admission=False,directions=[],blockers=[str(error)[:512]])
     after=runtime.status()
     if runtime.saved()!=state or acknowledgement(after,state)!=producer:
         raise ValueError('Policy, bindings or session producer changed during observation')
     completed=time.monotonic()
     if completed-start>8:raise ValueError('Session observation exceeded its freshness budget')
-    owned=sorted(live.values(),key=lambda row:(row['id'],json.dumps(row['original'],sort_keys=True)))
     return dict(schema=1,nonce=nonce,available=True,source='kernel-conntrack-with-durable-security-grants',
                 producer=producer,policy=dict(revision=state['revision'],digest=state['digest'],
                 nat_digest=state['nat']['digest'],bindings=state['bindings']),
                 observed_monotonic=start,completed_monotonic=completed,owned_sessions=len(owned),
                 truncated=len(owned)>LIMIT,hardware_admission=False,
-                sessions=[assess(row,rules,producer['boot_id']) for row in owned[:LIMIT]])
+                sessions=sessions)
 
 
 if __name__=='__main__':
