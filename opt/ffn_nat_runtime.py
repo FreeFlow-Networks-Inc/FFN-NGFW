@@ -53,11 +53,13 @@ def saved():
 
 
 def bindings():
-    if not BINDINGS.exists():raise NatError('No commissioned NAT interface map on the dataplane')
-    st=BINDINGS.stat()
-    if st.st_uid!=0 or st.st_mode & 0o022:raise NatError('NAT interface map must be root-owned and not writable by other users')
-    data=json.loads(BINDINGS.read_text())
-    if not isinstance(data,dict) or not data or any(not isinstance(k,str) or not isinstance(v,str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,15}',v) or v=='lo' for k,v in data.items()):raise NatError('Invalid NAT interface map')
+    data={}
+    if BINDINGS.exists():
+        st=BINDINGS.stat()
+        if st.st_uid!=0 or st.st_mode & 0o022:raise NatError('NAT interface map must be root-owned and not writable by other users')
+        data=json.loads(BINDINGS.read_text())
+        if not isinstance(data,dict) or not data or any(not isinstance(k,str) or not isinstance(v,str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,15}',v) or v=='lo' for k,v in data.items()):raise NatError('Invalid NAT interface map')
+    elif not PLATFORM_BINDINGS.exists():raise NatError('No commissioned NAT interface map on the dataplane')
     if len(set(data.values()))!=len(data):raise NatError('Ambiguous NAT interface map')
     selection=PLATFORM_BINDINGS
     if selection.exists():

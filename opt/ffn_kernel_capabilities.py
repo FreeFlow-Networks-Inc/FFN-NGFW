@@ -4,6 +4,8 @@ import platform
 from pathlib import Path
 
 FEATURES={
+    'session-accounting':('NF_CT_NETLINK','NF_CONNTRACK_EVENTS','NF_CONNTRACK_LABELS'),
+    'nat-route-lookup':('NFT_FIB_IPV4','NFT_FIB_INET'),
     'nat-round-robin':('NFT_NUMGEN',),
     'nat-address-hash':('NFT_HASH',),
     'qos-htb':('NET_SCH_HTB','NET_CLS_FW'),
@@ -11,7 +13,8 @@ FEATURES={
     'policy-routing':('IP_MULTIPLE_TABLES',),
     'transparent-proxy':('NFT_TPROXY','NF_TPROXY_IPV4'),
 }
-MODULES={'NFT_NUMGEN':'nft_numgen','NFT_HASH':'nft_hash','NET_SCH_HTB':'sch_htb',
+MODULES={'NF_CT_NETLINK':'nf_conntrack_netlink','NFT_NUMGEN':'nft_numgen','NFT_HASH':'nft_hash','NET_SCH_HTB':'sch_htb',
+         'NFT_FIB_IPV4':'nft_fib_ipv4','NFT_FIB_INET':'nft_fib_inet',
          'NET_SCH_FQ_CODEL':'sch_fq_codel','NET_CLS_FW':'cls_fw',
          'NFT_TPROXY':'nft_tproxy','NF_TPROXY_IPV4':'nf_tproxy_ipv4'}
 

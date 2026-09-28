@@ -9,7 +9,9 @@ UMask=0077
 ExecStart=/usr/sbin/ip netns exec ffn-data /usr/bin/python3 /usr/local/lib/ffn/ffn_security_runtime.py serve
 Restart=on-failure
 RestartSec=3
-TimeoutStopSec=15
+TimeoutStopSec=30
+# Let the collector close its lease before terminating any nft child.
+KillMode=mixed
 
 [Install]
 WantedBy=multi-user.target

@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 import unittest
+from xml.etree import ElementTree as ET
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'opt'))
 from ffn_security_nft import render
 from ffn_nat_policy import NatError
@@ -17,6 +18,19 @@ class SecurityNftTests(unittest.TestCase):
         self.assertIn('iif { 11 } oif { 10 }',report['script'])
         self.assertNotIn('hook input',report['script']);self.assertNotIn('hook output',report['script'])
         self.assertNotEqual(report['digest'],render(xml,{'ethernet1/1':12,'ethernet1/2':11})['digest'])
+    def test_unused_empty_zone_does_not_block_empty_or_unrelated_policy(self):
+        for rows in [(), ({'action':'allow','log-end':'no'},)]:
+            xml=configuration('security',*rows);root=ET.fromstring(xml)
+            zone=ET.SubElement(root.find('./devices/entry/vsys/entry/zone'),'entry',name='unassigned')
+            ET.SubElement(ET.SubElement(zone,'network'),'layer3')
+            bindings={'ethernet1/1':10,'ethernet1/2':11}
+            self.assertEqual(render(xml,bindings)['script'],render(ET.tostring(root),bindings)['script'])
+        root=ET.fromstring(configuration('security',{'action':'allow','log-end':'no','from':['trust']}))
+        node=root.find("./devices/entry/vsys/entry/zone/entry[@name='trust']/network/layer3")
+        node.clear()
+        with self.assertRaisesRegex(NatError,'no applicable routed zone pair'):
+            render(ET.tostring(root),{'ethernet1/2':11})
+
     def test_required_capabilities_never_silently_ignored(self):
         for fields in ({'log-end':'yes'},{'service':['application-default']},{'action':'reset-both'},
                        {'source-user':['alice']},{'icmp-unreachable':'yes','action':'drop'}):

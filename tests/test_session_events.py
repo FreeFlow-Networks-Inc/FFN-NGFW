@@ -29,6 +29,13 @@ def message(order, end=False, label=0x123456789, state=False):
 
 
 class EventsTests(unittest.TestCase):
+    def test_netlink_error_preserves_kernel_errno_on_both_architectures(self):
+        for order in ('little','big'):
+            header=struct.pack('<IHHII' if order=='little' else '>IHHII',20,2,0,7,0)
+            with self.assertRaisesRegex(EventError,'EINVAL'):
+                decode(header+(-22).to_bytes(4,order,signed=True),order)
+            self.assertEqual(decode(header+bytes(4),order),[])
+
     def test_session_state_is_network_order_on_both_architectures(self):
         for order in ('little','big'):
             row=decode(message(order,state=True),order)[0]

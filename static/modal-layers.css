@@ -9,8 +9,11 @@ body.modal-active {overflow:hidden}
 :is(#subinterface-form,#interface-form) :is(.sif-fields,.ifm-fields) {border:0;padding:0;margin:0;min-width:0}
 :is(#subinterface-form,#interface-form) [role="tabpanel"] {min-height:210px;padding:12px 0}
 :is(#subinterface-form,#interface-form) input,:is(#subinterface-form,#interface-form) select,:is(#subinterface-form,#interface-form) textarea {width:100%;box-sizing:border-box}
-:is(#subinterface-form,#interface-form) table {width:100%;margin-bottom:10px}
-:is(#subinterface-form,#interface-form) td:last-child {width:85px;text-align:right}
+:is(#subinterface-form,#interface-form) table {width:100%;margin-bottom:10px;table-layout:fixed}
+:is(#subinterface-form,#interface-form) :is(th,td) {white-space:normal;overflow-wrap:anywhere;vertical-align:top}
+:is(#subinterface-form,#interface-form) :is(th,td):last-child {width:85px;text-align:right}
+:is(#subinterface-form,#interface-form) td :is(select,input) {display:block;min-width:0;max-width:100%;margin-bottom:6px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:2px;padding:5px 7px;font:inherit}
+:is(#subinterface-form,#interface-form) td small {display:block;line-height:1.4;overflow-wrap:anywhere}
 :is(#subinterface-form,#interface-form) .settings-toolbar {position:sticky;bottom:0;background:var(--surface);padding:10px 0;margin-top:10px}
 :is(#subinterface-form,#interface-form) :is(#sif-msg,#ifm-msg) {flex:1;line-height:1.4}
 @media(max-width:600px) {:is(#subinterface-form,#interface-form) .form-row {flex-direction:column}:is(#subinterface-form,#interface-form) .setup-tabs {flex-wrap:wrap}}

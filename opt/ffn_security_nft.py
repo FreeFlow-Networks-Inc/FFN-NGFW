@@ -25,13 +25,17 @@ def render(xml,bindings,session_tokens=None):
     permit before its new owner is acknowledged. A separate reconciler is needed
     to install a new generation when the binding changes.
     """
-    root=parse(xml);zones={};rules=[];seen=set()
+    root=parse(xml);zones={};rules=[];seen=set();zone_names=set()
     for scope,owner in owners(root).items():
         resolver=Resolver(root,owner)
         for zone in owner.findall('zone/entry'):
             name=zone.get('name')
-            if (scope,name) in zones:raise NatError('Duplicate zone identity')
-            if zone.find('network/layer3') is None:continue
+            if (scope,name) in zone_names:raise NatError('Duplicate zone identity')
+            zone_names.add((scope,name))
+            # An unused zone may be created before its interfaces. It has no
+            # packet match and must not prevent unrelated settings or an empty
+            # policy from applying. Explicit rules still need a routed pair.
+            if not zone.findall('network/layer3/member'):continue
             interfaces=resolver.interfaces([name]);indices=[]
             for interface in interfaces:
                 index=bindings.get(interface)

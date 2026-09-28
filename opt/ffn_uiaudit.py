@@ -148,6 +148,9 @@ def audit(path):
     nav_ids = set(re.findall(r"\{\s*id:\s*'([^']+)'\s*,\s*label:", js))
     dispatch = dict(re.findall(r"'([^']+)'\s*:\s*([A-Za-z_$][\w$]*)\s*,", js))
     dispatch.update(re.findall(r"'([^']+)'\s*:\s*(?:[A-Za-z_$][\w$]*|\([^)]*\))\s*=>\s*([A-Za-z_$][\w$]*)\s*\(", js))
+    # Object literals also contain visibility flags and other ordinary values.
+    # Only navigation IDs describe renderer dispatch in this audit.
+    dispatch = {key: fn for key, fn in dispatch.items() if key in nav_ids}
 
     for nid in sorted(nav_ids):
         if nid not in dispatch:
@@ -275,6 +278,10 @@ def selftest():
                   "const R={'a': renderA,};")
     pr, _ = audit(clean)
     chk(not pr, "a clean UI reports nothing")
+
+    flags = write("const NAV={x:[{id:'a',label:'A'}]}; function renderA(c){}; "
+                  "const R={'a':renderA,}; const flags={'l3-block':l3,'bond-block':isAE,};")
+    chk(not audit(flags)[0], 'ordinary object values are not renderer dispatch')
 
     dead = write("const NAV={x:[{id:'a',label:'A'},{id:'b',label:'B'}]};\n"
                  "function renderA(c){}\nconst R={'a': renderA,};")

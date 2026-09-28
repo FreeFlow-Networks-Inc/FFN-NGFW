@@ -85,8 +85,11 @@ def decode(raw, byteorder=sys.byteorder):
         if kind == 4:
             raise EventGap('Conntrack event stream overrun')
         if kind == 2:
-            if len(body) < 4 or int.from_bytes(body[:4], byteorder, signed=True):
-                raise EventError('Conntrack netlink error')
+            if len(body) < 4:
+                raise EventError('Truncated conntrack netlink error')
+            code=int.from_bytes(body[:4], byteorder, signed=True)
+            if code:
+                raise EventError('Conntrack netlink error: '+errno.errorcode.get(abs(code),str(code)))
             continue
         if kind not in (0x100, 0x102):
             continue
