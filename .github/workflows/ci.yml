@@ -288,6 +288,12 @@ jobs:
       - name: native L2 and L3 packet forwarding in disposable namespaces
         run: sudo python3 tests/test_network_namespace.py
 
+      - name: candidate policy validation and supervised Security/NAT packets
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nftables conntrack iputils-ping
+          sudo python3 tests/test_security_runtime_namespace.py
+
       - name: patch management API permissions
         run: python tests/test_patch_api.py
 

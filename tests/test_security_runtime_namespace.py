@@ -7,6 +7,8 @@ import sys
 import tempfile
 import time
 import uuid
+from types import SimpleNamespace
+from unittest.mock import patch
 from xml.etree import ElementTree as ET
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'opt'))
 import ffn_nat_runtime as nat
@@ -68,6 +70,26 @@ def main():
             wait_for(lambda:runtime.status()['available'])
             assert not ping(),'Unconfigured provider admitted transit'
             assert ping('192.0.2.1',3457),'Closed transit gate affected interface-local input'
+            # Candidate interfaces may be compiled before their owner exists.
+            # The same request must still fail the live apply preparation.
+            complete=nat.BINDINGS.read_text()
+            nat.BINDINGS.write_text(json.dumps({'ethernet1/2':'p2'}))
+            nat.PLATFORM_BINDINGS.write_text(json.dumps({'provider':'platform'}))
+            before=runtime.inventory()
+            def preview(xml,current,addresses):
+                current=dict(current)
+                current['ethernet1/1']=dict(device='p1',index=0x70000001,alias='candidate-preview')
+                return current,addresses,['ethernet1/1']
+            provider=SimpleNamespace(discover=lambda links:{},security_guards=lambda links:{},preview=preview)
+            with patch.dict(sys.modules,{'ffn_platform_policy_bindings':provider}),runtime.lock():
+                _,checked,_,_=runtime.prepare(dict(revision=0,xml=policy()),candidate=True)
+                assert checked['pending_interfaces']==['ethernet1/1']
+                assert runtime.inventory()==before,'Candidate validation changed kernel policy'
+                assert not runtime.STATE.exists(),'Candidate validation persisted a policy'
+                try:runtime.prepare(dict(revision=0,xml=policy()))
+                except nat.NatError as error:assert 'Uncommissioned' in str(error),str(error)
+                else:raise AssertionError('Apply preparation accepted an uncommissioned interface')
+            nat.PLATFORM_BINDINGS.unlink();nat.BINDINGS.write_text(complete)
             with runtime.lock():runtime.apply(dict(revision=0,xml=policy()))
             wait_for(lambda:runtime.status()['applied'])
             assert ping(),'Coordinated Security/NAT did not pass traffic'
