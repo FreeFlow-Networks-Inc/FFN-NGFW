@@ -276,7 +276,7 @@ def rule_usage(state,data,applied):
     return usage
 
 
-def prepare(request,allow_restore=False):
+def prepare(request,allow_restore=False,*,validation_network=None):
     if not isinstance(request,dict) or set(request)!={'revision','plan'}:raise NatError('NAT request requires revision and plan')
     validate_plan(request['plan'])
     require_translation_provider(request['plan'])
@@ -303,7 +303,10 @@ def prepare(request,allow_restore=False):
                        and p.get('src','all')=='all' and not {'iif','fwmark','table'} & set(p))]
         if any(p.get('table') not in ('local','main','default',253,254,255) or p.get('src','all')!='all' or 'iif' in p or 'fwmark' in p for p in policies):raise NatError('NAT destination-zone lookup does not yet support policy routing or VRFs')
         if any(r.get('nexthops') for r in json.loads(run(['ip','-n',NS,'-4','-j','route','show','table','main']))):raise NatError('NAT destination-zone lookup does not yet support ECMP')
-    script=render(request['plan'],bindings(),links,state['revision']+1)
+    mapping=bindings()
+    if validation_network is not None:
+        mapping,links=validation_network
+    script=render(request['plan'],mapping,links,state['revision']+1)
     batch=('delete table ip '+TABLE+'\n' if table else '')+script
     nft(['-c','-f','-'],batch)
     return state,script,batch
