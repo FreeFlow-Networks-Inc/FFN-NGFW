@@ -1562,6 +1562,11 @@ const PAGE_NEEDS = {
 };
 
 /* ---- Page Renderer ---- */
+function renderVRRPPage(c) {
+  if (typeof renderNetworkVRRP === 'function') return renderNetworkVRRP(c);
+  c.innerHTML = '<p role="alert">The VRRP page module is unavailable. Reload after completing the WebUI update.</p>';
+}
+
 function renderPage(pageId) {
   pageId = PAGE_ALIASES[pageId] || pageId;
   const c = document.getElementById('content-area');
@@ -1631,8 +1636,7 @@ function renderPage(pageId) {
     'vlan': renderNetworkVLAN,
     'virtual-wires': renderNetworkVirtualWires,
     'routing': renderNetworkRouting,
-    'vrrp': c => typeof renderNetworkVRRP === 'function' ? renderNetworkVRRP(c) :
-      (c.innerHTML = '<p role="alert">The VRRP page module is unavailable. Reload after completing the WebUI update.</p>'),
+    'vrrp': renderVRRPPage,
     'ipsec-vpn': renderNetworkIPSec,
     'gre-tunnels': renderNetworkGRE,
     'vxlan-tunnels': renderNetworkVXLAN,
