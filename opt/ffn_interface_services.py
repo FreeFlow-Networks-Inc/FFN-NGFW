@@ -7,12 +7,14 @@ transit traffic or accepts an arbitrary destination supplied by a client.
 """
 import argparse
 import asyncio
+import errno
 import ipaddress
 import importlib
 import json
 import os
 from pathlib import Path
 import socket
+import stat
 import struct
 import time
 
@@ -25,6 +27,33 @@ ALLOWED = {f'{proto}/{port}' for proto, ports in SERVICES.values() for port in p
 DEFAULT_PROVIDERS = {key: {'host': '127.0.0.1', 'port': int(key.split('/')[1])}
                      for key in ALLOWED}
 DEFAULT_PROVIDERS['tcp/443']['port'] = 8443
+
+
+def prepare_transport(path):
+    """Remove only a dead, owned Unix listener left behind by an SSH restart."""
+    path = Path(path)
+    parent = path.parent.lstat()
+    if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.geteuid() or parent.st_mode & 0o077:
+        raise ValueError('Transport directory must be private and owned')
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISSOCK(before.st_mode) or before.st_uid != os.geteuid():
+        raise ValueError('Refusing to replace a non-socket transport path')
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+        probe.settimeout(1)
+        try:
+            probe.connect(str(path))
+        except OSError as error:
+            if error.errno != errno.ECONNREFUSED:
+                raise
+        else:
+            raise ValueError('Transport listener is still active')
+    after = path.lstat()
+    if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+        raise ValueError('Transport path changed during recovery')
+    path.unlink()
 
 
 def providers(path):
@@ -346,12 +375,15 @@ class Frontend:
 
 async def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('role', choices=['frontend', 'provider'])
+    parser.add_argument('role', choices=['frontend', 'provider', 'prepare-transport'])
     parser.add_argument('--socket', default=str(RUNTIME / 'upstream.sock'))
     parser.add_argument('--providers', default='/etc/ffn/interface-services.json')
     args = parser.parse_args()
     RUNTIME.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.umask(0o077)
+    if args.role == 'prepare-transport':
+        prepare_transport(args.socket)
+        return
     if args.role == 'provider':
         providers(args.providers)
         Path(args.socket).unlink(missing_ok=True)

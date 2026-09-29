@@ -50,7 +50,12 @@ requests, while remote SSH subprocesses currently run per request. No new TCP
 listener or unauthenticated management channel is introduced.
 
 An envelope has exactly `v`, canonical UUID `id`, `resource`, `action`, and
-object `payload`. Actions are status, validate, apply, lookup, result and resolve.
+object `payload`. Actions are status, validate, apply, lookup, result, resolve,
+and refresh. Refresh accepts an empty payload and is only available for explicitly
+registered observation collectors. It renews ephemeral backend observations,
+never customer configuration. Failed refreshes are retryable without a durable
+apply journal; each retry collects current evidence and preserves boot/revision
+fencing. Configuration operations must continue to use apply.
 Apply/validate include the controller's current integer revision. Controllers
 are allowlisted in root-administered node configuration. A CP may handle `nif`
 locally while forwarding `network` to its DP.

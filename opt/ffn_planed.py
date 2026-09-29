@@ -18,7 +18,7 @@ import sys
 import uuid
 
 LIMIT = 1024 * 1024
-ACTIONS = {'status', 'validate', 'apply', 'lookup', 'result', 'resolve'}
+ACTIONS = {'status', 'validate', 'apply', 'lookup', 'result', 'resolve', 'refresh'}
 
 
 def encode(value):
@@ -44,6 +44,8 @@ def check(request):
         raise ValueError('invalid action or payload')
     if request['action'] == 'status' and request['payload']:
         raise ValueError('status takes no payload')
+    if request['action'] == 'refresh' and request['payload']:
+        raise ValueError('observation refresh takes no payload')
     if request['action'] in ('apply', 'validate'):
         revision = request['payload'].get('revision')
         if type(revision) is not int or revision < 0:
@@ -173,7 +175,11 @@ class Plane:
         # it with its own controller: some backends take exclusive file locks
         # even for reads. Writes retain the global transaction lock.
         resource_lock = self.resource_locks.setdefault(request['resource'], asyncio.Lock())
-        if request['action'] == 'status':
+        # A registered refresh renews ephemeral observations from the backend;
+        # it cannot accept configuration or caller-supplied link state. Like a
+        # read, a lost reply can be retried using a new live observation, without
+        # creating an uncertain configuration transaction in the journal.
+        if request['action'] in ('status', 'refresh'):
             async with resource_lock:
                 return await self.local(request)
         async with self.lock:

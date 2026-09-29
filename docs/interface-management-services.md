@@ -43,6 +43,10 @@ successful SNMP response. Status is boot-fenced and marked stale after ten secon
 The image overlay includes the frontend, profile enforcement and service unit.
 The PA5200 control-channel installer provisions the MP tunnel using the existing
 plane-agent credential; no customer address or credential is embedded in code.
+Before reconnecting SSH, the tunnel removes a stale, owned Unix socket only
+after confirming that no listener accepts connections. Active listeners,
+non-socket paths and symlinks are preserved. This allows a control-daemon restart
+to restore interface management access without restarting the dataplane.
 For live upgrades, the platform also reads boot-qualified, acknowledged aggregate
 runtime profiles, allowing profile changes without restarting the LACP worker.
 Rollout must deploy all static assets referenced by `index.html` as one set.

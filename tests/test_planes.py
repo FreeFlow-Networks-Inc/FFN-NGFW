@@ -29,6 +29,29 @@ class Backend:
 
 
 class PlaneTests(unittest.IsolatedAsyncioTestCase):
+    async def test_observation_refresh_recovers_without_configuration_journal(self):
+        self.dp.commands['route-links']={'refresh':[sys.executable,'refresh']}
+        original=self.dp.runner
+        refreshes=0
+        async def observe(argv,raw,timeout):
+            nonlocal refreshes
+            if argv[-1]!='refresh': return await original(argv,raw,timeout)
+            refreshes+=1
+            if refreshes==1: raise RuntimeError('temporary observation transport failure')
+            return {'acknowledged':True}
+        self.dp.runner=observe
+        self.assertFalse((await self.dp.dispatch(request('refresh',{},'route-links')))['ok'])
+        self.assertTrue((await self.dp.dispatch(request('refresh',{},'route-links')))['result']['acknowledged'])
+        self.assertEqual(self.dp.db.execute('SELECT count(*) FROM requests').fetchone()[0],0)
+        for payload in ({'links':{'p1':True}}, {'revision':0}, {'ports':{}}):
+            self.assertFalse((await self.dp.dispatch(request('refresh',payload,'route-links')))['ok'])
+        self.assertFalse((await self.dp.dispatch(request('refresh',{},'network')))['ok'])
+        # Recovery of observations must not clear an uncertain customer commit.
+        self.backend.fail=True
+        self.assertEqual((await self.dp.dispatch(request()))['state'],'unknown')
+        self.assertTrue((await self.dp.dispatch(request('refresh',{},'route-links')))['ok'])
+        self.assertEqual((await self.dp.dispatch(request(payload={'revision':1})))['state'],'rejected')
+
     async def test_early_stdin_close_preserves_error_but_never_claims_success(self):
         for error in (BrokenPipeError, ConnectionResetError):
             for code in (0, 2):

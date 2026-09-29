@@ -11,6 +11,13 @@ lease. A live TAP descriptor alone is insufficient. Aggregates additionally need
 a distributing member with a current physical link. Unknown or expired hardware
 observations withhold the route. CPU-only backends use native netdevice carrier.
 
+The MP renews this lease with the daemon's `route-links/refresh` operation.
+Refresh accepts no caller-provided configuration or link states: the selected
+backend reads hardware and sends a boot- and revision-fenced observation to DP.
+It is ephemeral and retryable after a transport failure, so it does not create
+a durable configuration transaction or block later commits. Actual configuration
+applies retain their journal and explicit reconciliation requirements.
+
 A gateway outside the interface prefix is retained as configured but withheld
 with `gateway-outside-interface-prefix`. The explicit on-link option permits
 ISP-supplied /32 plus directly reachable gateway arrangements; it is never

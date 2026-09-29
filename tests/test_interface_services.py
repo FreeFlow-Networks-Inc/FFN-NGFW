@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import socket
 from pathlib import Path
 import subprocess
 import sys
@@ -20,6 +21,24 @@ class EchoUDP(asyncio.DatagramProtocol):
 
 @unittest.skipUnless('--inside' in sys.argv, 'Run this script directly for an isolated namespace')
 class Services(unittest.IsolatedAsyncioTestCase):
+    async def test_transport_reconnect_removes_only_a_dead_owned_socket(self):
+        path=self.root/'reconnect.sock'
+        m.prepare_transport(path)
+        listener=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+        try:
+            listener.bind(str(path));listener.listen(1)
+            with self.assertRaisesRegex(ValueError,'still active'):m.prepare_transport(path)
+            self.assertTrue(path.exists())
+        finally:listener.close()
+        m.prepare_transport(path)
+        self.assertFalse(path.exists())
+        path.write_text('preserve')
+        with self.assertRaises(ValueError):m.prepare_transport(path)
+        self.assertEqual(path.read_text(),'preserve')
+        path.unlink();path.symlink_to(self.config)
+        with self.assertRaises(ValueError):m.prepare_transport(path)
+        self.assertTrue(self.config.exists())
+
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
