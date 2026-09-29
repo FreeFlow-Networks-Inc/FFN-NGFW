@@ -22,6 +22,13 @@ with no remaining generic changes still verifies policy and writes the checkpoin
 CLI and WebUI receive the same configd result through controld. Distribution to
 other plane agents is held when configd reports failure or an uncertain result.
 
+Controld requests replay with an atomic `apply-request.json` notification. It
+waits for a terminal report matching the requested configuration digest; an
+intermediate phase update cannot be reported as completed. A timeout reports
+in-progress or unconfirmed status. Both inotify and polling observe requests,
+so replay does not depend on an unsafe signal or a changed XML file. The WebUI
+wait runs outside its event loop.
+
 This is ordered reconciliation, not an all-resource atomic rollback. Successful
 interface changes can precede a later failure; the report retains those results
 and the previous last-applied checkpoint. Reapply reconciles the committed intent.

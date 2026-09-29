@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'opt'))
-from ffn_commit_apply import ApplyCycle, ordered_paths, STAGES
+from ffn_commit_apply import ApplyCycle, ordered_paths, STAGES, request_apply, await_apply
 
 
 class Status:
@@ -56,6 +56,28 @@ class CommitTests(unittest.TestCase):
             path=Path(temp)/'running';path.write_bytes(b'new')
             cycle=ApplyCycle(path,Status());cycle.advance('validation')
             with self.assertRaises(RuntimeError):cycle.advance('security-and-nat')
+
+    def test_wait_ignores_progress_and_wrong_generation(self):
+        import json
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'running';path.write_bytes(b'new');status=Path(temp)/'status'
+            generation,since=request_apply(path,status);ticks=[0]
+            rows=[dict(overall='applied',commit_generation='other',finished_at='now'),
+                  dict(overall='in-progress',commit_generation=generation),
+                  dict(overall='applied',commit_generation=generation,finished_at='now')]
+            def sleep(_):
+                status.write_text(json.dumps(rows.pop(0)));ticks[0]+=1
+            result=await_apply(path,status,generation,since,10,lambda:ticks[0],sleep)
+            self.assertEqual(result['overall'],'applied');self.assertEqual(ticks[0],3)
+
+    def test_wait_reports_superseded_and_incomplete_instead_of_success(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'running';path.write_bytes(b'new');status=Path(temp)/'status'
+            generation,since=request_apply(path,status)
+            result=await_apply(path,status,generation,since,0)
+            self.assertEqual(result['overall'],'unconfirmed')
+            path.write_bytes(b'newer')
+            self.assertEqual(await_apply(path,status,generation,since)['overall'],'superseded')
 
 
 ENGINE='''class ApplyStatus:

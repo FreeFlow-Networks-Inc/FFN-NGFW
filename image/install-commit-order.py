@@ -11,7 +11,28 @@ def once(text,old,new):
     return text.replace(old,new,1)
 
 
+def notifications(text):
+    old='            if event.pathname == str(RUNNING_CONFIG):'
+    if old in text:text=once(text,old,"            if event.pathname in (str(RUNNING_CONFIG), str(CONFIG_DIR / 'apply-request.json')):")
+    old='                if h != last_hash:\n'
+    if old in text:
+        text=once(text,'    last_hash = ""\n', '    last_hash = ""\n    last_request = 0\n')
+        text=once(text,old,"                request_path = CONFIG_DIR / 'apply-request.json'\n                request_stamp = request_path.stat().st_mtime_ns if request_path.exists() else 0\n                if h != last_hash or request_stamp != last_request:\n                    last_request = request_stamp\n")
+    return text
+
+
+def merge_control(text):
+    old='''        self.commit.nudge_configd()
+        status = self.commit.read_apply_status(timeout=15)'''
+    new='''        from ffn_commit_apply import request_apply, await_apply
+        generation,since=request_apply(RUNNING_CONFIG,APPLY_STATUS)
+        status=await_apply(RUNNING_CONFIG,APPLY_STATUS,generation,since)'''
+    if new not in text:text=once(text,old,new)
+    compile(text,'ffn_controld.py','exec');return text
+
+
 def merge(text):
+    text=notifications(text)
     if '# FFN ordered configuration apply' in text:
         if '    engine.apply(force=is_cold_boot)' in text:
             text=once(text,'    engine.apply(force=is_cold_boot)','    startup_apply = engine.apply(force=is_cold_boot)')
@@ -67,3 +88,9 @@ if __name__=='__main__':
         shutil.copy2(path,backup)
         temp=path.with_name(path.name+'.new');temp.write_text(result);shutil.copymode(path,temp);temp.replace(path)
     shutil.copy2(Path(__file__).resolve().parents[1]/'opt/ffn_commit_apply.py',path.parent/'ffn_commit_apply.py')
+    control=path.with_name('ffn_controld.py')
+    if control.exists():
+        source=control.read_text();updated=merge_control(source)
+        if updated!=source:
+            shutil.copy2(control,control.with_suffix('.py.pre-commit-order'))
+            temp=control.with_suffix('.py.new');temp.write_text(updated);shutil.copymode(control,temp);temp.replace(control)

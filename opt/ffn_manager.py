@@ -9201,7 +9201,7 @@ async def _config_commit_serial(req, user):
         # Fallback: in-process hostname/DNS/NTP writes (legacy).
         if controld is not None and controld.available():
             try:
-                apply_status = controld.apply_config()
+                apply_status = await asyncio.to_thread(controld.apply_config)
                 result["apply_status"] = apply_status
                 result["applied_to_system"] = [
                     f"{a['applier']}:{a['xpath']}={a['new']}"

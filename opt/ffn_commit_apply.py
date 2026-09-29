@@ -5,12 +5,43 @@ Providers must read back their settings; this coordinator records their result
 and prevents failed or superseded generations from advancing the checkpoint.
 """
 import hashlib
+import json
 import os
 from pathlib import Path
 import time
+import uuid
 
 
 STAGES=('validation','interfaces-and-routes','system-settings','security-and-nat','checkpoint')
+
+
+def request_apply(running,status_path):
+    running=Path(running);status_path=Path(status_path)
+    generation=hashlib.sha256(running.read_bytes()).hexdigest()
+    since=status_path.stat().st_mtime_ns if status_path.exists() else 0
+    request=running.parent/'apply-request.json'
+    temp=request.with_name(request.name+'.'+uuid.uuid4().hex+'.new')
+    temp.write_text(json.dumps(dict(generation=generation,requested=time.time_ns())))
+    temp.chmod(0o600);temp.replace(request)
+    return generation,since
+
+
+def await_apply(running,status_path,generation,since,timeout=120,clock=time.monotonic,sleep=time.sleep):
+    deadline=clock()+timeout;running=Path(running);status_path=Path(status_path);latest=None
+    while clock()<deadline:
+        if hashlib.sha256(running.read_bytes()).hexdigest()!=generation:
+            return dict(overall='superseded',commit_generation=generation,message='Running configuration changed while awaiting application')
+        try:
+            if status_path.stat().st_mtime_ns>since:
+                row=json.loads(status_path.read_text())
+                if row.get('commit_generation')==generation:
+                    latest=row
+                    if row.get('finished_at') and row.get('overall') in ('applied','partial-failure','validation-failed'):
+                        return row
+        except (OSError,ValueError):pass
+        sleep(.2)
+    return dict(overall='in-progress' if latest else 'unconfirmed',commit_generation=generation,
+                phases=(latest or {}).get('phases',[]),message='Application has not completed; check apply status before retrying')
 
 
 def dependency(path):

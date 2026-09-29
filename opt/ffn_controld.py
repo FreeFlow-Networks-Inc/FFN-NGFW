@@ -723,9 +723,10 @@ class IPCServer:
         return {"output": r.stdout + r.stderr, "returncode": r.returncode}
 
     def _cmd_commit_apply(self, args):
-        """Signal ffn-configd and return synchronous status."""
-        self.commit.nudge_configd()
-        status = self.commit.read_apply_status(timeout=15)
+        """Request reconciliation and wait for this generation's final result."""
+        from ffn_commit_apply import request_apply, await_apply
+        generation,since=request_apply(RUNNING_CONFIG,APPLY_STATUS)
+        status=await_apply(RUNNING_CONFIG,APPLY_STATUS,generation,since)
         # Invalidate caches after apply so subsequent queries see fresh state
         self.state.cache.invalidate()
         return status
