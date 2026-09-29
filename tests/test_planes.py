@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 import uuid
+from unittest.mock import AsyncMock, Mock, patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'opt'))
 from ffn_planed import Plane, decode, encode, process
 
@@ -28,6 +29,19 @@ class Backend:
 
 
 class PlaneTests(unittest.IsolatedAsyncioTestCase):
+    async def test_early_stdin_close_preserves_error_but_never_claims_success(self):
+        for error in (BrokenPipeError, ConnectionResetError):
+            for code in (0, 2):
+                proc=Mock(returncode=code,wait=AsyncMock())
+                proc.stdin.drain=AsyncMock(side_effect=error('closed'))
+                proc.stdout=asyncio.StreamReader();proc.stdout.feed_data(b'{"error":"port is not attached"}\n');proc.stdout.feed_eof()
+                proc.stderr=asyncio.StreamReader();proc.stderr.feed_eof()
+                with patch('ffn_planed.asyncio.create_subprocess_exec',AsyncMock(return_value=proc)):
+                    expected=ValueError if code==2 else RuntimeError
+                    message='port is not attached' if code==2 else 'before request delivery completed'
+                    with self.assertRaisesRegex(expected,message):await process(['fixture'],b'{}\n',1)
+                proc.stdin.close.assert_called_once()
+
     async def test_structured_controller_validation_error(self):
         argv=[sys.executable,'-c',"import json;print(json.dumps({'error':'port is not attached'}));raise SystemExit(2)"]
         with self.assertRaisesRegex(ValueError,'port is not attached'):

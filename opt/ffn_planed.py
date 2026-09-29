@@ -63,9 +63,16 @@ async def process(argv, data, timeout):
             out.extend(chunk)
             if len(out) > LIMIT: raise ValueError('controller output exceeds limit')
     async def exchange():
-        proc.stdin.write(data)
-        await proc.stdin.drain()
-        proc.stdin.close()
+        input_closed = False
+        try:
+            proc.stdin.write(data)
+            await proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            # An early validation failure can close stdin before drain runs.
+            # Read its bounded response instead of losing the actual error.
+            input_closed = True
+        finally:
+            proc.stdin.close()
         out, err = await asyncio.gather(read(proc.stdout), read(proc.stderr))
         await proc.wait()
         if proc.returncode:
@@ -77,6 +84,8 @@ async def process(argv, data, timeout):
                 except (json.JSONDecodeError, UnicodeError):
                     pass
             raise RuntimeError('controller failed with exit code %d' % proc.returncode)
+        if input_closed:
+            raise RuntimeError('controller closed input before request delivery completed')
         return decode(out)
     try:
         return await asyncio.wait_for(exchange(), timeout)
