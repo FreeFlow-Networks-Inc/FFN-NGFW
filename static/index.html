@@ -4201,6 +4201,40 @@ function addIfaceAddress(family,value='') {
   document.getElementById('ifm-addresses-'+family).appendChild(row);
   if(!value)row.querySelector('input').focus();
 }
+async function ifaceLinkCapabilities(name,refresh=false) {
+  // Hardware modules may still be loading when the interface editor opens.
+  if(typeof loadExtensions==='function')await loadExtensions();
+  if(window.ffnExtensions?.interfaceLinkCapabilities){
+    const capability=await window.ffnExtensions.interfaceLinkCapabilities(name);
+    if(capability)return capability;
+  }
+  const cached=_ifaceState.caps[name];
+  if(cached&&!refresh)return cached;
+  const data=await consoleRequest('/api/network/link-capabilities');
+  return data?.interfaces?.[name]||{supported_speeds:[],configurable:false,source:'No link capabilities reported for this interface'};
+}
+function ifaceSpeedOptions(cap,selected) {
+  const supported=(cap.supported_speeds||[]).map(s=>Number(typeof s==='object'?s?.speed_mbps:s)).filter(s=>Number.isSafeInteger(s)&&s>0);
+  return [...new Set(['auto',...supported.sort((a,b)=>a-b).map(String),selected||'auto'])].map(s=>`<option value="${_escSP(s)}">${s==='auto'?'Auto-negotiate':_escSP(s)+' Mb/s (manual)'}</option>`).join('');
+}
+function ifaceLinkDescription(cap) {
+  return (cap.source||'Detected interface capabilities')+(cap.current_speed_mbps?' · Current: '+cap.current_speed_mbps+' Mb/s':'')+(cap.configurable===false?' · Link controls unavailable. Refresh link capabilities to retry; existing settings are retained.':' · Select a manual speed or Auto-negotiate. OK stages the setting; Commit applies it.');
+}
+async function refreshIfaceLinkCapabilities() {
+  const form=document.getElementById('interface-form');
+  if(!form||form.linkLoading||form.snapshot.entry.name.startsWith('ae'))return;
+  form.linkLoading=true;_ifmToggle();
+  const button=form.querySelector('#ifm-link-refresh');button.disabled=true;
+  form.querySelector('#ifm-link-status').textContent='Reading supported speeds from the hardware controller…';
+  let cap;
+  try {cap=await ifaceLinkCapabilities(form.snapshot.entry.name,true);}
+  catch(error){cap={supported_speeds:[],configurable:false,source:'Hardware controller unavailable: '+error.message};}
+  if(!form.isConnected||document.getElementById('interface-form')!==form)return;
+  const select=form.querySelector('#ifm-speed'),selected=select.value;
+  form.cap=cap;select.innerHTML=ifaceSpeedOptions(cap,selected);select.value=selected;
+  form.querySelector('#ifm-link-status').textContent=ifaceLinkDescription(cap);
+  form.linkLoading=false;button.disabled=!form.snapshot.can_edit;_ifmToggle();
+}
 async function openIfaceModal(name) {
   const box=document.getElementById('info-modal-body');
   document.getElementById('info-modal-title').textContent='Interface: '+name;
@@ -4212,13 +4246,12 @@ async function openIfaceModal(name) {
     const row=((_ifaceState.enriched||{}).ethernet||[]).find(e=>e.name===name);
     const snapshot=await consoleRequest('/api/config/interfaces?name='+encodeURIComponent(name)+'&vsys='+encodeURIComponent(row?.virtual_system||'vsys1'));
     const cur=snapshot.entry,isAE=name.startsWith('ae');
-    let cap=_ifaceState.caps[name]||{supported_speeds:[]};
-    if(!isAE&&window.ffnExtensions?.interfaceLinkCapabilities){
-      try{cap=await window.ffnExtensions.interfaceLinkCapabilities(name)||cap;}
-      catch(e){cap={supported_speeds:[],configurable:false,source:'Hardware controller unavailable'};}
+    let cap={supported_speeds:[]};
+    if(!isAE){
+      try{cap=await ifaceLinkCapabilities(name);}
+      catch(error){cap={supported_speeds:[],configurable:false,source:'Hardware controller unavailable: '+error.message};}
     }
     if(generation!==openIfaceModal.generation||!loading.isConnected||!overlay.classList.contains('show'))return;
-    const speeds=[...new Set(['auto',...(cap.supported_speeds||[]).map(s=>String(s.speed_mbps)),cur.link_speed||'auto'])];
     const tabs=[['config','Configuration'],['ipv4','IPv4'],['ipv6','IPv6'],['advanced','Advanced']];
     const modes=IFACE_MODES.filter(m=>!isAE||['none','layer2','layer3'].includes(m.value));
     box.innerHTML=`<form id="interface-form" novalidate>
@@ -4257,10 +4290,11 @@ async function openIfaceModal(name) {
         <div id="ifm-ip-advanced"><div class="form-row"><div class="form-group"><label for="ifm-mtu">MTU</label><input id="ifm-mtu" type="number" min="576" max="9216" placeholder="Inherit" value="${_escSP(cur.mtu)}"></div>
         <div class="form-group"><label for="ifm-mgmt">Interface Management Profile</label><select id="ifm-mgmt">${subinterfaceOptions(snapshot.management_profile_choices,cur.interface_management_profile)}</select></div></div>
         <p class="text-dim">MTU: 576–9216 bytes; IPv6 requires at least 1280. Management profiles control access to the interface's own address.</p></div>
-        <div class="form-row"><div class="form-group" ${isAE?'hidden':''}><label for="ifm-speed">Link Speed</label><select id="ifm-speed">${speeds.map(s=>`<option value="${_escSP(s)}">${s==='auto'?'Auto-negotiate':_escSP(s)+' Mb/s'}</option>`).join('')}</select></div>
+        <div class="form-row"><div class="form-group" ${isAE?'hidden':''}><label for="ifm-speed">Link Speed</label><select id="ifm-speed">${ifaceSpeedOptions(cap,cur.link_speed)}</select></div>
         <div class="form-group" ${isAE?'hidden':''}><label for="ifm-duplex">Duplex</label><select id="ifm-duplex"><option value="auto">Auto</option><option value="full">Full</option><option value="half">Half</option></select></div>
         <div class="form-group"><label for="ifm-state">Admin State</label><select id="ifm-state"><option value="auto">Auto</option><option value="up">Up</option><option value="down">Down</option></select></div></div>
-        <p class="text-dim">${isAE?'Configure physical speed and duplex on the aggregate members.':_escSP(cap.source||'Detected interface capabilities')+(cap.current_speed_mbps?' · Current: '+_escSP(cap.current_speed_mbps)+' Mb/s':'')+(cap.configurable===false?' · Link controls unavailable; existing settings are retained.':'')}</p>
+        <p id="ifm-link-status" class="text-dim" role="status">${isAE?'Configure physical speed and duplex on the aggregate members.':_escSP(ifaceLinkDescription(cap))}</p>
+        <button id="ifm-link-refresh" class="btn btn-sm" type="button" onclick="refreshIfaceLinkCapabilities()" ${isAE?'hidden':''}>Refresh link capabilities</button>
         <div class="form-row"><div class="form-group"><label for="ifm-lldp">LLDP</label><select id="ifm-lldp"><option value="no">Disabled</option><option value="yes">Enabled</option></select></div>
         <div class="form-group"><label for="ifm-lldp-profile">LLDP Profile</label><select id="ifm-lldp-profile">${subinterfaceOptions(snapshot.lldp_profile_choices,cur.lldp_profile)}</select></div></div>
       </section></fieldset>
@@ -4296,8 +4330,8 @@ function _ifmToggle() {
     document.getElementById('ifm-panel-ipv'+family).querySelectorAll('input,select,button').forEach(el=>el.disabled=!available||!snapshot.can_edit||(family===4&&(el.closest('#ifm-static4')?dhcp:el.closest('#ifm-dhcp-block')?!dhcp:false)));
   }
   state.disabled=(mode==='none'&&!isAE)||!snapshot.can_edit;
-  document.getElementById('ifm-speed').disabled=isAE||form.cap.configurable===false||!snapshot.can_edit;
-  document.getElementById('ifm-duplex').disabled=isAE||form.cap.configurable===false||!snapshot.can_edit;
+  document.getElementById('ifm-speed').disabled=isAE||form.linkLoading||form.cap.configurable===false||!snapshot.can_edit;
+  document.getElementById('ifm-duplex').disabled=isAE||form.linkLoading||form.cap.configurable===false||!snapshot.can_edit;
   if(!snapshot.can_edit)form.querySelectorAll('input,select,textarea,button:not([role="tab"]):not(.settings-toolbar button)').forEach(el=>el.disabled=true);
 }
 let ifaceSavePending = false;
