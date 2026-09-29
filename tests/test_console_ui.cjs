@@ -18,6 +18,7 @@ const context = vm.createContext({console, window:{}, localStorage:{getItem(){re
 vm.runInContext(fs.readFileSync(__dirname+'/../static/config-objects.js','utf8'),context);
 vm.runInContext(fs.readFileSync(__dirname+'/../static/config-policies.js','utf8'),context);
 vm.runInContext(fs.readFileSync(__dirname+'/../static/policy-profiles.js','utf8'),context);
+vm.runInContext(fs.readFileSync(__dirname+'/../static/vrrp.js','utf8'),context);
 vm.runInContext(script,context);
 const run = code => vm.runInContext(code,context);
 (async()=>{
@@ -36,6 +37,11 @@ const run = code => vm.runInContext(code,context);
   context.renderPolicyWorkspace=(_container,kind)=>visited.push(kind);
   for(const page of ['nat','policy-qos','pbf','decryption'])context.switchSubPage(page);
   assert.deepEqual(visited,['nat','qos','pbf','decryption'],'Policy navigation must reach the editors instead of legacy unavailable pages');
+  const renderNetworkVRRP=context.renderNetworkVRRP;let vrrpVisits=0;
+  context.renderNetworkVRRP=()=>vrrpVisits++;
+  context.switchSubPage('vrrp');
+  assert.equal(vrrpVisits,1,'VRRP navigation must reach its staged editor');
+  context.renderNetworkVRRP=renderNetworkVRRP;
   context.renderPolicyWorkspace=renderPolicyWorkspace;
   assert.deepEqual(Array.from(menus.policy,x=>x.label),['Security','NAT','QoS','Policy Based Forwarding','Decryption','Tunnel Inspection','Application Override','Authentication','DoS Protection','SD-WAN']);
   assert.deepEqual(Array.from(menus.objects.slice(0,12),x=>x.label),[
