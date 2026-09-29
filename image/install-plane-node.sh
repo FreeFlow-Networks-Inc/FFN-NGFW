@@ -23,7 +23,7 @@ install -m 0644 "$root/opt/ffn_planed.py" "$root/opt/ffn_linux_network.py" \
 install -m 0644 "$root/opt/ffn_security_runtime.py" "$root/opt/ffn_security_nft.py" \
                 "$root/opt/ffn_session_events.py" "$root/opt/ffn_session_feed.py" "$root/opt/ffn_l3_offload.py" "$root/opt/ffn_policy_config.py" \
                 "$root/opt/ffn_policy_plan.py" "$root/opt/ffn_policy_profiles.py" \
-                "$root/opt/ffn_qos_config.py" "$root/opt/ffn_security_control.py" \
+                "$root/opt/ffn_qos_config.py" "$root/opt/ffn_vrrp.py" "$root/opt/ffn_interface_addresses.py" "$root/opt/ffn_security_control.py" \
                 "$root/opt/ffn_nat_control.py" /usr/local/lib/ffn/
 install -m 0600 "$config" "/etc/ffn/planes/$role.json"
 install -m 0644 "$root/systemd/ffn-plane@.service" /etc/systemd/system/

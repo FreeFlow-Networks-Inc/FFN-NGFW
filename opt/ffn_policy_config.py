@@ -338,6 +338,8 @@ def runtime_report(xml,check_runtime=False):
     blockers.extend(reference_blockers(root))
     from ffn_qos_config import activation_blockers
     blockers.extend(activation_blockers(root))
+    from ffn_vrrp import activation_blockers as vrrp_blockers
+    blockers.extend(vrrp_blockers(root))
     for scope,node in owners(root).items():
         for kind in SCHEMAS:
             for rule in node.findall('rulebase/'+kind+'/rules/entry'):
@@ -429,6 +431,9 @@ class PolicyController:
         except PolicyError as error:return dict(ok=False,error=str(error),code=error.code)
 
     def execute(self,args):
+        if args.get('action','').startswith('vrrp-'):
+            from ffn_vrrp import request
+            return request(self,args)
         if args.get('action','').startswith('qos-interface-'):
             from ffn_qos_config import request
             return request(self,args)

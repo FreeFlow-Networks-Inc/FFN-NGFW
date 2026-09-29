@@ -689,6 +689,7 @@ const TAB_MENUS = {
     {id:'vlan',label:'VLANs'},
     {id:'virtual-wires',label:'Virtual Wires'},
     {id:'routing',label:'Virtual Routers'},
+    {id:'vrrp',label:'VRRP'},
     {id:'ipsec-vpn',label:'IPSec Tunnels'},
     {id:'gre-tunnels',label:'GRE Tunnels'},
     {id:'vxlan-tunnels',label:'VXLAN Tunnels'},
@@ -1617,6 +1618,7 @@ function renderPage(pageId) {
     'vlan': renderNetworkVLAN,
     'virtual-wires': renderNetworkVirtualWires,
     'routing': renderNetworkRouting,
+    'vrrp': renderNetworkVRRP,
     'ipsec-vpn': renderNetworkIPSec,
     'gre-tunnels': renderNetworkGRE,
     'vxlan-tunnels': renderNetworkVXLAN,
@@ -8413,6 +8415,7 @@ document.getElementById('login-pass').addEventListener('keydown',e=>{if(e.key===
 document.getElementById('login-user').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
 </script>
 <script src="/static/vr-interfaces.js"></script>
+<script src="/static/vrrp.js"></script>
 <script src="/static/modal-layers.js"></script>
 </body>
 </html>

@@ -269,6 +269,7 @@ jobs:
           python tests/test_policy_barrier.py
           python tests/test_commit_review.py
           python tests/test_qos_interfaces.py
+          python tests/test_vrrp.py
           python tests/test_extensions.py
 
       - name: Objects browser workflows against disposable candidate configuration
@@ -278,6 +279,7 @@ jobs:
           NODE_PATH="$RUNNER_TEMP/objects-browser/node_modules" TEST_PYTHON=python node tests/test_objects_browser.cjs
           NODE_PATH="$RUNNER_TEMP/objects-browser/node_modules" TEST_PYTHON=python node tests/test_policies_browser.cjs
           NODE_PATH="$RUNNER_TEMP/objects-browser/node_modules" TEST_PYTHON=python node tests/test_nat_ipv6_browser.cjs
+          NODE_PATH="$RUNNER_TEMP/objects-browser/node_modules" TEST_PYTHON=python node tests/test_vrrp_browser.cjs
           NODE_PATH="$RUNNER_TEMP/objects-browser/node_modules" node tests/test_commit_review_browser.cjs
 
       - name: plane protocol, transport and Linux networking
