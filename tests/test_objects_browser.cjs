@@ -40,6 +40,8 @@ async function main(){
       await page.locator('#object-form [name=description]').fill('Objects browser regression');
       await page.locator('#object-form [type=submit]').click();
       await page.locator('#object-editor').waitFor({state:'hidden'});
+      // Closing the editor precedes the asynchronous candidate-list reload.
+      await page.waitForFunction(name=>document.getElementById('object-list').textContent.includes(name),kind+' fixture');
       assert(await page.locator('#object-list').innerText().then(t=>t.includes(kind+' fixture')),kind+' did not save');
       await page.locator('#object-list [data-edit]').click();
       assert.equal(await page.locator('#object-form [name=name]').inputValue(),kind+' fixture');
@@ -53,6 +55,7 @@ async function main(){
     await open('address');await page.locator('[data-clone]').click();
     assert.equal(await page.locator('#object-form [name=name]').inputValue(),'');
     await page.locator('#object-form [name=name]').fill('cloned address');await page.locator('#object-form [type=submit]').click();await page.locator('#object-editor').waitFor({state:'hidden'});
+    await page.waitForFunction(()=>document.querySelectorAll('#object-list tbody tr').length===2);
     assert.equal(await page.locator('#object-list tbody tr').count(),2);
     // Referenced object deletion is rejected, displayed, and leaves its row intact.
     page.on('dialog',d=>d.accept());await page.locator('[data-delete="0"]').click();await page.locator('#object-error').waitFor();
