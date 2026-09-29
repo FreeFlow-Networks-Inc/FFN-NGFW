@@ -3,6 +3,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const html = fs.readFileSync(__dirname+'/../static/index.html','utf8');
+for (const match of html.matchAll(/(?:src|href)="\/static\/([^"?]+)/g)) {
+  assert(fs.existsSync(__dirname+'/../static/'+match[1]), 'Missing console asset: '+match[1]);
+}
 const script = [...html.matchAll(/<script(?![^>]*src=)[^>]*>([\s\S]*?)<\/script>/g)].map(x=>x[1]).join('\n');
 const elements = new Map();
 const element = id => {
@@ -38,6 +41,11 @@ const run = code => vm.runInContext(code,context);
   for(const page of ['nat','policy-qos','pbf','decryption'])context.switchSubPage(page);
   assert.deepEqual(visited,['nat','qos','pbf','decryption'],'Policy navigation must reach the editors instead of legacy unavailable pages');
   const renderNetworkVRRP=context.renderNetworkVRRP;let vrrpVisits=0;
+  context.renderNetworkVRRP=undefined;
+  context.renderPage('setup');
+  assert(element('content-area').innerHTML.includes('General Settings'), 'Missing optional module must not blank other pages');
+  context.renderPage('vrrp');
+  assert(element('content-area').innerHTML.includes('module is unavailable'));
   context.renderNetworkVRRP=()=>vrrpVisits++;
   context.switchSubPage('vrrp');
   assert.equal(vrrpVisits,1,'VRRP navigation must reach its staged editor');

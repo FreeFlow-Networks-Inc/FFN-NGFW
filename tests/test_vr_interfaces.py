@@ -21,7 +21,9 @@ class Interfaces(unittest.TestCase):
         self.assertEqual(next(r for r in self.rows if r['name']=='ethernet1/1.100')['virtual_router'],'tenant')
 
     def test_valid_default_route_and_onlink(self):
-        self.assertEqual(validate_route(self.route,'default',self.rows),self.route)
+        result=validate_route(self.route,'default',self.rows)
+        self.assertFalse(result.pop('path_monitor')['enabled'])
+        self.assertEqual(result,self.route)
         self.assertEqual(validate_route(self.route|{'next_hop':''},'default',self.rows)['dev'],'ethernet1/1')
 
     def test_link_only_aggregate_exposes_routed_children_only(self):

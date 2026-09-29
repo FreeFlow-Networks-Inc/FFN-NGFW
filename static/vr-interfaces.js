@@ -31,7 +31,7 @@ async function vrLoadInterfaceChoices(id, router, selected = [], members = false
 
 function vrRouteRow(route, name) {
   return `<tr><td class="mono">${_escSP(route.dest_cidr || '')}</td><td class="mono">${_escSP(route.next_hop || 'On-link')}</td>` +
-    `<td>${_escSP(route.dev || 'Automatic')}</td><td>${_escSP(route.metric ?? 0)}</td><td>` +
+    `<td>${_escSP(route.dev || 'Automatic')}<div class="text-dim">${_escSP(route.runtime?.reason || 'Runtime not confirmed')}</div></td><td>${_escSP(route.metric ?? 0)}<div class="text-dim">${route.path_monitor?.enabled ? 'Path monitoring enabled' : 'Link tracking'}</div></td><td>` +
     `<button class="btn btn-xs" data-vr="${_escSP(name)}" data-route="${_escSP(String(route.id))}" onclick="editVRoute(this.dataset.vr,this.dataset.route)">Edit</button> ` +
     `<button class="btn btn-xs btn-danger" data-vr="${_escSP(name)}" data-route="${_escSP(String(route.id))}" onclick="deleteVRoute(this.dataset.vr,this.dataset.route)">Delete</button></td></tr>`;
 }

@@ -117,14 +117,23 @@ def validate(cfg):
         raise ValueError('routes must be a list of at most 1024 entries')
     keys = set()
     for route in routes:
-        if not isinstance(route, dict) or set(route)-{'dst', 'via', 'dev', 'metric', 'type', 'table', 'nexthops'}:
+        if not isinstance(route, dict) or set(route)-{'dst', 'via', 'dev', 'metric', 'type', 'table', 'nexthops', 'track_link', 'monitor', 'onlink'}:
             raise ValueError('unknown route setting')
+        from ffn_route_monitor import validate as validate_monitor
+        monitor=validate_monitor(route.get('monitor'),route.get('dst'))
+        if any(type(route[k]) is not bool for k in ('onlink','track_link') if k in route):
+            raise ValueError('Route flags must be boolean')
+        if route.get('onlink') and not route.get('via'): raise ValueError('On-link gateway requires via')
+        if monitor['enabled'] and (not route.get('track_link') or not route.get('dev')):
+            raise ValueError('Path monitoring requires a tracked route with explicit egress')
+        if route.get('track_link') and ('nexthops' in route or route.get('type','unicast')!='unicast'):
+            raise ValueError('Link tracking currently requires a single unicast next hop')
         destination = ipaddress.ip_network(route.get('dst', ''), strict=True)
         if str(destination) != route['dst']:
             raise ValueError('route destination must be a canonical prefix; use /0 for default')
         metric = route.get('metric', 100)
-        if type(metric) is not int or not 1 <= metric < 4278198272:
-            raise ValueError('route metric must be 1..4278198271')
+        if type(metric) is not int or not 0 <= metric < 4278198272:
+            raise ValueError('route metric must be 0..4278198271')
         table = route.get('table', 254)
         if type(table) is not int or (table != 254 and table not in vrfs.values()):
             raise ValueError('route table must be main (254) or a configured VRF table')
@@ -176,7 +185,7 @@ def validate(cfg):
                             interface.network.network_address, interface.network.broadcast_address):
                         continue
                     reachable = True
-            if not reachable:
+            if not reachable and not route.get('onlink') and not route.get('track_link'):
                 raise ValueError('next hop must be directly reachable on route dev')
     rules = cfg.get('rules', [])
     if not isinstance(rules, list) or len(rules) > 256:
@@ -217,6 +226,13 @@ def configure_rule(action, rule):
 
 
 def configure_route(action, route):
+    if route.get('track_link'):
+        from ffn_static_routes import apply
+        return apply(sys.modules[__name__],route,delete=action=='del')
+    return raw_configure_route(action,route)
+
+
+def raw_configure_route(action, route):
     family = '-4' if ipaddress.ip_network(route['dst']).version == 4 else '-6'
     args = [family, 'route', action]
     if route.get('type') == 'blackhole':
@@ -226,6 +242,7 @@ def configure_route(action, route):
         args += ['via', route['via']]
     if 'dev' in route:
         args += ['dev', route['dev']]
+    if route.get('onlink') and route.get('via'): args += ['onlink']
     args += ['metric', str(route.get('metric', 100)), 'proto', 'static']
     args += ['table', str(route.get('table', 254))]
     for hop in route.get('nexthops', []):
@@ -238,6 +255,20 @@ def configure_route(action, route):
 
 def route_ports(route):
     return {route.get('dev')} | {h['dev'] for h in route.get('nexthops', [])}
+
+
+def route_present(route):
+    family = '-4' if ipaddress.ip_network(route['dst']).version == 4 else '-6'
+    rows = json.loads(ip(family, '-j', 'route', 'show', 'table', str(route.get('table',254))))
+    for row in rows:
+        dst = ('0.0.0.0/0' if family == '-4' else '::/0') if row.get('dst') == 'default' else row.get('dst')
+        if (dst == route['dst'] and row.get('metric',0) == route.get('metric',100)
+                and row.get('protocol') == 'static' and row.get('type','unicast') == route.get('type','unicast')
+                and ('onlink' in row.get('flags',[])) == bool(route.get('onlink'))
+                and row.get('gateway') == route.get('via') and row.get('dev') == route.get('dev')
+                and not route.get('nexthops')):
+            return True
+    return False
 
 
 def lookup(cfg, request):
@@ -443,6 +474,7 @@ def prepare(cfg, request):
         attached = attached_interfaces(attachment)
         needed = {name for name, settings in request.get('ports', {}).items() if settings['mode'] != 'disabled'}
         for route in request.get('routes', []):
+            if route.get('track_link'): continue  # Stored intent; runtime checks attachment/link.
             needed.update(port for port in route_ports(route) if port)
         needed.update(rule['iif'] for rule in request.get('rules', []))
         if needed - attached:
@@ -454,9 +486,13 @@ def prepare(cfg, request):
     if not exists():
         raise RuntimeError('network service is stopped')
     changed = [p for p in request.get('ports', {}) if cfg['ports'].get(p) != new['ports'][p]]
+    for name, settings in request.get('ports', {}).items():
+        if name not in changed and settings.get('mode') == 'l3' and live_addresses(name) != set(settings.get('addresses', [])):
+            changed.append(name)
     old_routes, new_routes = cfg.get('routes', []), new.get('routes', [])
     retained = [r for r in old_routes if r in new_routes]
-    rewired = {p for p in changed if without_management(cfg['ports'].get(p, {})) != without_management(new['ports'][p])}
+    rewired = {p for p in changed if without_management(cfg['ports'].get(p, {})) != without_management(new['ports'][p])
+               and not address_update(cfg['ports'].get(p, {}), new['ports'][p])}
     if any(route_ports(r).intersection(rewired) for r in retained):
         raise ValueError('remove dependent routes before reconfiguring their ports')
     old_rules, new_rules = cfg.get('rules', []), new.get('rules', [])
@@ -474,11 +510,48 @@ def without_management(settings):
     return {k:v for k,v in settings.items() if k != 'management'}
 
 
+def address_update(before, after):
+    """L3 address edits do not change the port's link, MTU or VRF owner."""
+    return (before.get('mode') == after.get('mode') == 'l3' and
+            {k:v for k,v in before.items() if k not in ('addresses', 'management')} ==
+            {k:v for k,v in after.items() if k not in ('addresses', 'management')})
+
+
+def live_addresses(name):
+    return {str(ipaddress.ip_interface(str(a['local'])+'/'+str(a['prefixlen'])))
+            for row in json.loads(ip('-j', 'address', 'show', 'dev', name))
+            for a in row.get('addr_info', []) if a.get('scope') == 'global'}
+
+
 def update_port(name, before, after):
     if 'management' in before and 'management' not in after:
         from ffn_interface_management import apply as apply_management
         apply_management(NS, name, before, remove=True)
-    if without_management(before) == without_management(after) and 'management' in after:
+    if address_update(before, after):
+        # Read actual addresses so the surrounding transaction can also undo a
+        # partially completed edit. Add replacements before removing old IPs.
+        current = live_addresses(name)
+        wanted = {str(ipaddress.ip_interface(a)) for a in after.get('addresses', [])}
+        owned = {str(ipaddress.ip_interface(a)) for a in before.get('addresses', [])}
+        # Linux otherwise deletes all secondary IPv4 addresses on the same
+        # subnet when the primary is removed, including the new replacement.
+        key = 'net.ipv4.conf.' + name + '.promote_secondaries'
+        promotion = run('ip', 'netns', 'exec', NS, 'sysctl', '-n', key).strip()
+        if promotion not in ('0', '1'): raise RuntimeError('Invalid secondary address promotion state')
+        try:
+            run('ip', 'netns', 'exec', NS, 'sysctl', '-qw', key + '=1')
+            for address in sorted(wanted - current):
+                ip('address', 'add', address, 'dev', name)
+            for address in sorted((current & owned) - wanted):
+                ip('address', 'del', address, 'dev', name)
+        finally:
+            run('ip', 'netns', 'exec', NS, 'sysctl', '-qw', key + '=' + promotion)
+        if not wanted <= live_addresses(name):
+            raise RuntimeError('Interface address readback mismatch')
+        if 'management' in after:
+            from ffn_interface_management import apply as apply_management
+            apply_management(NS, name, after)
+    elif without_management(before) == without_management(after) and 'management' in after:
         from ffn_interface_management import apply as apply_management
         apply_management(NS, name, after)
     else:
@@ -511,7 +584,7 @@ def patch(cfg, request):
             applied.append(name)
             update_port(name, cfg['ports'].get(name, {}), new['ports'][name])
         for route in new_routes:
-            if route not in old_routes:
+            if route not in old_routes or (not route.get('nexthops') and not route_present(route)):
                 configure_route('add', route)
                 added_routes.append(route)
         for rule in new_rules:
@@ -569,7 +642,7 @@ def patch(cfg, request):
 def main():
     global PORT_BACKEND
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action', choices=('check', 'validate', 'apply', 'patch', 'stop', 'status', 'lookup'))
+    p.add_argument('action', choices=('check', 'validate', 'apply', 'patch', 'stop', 'status', 'lookup', 'health'))
     p.add_argument('--config', type=Path, default=STATE)
     p.add_argument('--backend', choices=('tap','native'), default=PORT_BACKEND)
     args = p.parse_args()
@@ -581,18 +654,26 @@ def main():
     with open('/run/ffn-network.lock', 'w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         cfg = validate(json.loads(global_state.read_text()))
-        if args.action == 'apply':
+        if args.action == 'health':
+            import time
+            request=json.load(sys.stdin)
+            boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+            if (set(request)!={'revision','boot_id','links'} or request['revision']!=cfg['revision'] or request['boot_id']!=boot
+                    or not isinstance(request['links'],dict) or len(request['links'])>MAX_PORTS
+                    or any(not re.fullmatch(r'p[1-9][0-9]{0,3}',k) or type(v) is not bool for k,v in request['links'].items())):
+                raise ValueError('Invalid or obsolete hardware link observation')
+            value=dict(request,observed=time.monotonic());path=Path('/run/ffn-route-links.json');temp=path.with_suffix('.tmp')
+            temp.write_text(json.dumps(value));temp.chmod(0o600);temp.replace(path)
+            result={'acknowledged':True,'revision':cfg['revision']}
+        elif args.action == 'apply':
             start(cfg)
             result = {'started': True, 'config': cfg}
         elif args.action == 'validate':
-            import sys
             proposed, changed = prepare(cfg, json.load(sys.stdin))
             result = {'validated': True, 'config': proposed, 'changed_ports': changed}
         elif args.action == 'patch':
-            import sys
             result = patch(cfg, json.load(sys.stdin))
         elif args.action == 'lookup':
-            import sys
             result = lookup(cfg, json.load(sys.stdin))
         elif args.action == 'stop':
             if PORT_BACKEND == 'native': raise RuntimeError('native namespace teardown requires explicit provisioning tools')
@@ -601,6 +682,18 @@ def main():
             result = {'stopped': True}
         elif args.action == 'status':
             result = {'config': cfg, 'running': exists(), 'backend': backend()}
+            result['boot_id']=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+            from ffn_static_routes import load as route_health
+            result['route_health']=route_health()
+            import time
+            result['route_health']['fresh']=0<=time.monotonic()-result['route_health'].get('observed',0)<=60
+            try:
+                services=json.loads(Path('/run/ffn-interface-services/status.json').read_text())
+                services['fresh']=(services.get('boot_id')==result['boot_id'] and
+                                   0<=time.monotonic()-services.get('observed',0)<=10)
+                result['interface_services']=services
+            except (OSError,ValueError):
+                result['interface_services']={'fresh':False,'channel_ready':False,'services':[]}
             if result['running']:
                 result['interfaces'] = json.loads(ip('-j', 'address'))
                 result['routes'] = json.loads(ip('-j', 'route'))

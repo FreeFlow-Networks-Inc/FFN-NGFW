@@ -1,0 +1,17 @@
+[Unit]
+Description=FFN static route link and path monitoring
+After=ffn-network.service
+Requires=ffn-network.service
+PartOf=ffn-network.service
+
+[Service]
+Environment=PYTHONPATH=/usr/local/lib/ffn
+ExecStart=/usr/bin/python3 /usr/local/lib/ffn/ffn_static_routes.py
+ExecStopPost=/usr/bin/python3 /usr/local/lib/ffn/ffn_static_routes.py stop
+Restart=always
+RestartSec=2
+TimeoutStopSec=30
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

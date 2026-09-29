@@ -8,6 +8,20 @@ import ffn_linux_network as net
 
 
 class ConfigTests(unittest.TestCase):
+    def test_address_edit_preserves_valid_routes_and_link(self):
+        self.cfg['routes'] = [{'dst':'0.0.0.0/0','via':'198.18.1.2','dev':'p3'}]
+        after = {'mode':'l3','addresses':['198.18.1.3/24']}
+        with patch.object(net,'exists',return_value=True), patch.object(net,'backend',return_value={'ports':[]}), \
+             patch.object(net,'ip') as ip, patch.object(net,'run',return_value='0') as run, \
+             patch.object(net,'live_addresses',side_effect=[{'198.18.1.1/24'},{'198.18.1.3/24'}]), \
+             patch.object(net,'save'), patch.object(net,'route_present',return_value=True), patch.object(net,'configure_route') as routes:
+            net.patch(self.cfg, {'revision':7,'ports':{'p3':after}})
+        routes.assert_not_called()
+        self.assertEqual(ip.call_args_list[0].args, ('address','add','198.18.1.3/24','dev','p3'))
+        self.assertEqual(ip.call_args_list[1].args, ('address','del','198.18.1.1/24','dev','p3'))
+        self.assertEqual(run.call_args_list[-1].args[-1], 'net.ipv4.conf.p3.promote_secondaries=0')
+        self.assertFalse(any('link' in c.args for c in ip.call_args_list))
+
     def test_generic_platform_does_not_discover_external_interfaces(self):
         cfg=copy.deepcopy(self.cfg)
         cfg['routes']=[{'dst':'0.0.0.0/0','dev':'fv1','via':'198.18.1.2'}]

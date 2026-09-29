@@ -413,6 +413,19 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
     <div class="form-group"><label>Next Hop</label><input type="text" id="route-nh" placeholder="10.0.0.1"></div>
     <div class="form-group"><label>Outgoing Interface</label><select id="route-iface"></select></div>
     <div class="form-group"><label>Metric</label><input type="number" id="route-metric" value="100"></div>
+    <div class="form-group"><label><input type="checkbox" id="route-onlink"> Gateway is directly on-link (explicit ISP /32 routing)</label></div>
+    <fieldset><legend>Path Monitoring</legend>
+      <label><input type="checkbox" id="route-monitor-enabled" onchange="document.getElementById('route-monitor-options').disabled=!this.checked"> Enable ICMP path monitoring</label>
+      <fieldset id="route-monitor-options" disabled>
+        <div class="form-group"><label>IPv4 targets (up to four, comma separated)</label><input id="route-monitor-targets" type="text"></div>
+        <div class="form-group"><label>Probe interval (seconds)</label><input id="route-monitor-interval" type="number" min="1" max="300" value="5"></div>
+        <div class="form-group"><label>Timeout (seconds)</label><input id="route-monitor-timeout" type="number" min="1" max="10" value="1"></div>
+        <div class="form-group"><label>Failed rounds before withdrawal</label><input id="route-monitor-failure" type="number" min="1" max="20" value="3"></div>
+        <div class="form-group"><label>Successful rounds before recovery</label><input id="route-monitor-recovery" type="number" min="1" max="20" value="3"></div>
+        <div class="form-group"><label>Withdraw when</label><select id="route-monitor-condition"><option value="all">All targets fail</option><option value="any">Any target fails</option></select></div>
+      </fieldset>
+      <p class="text-dim">Link-down routes remain configured. Monitoring probes use this route's interface and next hop even while the route is withdrawn.</p>
+    </fieldset>
     <div id="route-msg" style="font-size:11px;min-height:14px"></div>
     <div class="form-actions">
       <button class="btn" onclick="closeModal('modal-route')">Cancel</button>
@@ -1618,7 +1631,8 @@ function renderPage(pageId) {
     'vlan': renderNetworkVLAN,
     'virtual-wires': renderNetworkVirtualWires,
     'routing': renderNetworkRouting,
-    'vrrp': renderNetworkVRRP,
+    'vrrp': c => typeof renderNetworkVRRP === 'function' ? renderNetworkVRRP(c) :
+      (c.innerHTML = '<p role="alert">The VRRP page module is unavailable. Reload after completing the WebUI update.</p>'),
     'ipsec-vpn': renderNetworkIPSec,
     'gre-tunnels': renderNetworkGRE,
     'vxlan-tunnels': renderNetworkVXLAN,
@@ -5132,6 +5146,12 @@ async function openVRouteModal(vrName, route = null) {
   document.getElementById('route-dest').value=route?.dest_cidr || '';
   document.getElementById('route-nh').value=route?.next_hop || '';
   document.getElementById('route-metric').value=route?.metric ?? 100;
+  document.getElementById('route-onlink').checked=route?.onlink===true;
+  const monitor=route?.path_monitor || {};
+  document.getElementById('route-monitor-enabled').checked=monitor.enabled===true;
+  document.getElementById('route-monitor-options').disabled=monitor.enabled!==true;
+  document.getElementById('route-monitor-targets').value=(monitor.targets || []).join(', ');
+  for(const [id,key,fallback] of [['interval','interval',5],['timeout','timeout',1],['failure','failure_count',3],['recovery','recovery_count',3],['condition','failure_condition','all']]) document.getElementById('route-monitor-'+id).value=monitor[key] ?? fallback;
   document.getElementById('route-msg').textContent='Loading configured interfaces…';
   document.getElementById('modal-route').classList.add('show');
   try {
@@ -5146,7 +5166,12 @@ async function saveVRoute() {
   if(document.getElementById('route-iface').disabled){msg.textContent='Load the interface inventory before saving.';return;}
   const raw=document.getElementById('route-metric').value.trim();
   const body={dest_cidr:document.getElementById('route-dest').value.trim(),next_hop:document.getElementById('route-nh').value.trim(),
-    dev:document.getElementById('route-iface').value || null,metric:Number(raw)};
+    dev:document.getElementById('route-iface').value || null,metric:Number(raw),onlink:document.getElementById('route-onlink').checked,
+    path_monitor:{enabled:document.getElementById('route-monitor-enabled').checked,
+      targets:document.getElementById('route-monitor-targets').value.split(',').map(x=>x.trim()).filter(Boolean),
+      interval:Number(document.getElementById('route-monitor-interval').value),timeout:Number(document.getElementById('route-monitor-timeout').value),
+      failure_count:Number(document.getElementById('route-monitor-failure').value),recovery_count:Number(document.getElementById('route-monitor-recovery').value),
+      failure_condition:document.getElementById('route-monitor-condition').value}};
   if(!body.dest_cidr || !raw || !Number.isInteger(body.metric) || body.metric<0 || body.metric>4294967295){msg.textContent='Enter a destination prefix and a valid nonnegative metric.';return;}
   if(!body.next_hop && !body.dev){msg.textContent='Choose a next hop or an outgoing interface.';return;}
   if(saveVRoute.busy)return;saveVRoute.busy=true;
@@ -6393,7 +6418,7 @@ function renderNPMonitor(c){c.innerHTML=netPageHTML(_CTX_NP_MONITOR);netRenderLi
 const _CTX_NP_IFMGMT = netRegister({
   kind:'interface-mgmt-profiles',
   title:'Interface Management Profiles',
-  desc:'Which management services (ping, SSH, HTTPS, SNMP, response-pages) are permitted per interface/zone.',
+  desc:'Allow selected services on the assigned interface, independently of transit zones and security rules. Permitted IPs restrict client sources. Services require a running backend.',
   fields:[
     {key:'permit_ping', label:'Ping',  type:'select', opts:_OPT_YESNO},
     {key:'permit_ssh',  label:'SSH',   type:'select', opts:_OPT_YESNO},
@@ -6401,11 +6426,25 @@ const _CTX_NP_IFMGMT = netRegister({
     {key:'permit_https',label:'HTTPS', type:'select', opts:_OPT_YESNO},
     {key:'permit_snmp', label:'SNMP',  type:'select', opts:_OPT_YESNO},
     {key:'permit_response_pages', label:'Response Pages', type:'select', opts:_OPT_YESNO},
-    {key:'permit_user_id', label:'User-ID Syslog Listener', type:'select', opts:_OPT_YESNO},
+    {key:'permit_user_id', label:'User-ID Service', type:'select', opts:_OPT_YESNO},
     {key:'permitted_ips', label:'Permitted IPs', type:'list', placeholder:'0.0.0.0/0'},
   ],
 });
-function renderNPInterfaceMgmt(c){c.innerHTML=netPageHTML(_CTX_NP_IFMGMT);netRenderList(_CTX_NP_IFMGMT);}
+function renderNPInterfaceMgmt(c){
+  c.innerHTML=netPageHTML(_CTX_NP_IFMGMT);netRenderList(_CTX_NP_IFMGMT);
+  if (!platformApplies('plane_control')) return;
+  const status=document.createElement('div');status.className='card';status.setAttribute('role','status');
+  status.textContent='Loading applied interface service status…';c.appendChild(status);
+  consoleRequest('/api/system/runtime/network').then(data=>{
+    if (!status.isConnected) return;
+    const observed=data.interface_services||{};
+    if (!observed.fresh || !observed.channel_ready) {
+      status.textContent='Management service connection unavailable or stale. Ping is handled locally on the dataplane.';return;
+    }
+    status.innerHTML='<h3>Applied Interface Services</h3><p>Ping is handled locally. Other services use the management plane and retain their normal authentication.</p><table><thead><tr><th>Interface</th><th>Address</th><th>Service</th><th>Status</th></tr></thead><tbody>'+
+      (observed.services||[]).map(s=>`<tr><td>${_escSP(s.interface)}</td><td>${_escSP(s.address)}</td><td>${_escSP(s.protocol)}/${_escSP(s.port)}</td><td>${_escSP(s.state==='listener-unavailable'?'Interface listener unavailable':s.provider_listening?'Service listening':'Service backend not running')}</td></tr>`).join('')+'</tbody></table>';
+  }).catch(()=>{if(status.isConnected)status.textContent='Unable to read applied interface service status.';});
+}
 
 const _CTX_NP_ZP = netRegister({
   kind:'zone-protection-profiles',
@@ -8407,7 +8446,7 @@ function closeModal(id) { document.getElementById(id).classList.remove('show'); 
 if (token) {
   document.getElementById('login-screen').style.display='none';
   document.getElementById('app').style.display='block';
-  setTimeout(()=>{switchTab('dashboard');startCommitPolling();},100);
+  window.addEventListener('DOMContentLoaded',()=>{switchTab('dashboard');startCommitPolling();},{once:true});
 }
 
 // Enter key on login

@@ -469,6 +469,8 @@ class VRRoute(BaseModel):
     next_hop: str = ""          # "" for a link/onlink route (dev only)
     dev: Optional[str] = None
     metric: int = 0
+    onlink: bool = False
+    path_monitor: dict = {}
 
 
 class MlScoreRequest(BaseModel):
@@ -6550,7 +6552,24 @@ async def vr_set_routing(name: str, cfg: VrRoutingConfig, user: dict = Depends(g
 @app.get("/api/network/virtual-routers/{name}/routes")
 async def vr_routes_list(name: str, user: dict = Depends(get_current_user)):
     vr = await _vr_candidate_get(name)
-    return {'virtual_router': name, 'routes': vr.get('routes', []), 'source': 'candidate'}
+    rows=vr.get('routes', [])
+    if _vr_platform_managed() and controld is not None:
+        try:
+            import uuid
+            answer=await asyncio.to_thread(controld.plane_request,dict(v=1,id=str(uuid.uuid4()),resource='network',action='status',payload={}))
+            health=answer.get('result',{}).get('route_health',{}) if answer.get('ok') else {}
+            from ffn_route_monitor import validate as monitor_settings
+            for row in rows:
+                dev=re.sub(r'^ethernet1/', 'p', row.get('dev') or '')
+                matches=[value for value in health.get('routes',{}).values() if
+                         value.get('route',{}).get('dev')==dev and value['route'].get('dst')==row['dest_cidr'] and
+                         value['route'].get('metric',100)==row['metric'] and value['route'].get('via','')==row['next_hop'] and
+                         value['route'].get('onlink',False)==row.get('onlink',False) and
+                         monitor_settings(value['route'].get('monitor',{}))==monitor_settings(row.get('path_monitor',{}))]
+                row['runtime']=matches[0] if len(matches)==1 and health.get('fresh') else dict(installed=False,reason='runtime-unconfirmed')
+        except Exception:
+            for row in rows:row['runtime']=dict(installed=False,reason='runtime-unavailable')
+    return {'virtual_router': name, 'routes': rows, 'source': 'candidate'}
 
 
 async def _vr_interface_inventory(user):

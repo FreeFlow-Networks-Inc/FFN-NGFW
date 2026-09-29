@@ -6,10 +6,28 @@ This permits traffic to existing listeners; it never creates an admin listener.
 """
 import ipaddress
 import json
+import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
+
+PROFILE_DIR = Path('/run/ffn-interface-profiles')
+
+
+def publish(name, settings, remove=False):
+    """Publish only successfully enforced permissions to the local service owner."""
+    PROFILE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = PROFILE_DIR / (name + '.json')
+    if remove:
+        path.unlink(missing_ok=True)
+        return
+    value = {'interface': name, 'settings': settings,
+             'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
+    temporary = path.with_suffix('.' + str(os.getpid()) + '.tmp')
+    temporary.write_text(json.dumps(value))
+    temporary.chmod(0o600)
+    temporary.replace(path)
 
 SERVICES = {'ssh': ('tcp', [22]), 'http': ('tcp', [80]),
             'https': ('tcp', [443, 8443]), 'snmp': ('udp', [161]),
@@ -118,6 +136,8 @@ def render(name, settings, exists=False):
 
 def apply(namespace, name, settings, remove=False):
     table, _ = render(name, settings)
+    # Revoke listeners before changing enforcement. A failed apply remains closed.
+    publish(name, settings, remove=True)
     nft = '/usr/local/ffn-dp/sbin/nft'
     if not Path(nft).is_file():
         nft = shutil.which('nft')
@@ -138,3 +158,5 @@ def apply(namespace, name, settings, remove=False):
         result = subprocess.run(argv + flags, input=script, capture_output=True, text=True, timeout=10)
         if result.returncode:
             raise RuntimeError('Interface management enforcement failed: ' + result.stderr[-512:])
+    if not remove:
+        publish(name, settings)

@@ -290,6 +290,7 @@ jobs:
           python tests/test_plane_sockets.py
           python tests/test_control_gateway.py
           python tests/test_linux_network.py
+          python tests/test_route_monitor.py
           python tests/test_vr_interfaces.py
           python tests/test_vr_route_api.py
 
@@ -303,6 +304,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq nftables conntrack iputils-ping
           sudo python3 tests/test_security_runtime_namespace.py
+          sudo python3 tests/test_network_address_namespace.py
+          sudo python3 tests/test_interface_services.py
 
       - name: patch management API permissions
         run: python tests/test_patch_api.py
