@@ -92,11 +92,11 @@ def acknowledgement(value,state):
         'reconciliations':health.get('events',{}).get('recoveries')}
 
 
-def observe(nonce):
-    if not isinstance(nonce,str) or str(uuid.UUID(nonce))!=nonce:raise ValueError('Canonical request nonce required')
+def context():
+    """Read an acknowledged policy and its durable grants without changing it."""
     if os.stat('/proc/self/ns/net').st_ino!=os.stat('/run/netns/'+runtime.nat.NS).st_ino:
         raise ValueError('Session feed must run inside the data namespace')
-    start=time.monotonic();before=runtime.status();state=runtime.saved()
+    before=runtime.status();state=runtime.saved()
     if not state:raise ValueError('No applied policy generation')
     producer=acknowledgement(before,state)
     rules,expected=catalog(state)
@@ -110,6 +110,12 @@ def observe(nonce):
         persisted={token:json.loads(raw) for token,raw in db.execute('SELECT token,metadata FROM rules')}
         if any(persisted.get(token)!=metadata for token,metadata in expected.items()):
             raise ValueError('Durable rule generation does not match applied policy')
+    return state,producer,rules
+
+
+def observe(nonce):
+    if not isinstance(nonce,str) or str(uuid.UUID(nonce))!=nonce:raise ValueError('Canonical request nonce required')
+    start=time.monotonic();state,producer,rules=context()
     with subscribe() as stream:
         rows,changes=snapshot(stream,timeout=2,capacity=8192)
     # Kernel dumps race with multicast updates. Replay removals/admissions;
