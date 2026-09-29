@@ -31,6 +31,25 @@ GATE='ffn_policy_gate'
 LEASE_SECONDS=8
 
 
+class RuntimeUpdated(Exception):
+    """An installed dependency changed; restart without faulting sessions."""
+
+
+def code_generation(paths=None):
+    if paths is None:
+        paths={str(Path(__file__).resolve())}
+        paths.update(str(Path(module.__file__).resolve()) for name,module in list(sys.modules.items())
+                     if name.startswith('ffn_') and getattr(module,'__file__',None)
+                     and module.__file__.endswith('.py'))
+    return {path:hashlib.sha256(Path(path).read_bytes()).hexdigest() for path in sorted(paths)}
+
+
+def check_generation(expected):
+    try:current=code_generation(expected)
+    except OSError as error:raise RuntimeUpdated('Security runtime dependency was removed') from error
+    if current!=expected:raise RuntimeUpdated('Security runtime code changed; collector reload required')
+
+
 def atomic(path, value):
     path.parent.mkdir(parents=True,exist_ok=True)
     temp=path.with_name(path.name+'.'+str(os.getpid())+'.tmp')
@@ -84,6 +103,9 @@ def health():
         if (data['boot_id']!=boot() or not 0<=time.monotonic()-data['monotonic']<=5 or
                 process[19]!=data['process_start'] or process[0]=='Z' or not data['collector_ready']):
             raise NatError('Security session collector is not healthy')
+        if data.get('code_generation'):
+            try:check_generation(data['code_generation'])
+            except RuntimeUpdated as error:raise NatError(str(error)) from error
         return data
     except (OSError,KeyError,ValueError,IndexError) as error:
         raise NatError('Security session collector unavailable: '+str(error)) from error
@@ -284,6 +306,11 @@ def serve():
         raise NatError('Security collector must run in the isolated data namespace')
     DATABASE.parent.mkdir(parents=True,exist_ok=True)
     os.umask(0o077)
+    # Load the selected binding provider before recording the code this process
+    # actually uses. A patched file on disk cannot refresh an imported module.
+    if nat.PLATFORM_BINDINGS.exists():
+        import ffn_platform_policy_bindings
+    generation=code_generation()
     j=Journal(DATABASE,boot())
     def stop_transit():
         with lock():close_gate()
@@ -296,7 +323,8 @@ def serve():
     signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
     def publish(ready,revision=None,error=None):
         atomic(HEALTH,dict(pid=os.getpid(),process_start=start,boot_id=boot(),monotonic=time.monotonic(),
-            collector_ready=ready,forwarding_revision=revision,error=error,events=collector.status()))
+            collector_ready=ready,forwarding_revision=revision,error=error,events=collector.status(),
+            code_generation=generation))
     next_check=0;last_forwarding=None;last_error=None
     try:
         with lock():close_gate()
@@ -307,6 +335,7 @@ def serve():
             time.sleep(max(0,min(0.25,next_check-time.monotonic())))
             if time.monotonic()<next_check:continue
             next_check=time.monotonic()+1
+            check_generation(generation)
             events=collector.status()
             fault=j.fault_reason() or (events.get('error') or 'Session collector is not current'
                 if not events['ready'] or time.monotonic()-events['monotonic']>3 else None)
@@ -334,6 +363,11 @@ def serve():
             except (NatError,OSError,ValueError) as error:
                 with lock():close_gate()
                 last_forwarding=None;last_error=str(error);publish(True,error=last_error)
+    except RuntimeUpdated:
+        # systemd Restart=on-failure reloads the complete process. The finally
+        # block closes transit and stops the event reader, preserving conntrack
+        # and its durable journal for normal reconciliation after restart.
+        raise SystemExit(75)
     except BaseException as error:
         j.fault(str(error));publish(False,error=str(error));raise
     finally:

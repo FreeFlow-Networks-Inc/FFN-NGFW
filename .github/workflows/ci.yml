@@ -82,6 +82,7 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_nat_ipv6.py'
           python3 -m unittest discover -s tests -p 'test_nat_bindings.py'
           python3 -m unittest discover -s tests -p 'test_security_nft.py'
+          python3 -m unittest discover -s tests -p 'test_security_generation.py'
 
       - name: NAT editor dynamic references and translation modes
         run: node tests/test_policy_selectors.cjs
