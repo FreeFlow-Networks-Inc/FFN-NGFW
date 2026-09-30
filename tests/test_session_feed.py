@@ -64,6 +64,7 @@ class FeedTests(unittest.TestCase):
             stack.enter_context(patch.object(feed.os,'stat',side_effect=trusted_stat))
             stack.enter_context(patch.object(feed,'subscribe',return_value=contextlib.nullcontext(object())))
             snapshot=stack.enter_context(patch.object(feed,'snapshot',return_value=([self.row],[])))
+            stack.enter_context(patch.object(feed.l3,'snapshot',return_value={}))
             yield db,status,snapshot
 
     def test_complete_observation_is_read_only_and_replays_removal(self):
@@ -102,6 +103,25 @@ class FeedTests(unittest.TestCase):
             result=feed.observe(str(uuid.uuid4()))
             self.assertTrue(result['truncated']);self.assertEqual(result['owned_sessions'],130)
             self.assertEqual(len(result['sessions']),128)
+
+    def test_l3_changes_block_planning_without_changing_software_grant(self):
+        with self.environment(),patch.object(feed.l3,'snapshot',side_effect=[{}, {'changed':True}]):
+            row=feed.observe(str(uuid.uuid4()))['sessions'][0]
+            self.assertTrue(row['software_candidate'])
+            self.assertFalse(row['l3']['available'])
+            self.assertEqual(row['l3']['directions'],[])
+            self.assertIn('changed',row['l3']['blockers'][0])
+
+    def test_acknowledged_session_contains_resolved_l3_directions(self):
+        from test_l3_offload import L3Tests
+        fixture=L3Tests();fixture.setUp()
+        self.state['bindings']={'ethernet1/1':fixture.bindings['lan'],'ethernet1/2':fixture.bindings['wan']}
+        with self.environment(),patch.object(feed.l3,'snapshot',return_value=fixture.state):
+            row=feed.observe(str(uuid.uuid4()))['sessions'][0]
+            self.assertTrue(row['l3']['available'],row)
+            self.assertEqual(row['l3']['directions'][0]['next_hop'],'203.0.113.1')
+            self.assertEqual(row['l3']['directions'][1]['vlan'],80)
+            self.assertFalse(row['l3']['hardware_admission'])
 
 
 if __name__=='__main__':unittest.main()

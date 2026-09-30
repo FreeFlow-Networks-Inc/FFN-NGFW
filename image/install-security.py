@@ -35,12 +35,24 @@ def merge_configd(text):
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('role',choices=('mp','dp'));args=p.parse_args()
     root=Path(__file__).resolve().parents[1];writes={}
-    modules=('ffn_security_control.py','ffn_nat_control.py','ffn_policy_config.py','ffn_policy_plan.py','ffn_nat_policy.py','ffn_ipv6_translation.py')
+    modules=('ffn_security_control.py','ffn_nat_control.py','ffn_policy_config.py','ffn_policy_plan.py','ffn_vrrp.py','ffn_interface_addresses.py','ffn_nat_policy.py','ffn_ipv6_translation.py','ffn_commit_apply.py')
     if args.role=='mp':
         for directory in (Path('/opt/ffn-ngfw'),Path('/opt/ffn-ngfw-v2')):
             for name in modules:writes[directory/name]=(root/'opt'/name).read_text()
         for name,merge in (('ffn_controld.py',merge_control),('ffn_configd.py',merge_configd)):
             path=Path('/opt/ffn-ngfw')/name;writes[path]=merge(path.read_text())
+        v2_control=Path('/opt/ffn-ngfw-v2/ffn_controld.py')
+        if v2_control.exists():writes[v2_control]=merge_control(v2_control.read_text())
+        configd=Path('/opt/ffn-ngfw/ffn_configd.py')
+        if '# FFN selected platform reconciliation' in writes[configd]:
+            import runpy
+            installer=runpy.run_path(str(root/'image/install-commit-order.py'))
+            writes[configd]=installer['merge'](writes[configd])
+            control=Path('/opt/ffn-ngfw/ffn_controld.py')
+            writes[control]=installer['merge_control'](writes[control])
+            if v2_control in writes:writes[v2_control]=installer['merge_control'](writes[v2_control])
+            for directory in (Path('/opt/ffn-ngfw'),Path('/opt/ffn-ngfw-v2')):
+                writes[directory/'ffn_controld_client.py']=(root/'opt/ffn_controld_client.py').read_text()
     else:
         for name in modules+('ffn_nat_runtime.py','ffn_security_nft.py','ffn_security_runtime.py','ffn_session_events.py'):
             writes[Path('/usr/local/lib/ffn')/name]=(root/'opt'/name).read_text()

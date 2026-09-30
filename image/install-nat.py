@@ -27,7 +27,8 @@ def merge_control(text):
 
 def merge_configd(text):
     if '# FFN NAT is reconciled as one ordered rulebase' in text:
-        if text.count('reconcile_nat(RUNNING_CONFIG, status)')!=2:raise ValueError('Incomplete NAT configd integration')
+        expected=1 if '# FFN ordered configuration apply' in text else 2
+        if text.count('reconcile_nat(RUNNING_CONFIG, status)')!=expected:raise ValueError('Incomplete NAT configd integration')
         compile(text,'ffn_configd.py','exec');return text
     anchor='        if not changes:\n            logger.info("No changes vs last-applied'
     start=text.find(anchor)
@@ -45,9 +46,9 @@ def main():
     root=Path(__file__).resolve().parents[1]
     writes={a.daemons/'ffn_controld.py':merge_control((a.daemons/'ffn_controld.py').read_text()),a.daemons/'ffn_configd.py':merge_configd((a.daemons/'ffn_configd.py').read_text())}
     for directory in (a.manager,a.daemons):
-        for name in ('ffn_nat_policy.py','ffn_ipv6_translation.py','ffn_nat_control.py','ffn_policy_config.py','ffn_policy_plan.py','ffn_policy_profiles.py','ffn_qos_config.py'):
+        for name in ('ffn_nat_policy.py','ffn_ipv6_translation.py','ffn_nat_control.py','ffn_policy_config.py','ffn_policy_plan.py','ffn_policy_profiles.py','ffn_qos_config.py','ffn_vrrp.py'):
             writes[directory/name]=(root/'opt'/name).read_text()
-    for name in ('ffn_policy_api.py','ffn_policy_cli.py'):writes[a.manager/name]=(root/'opt'/name).read_text()
+    for name in ('ffn_policy_api.py','ffn_policy_cli.py','ffn_vrrp_cli.py'):writes[a.manager/name]=(root/'opt'/name).read_text()
     writes[a.manager/'static/config-policies.js']=(root/'static/config-policies.js').read_text()
     backup=Path('/var/backups/ffn/nat-'+str(time.time_ns()))
     for path,text in writes.items():

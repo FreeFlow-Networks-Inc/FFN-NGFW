@@ -41,10 +41,13 @@ class ManagementTests(unittest.TestCase):
             proposed, changed = network.prepare(cfg, {'revision':1,'ports':{'p1':new}})
         self.assertEqual(changed,['p1'])
         self.assertEqual(proposed['routes'],cfg['routes'])
-        with patch.object(m,'apply') as apply, patch.object(network,'configure_port') as configure:
+        with patch.object(m,'apply') as apply, patch.object(network,'configure_port') as configure, \
+             patch.object(network,'live_addresses',return_value={'192.0.2.1/24'}), \
+             patch.object(network,'run',return_value='0'), patch.object(network,'ip') as ip:
             network.update_port('p1',old,new)
             apply.assert_called_once_with(network.NS,'p1',new)
             configure.assert_not_called()
+            ip.assert_not_called()
 
     def test_render_targets_local_input_and_destination_address(self):
         settings={'addresses':['192.0.2.1/24'],'management':m.profile(self.device('<ping>yes</ping>'),'PING-ONLY')}

@@ -1,0 +1,16 @@
+[Unit]
+Description=FFN profile-scoped dataplane management service access
+After=ffn-network.service
+Requires=ffn-network.service
+PartOf=ffn-network.service
+
+[Service]
+Environment=PYTHONPATH=/usr/local/lib/ffn
+ExecStart=/usr/bin/ip netns exec ffn-data /usr/bin/python3 /usr/local/lib/ffn/ffn_interface_services.py frontend
+Restart=always
+RestartSec=2
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -39,3 +39,9 @@ checks exercise current WAN/aggregate settings, drag, themes and Cancel with API
 writes blocked. On PA-5200, parent addressing and subinterface commits preserve
 LACP negotiation; changes to members, link state or LACP parameters still require
 reconciliation. Network-apply errors remain visible independently of link status.
+
+The Advanced tab loads physical link speeds from the selected hardware module,
+including ports without carrier. Manual speed choices are reported capabilities,
+not a fixed model-specific list. Refresh link capabilities retries an unavailable
+controller without discarding edits. OK stages the speed in candidate XML; Cancel
+discards the edit and Commit applies it through configd and the hardware controller.

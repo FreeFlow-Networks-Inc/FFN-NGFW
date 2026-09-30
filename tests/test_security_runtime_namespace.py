@@ -58,6 +58,10 @@ def main():
             for name in ('STATE','HEALTH','DATABASE'):
                 setup+='runtime.'+name+'=Path('+repr(str(getattr(runtime,name)))+')\n'
             inject=path/'inject-overflow'
+            dependency=path/'ffn_test_provider.py'
+            dependency.write_text('generation=1\n')
+            setup+=('from types import SimpleNamespace\n'
+                    'sys.modules["ffn_test_provider"]=SimpleNamespace(__file__='+repr(str(dependency))+')\n')
             setup+=('import ffn_session_events as events, errno\noriginal_receive=events.receive\n'
                     'def injected_receive(stream):\n'
                     ' marker=Path('+repr(str(inject))+')\n'
@@ -100,6 +104,18 @@ def main():
             wait_for(lambda:runtime.status()['applied'])
             assert ping(),'Collector restart did not reconcile live NAT sessions'
             assert json.loads(runtime.HEALTH.read_text())['events']['reconciled_sessions']>=1
+            # An updated binding provider must close the lease and request a
+            # process reload without permanently faulting the session journal.
+            dependency.write_text('generation=2\n')
+            out,err=service.communicate(timeout=15)
+            assert service.returncode==75,(out,err)
+            assert not ping(ident=3450),'Changed provider code retained transit permission'
+            journal=Journal(runtime.DATABASE,runtime.boot())
+            try:assert not journal.fault_reason(),'Code reload faulted the session journal'
+            finally:journal.close()
+            service=S.Popen(['ip','netns','exec',dp,'python3','-u','-c',setup+'runtime.serve()'],text=True,stdout=S.PIPE,stderr=S.PIPE)
+            wait_for(lambda:runtime.status()['applied'])
+            assert ping(ident=3451),'Policy did not recover after provider code reload'
             previous=json.loads(runtime.HEALTH.read_text())['events']['recoveries']
             inject.touch();ping(ident=3440)
             wait_for(lambda:json.loads(runtime.HEALTH.read_text()).get('events',{}).get('recoveries',0)>previous)
@@ -168,7 +184,7 @@ def main():
             print(json.dumps(dict(coordinated_security_nat=True,session_end=True,lease_expiry=True,
                 local_input_isolation=True,invalid_generation_unchanged=True,live_revocation=True,
                 persistence_rollback=True,binding_loss_recovery=True,collector_restart_recovery=True,enobufs_recovery=True,
-                packet_burst=2000)))
+                code_update_recovery=True,packet_burst=2000)))
     finally:
         if service is not None and service.poll() is None:
             service.send_signal(signal.SIGCONT);service.terminate()

@@ -31,6 +31,9 @@ def inventory(configured, routers, aliases=None):
 
 def validate_route(route, router, interfaces):
     result = dict(route)
+    from ffn_route_monitor import validate as validate_monitor
+    result['path_monitor'] = validate_monitor(result.get('path_monitor'), result.get('dest_cidr'))
+    if type(result.get('onlink',False)) is not bool: raise ValueError('On-link must be boolean')
     try:
         network = ipaddress.ip_network(result['dest_cidr'], strict=True)
     except (ValueError, KeyError) as error:
@@ -52,6 +55,9 @@ def validate_route(route, router, interfaces):
             raise ValueError('Interface belongs to virtual router ' + row['virtual_router'])
     if not hop and not dev:
         raise ValueError('A next hop or outgoing interface is required')
+    if (result.get('onlink') or result['path_monitor']['enabled']) and not dev:
+        raise ValueError('On-link gateways and path monitoring require an explicit outgoing interface')
+    if result.get('onlink') and not hop: raise ValueError('An on-link gateway requires a next-hop address')
     metric = result.get('metric', 0)
     if type(metric) is not int or not 0 <= metric <= 4294967295:
         raise ValueError('Metric must be an integer between 0 and 4294967295')

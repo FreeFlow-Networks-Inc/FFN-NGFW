@@ -52,6 +52,43 @@ const {chromium}=require('playwright'),fs=require('node:fs'),path=require('node:
   assert.match(await page.locator('#ifm-addresses-4').innerText(),/203\.0\.113\.7\/28/);
   await page.getByRole('button',{name:'OK',exact:true}).click();
   assert.deepEqual((await page.evaluate(()=>calls))[4].body.ip_addresses,['WAN','LAN6']);
+  // A late hardware extension must supply speeds even while the link is down.
+  await page.evaluate(()=>{
+   snapshot.entry.name='ethernet1/5';snapshot.entry.link_speed='auto';snapshot.entry.ip_addresses=[];
+   window.capFail=false;window.capReads=0;
+   window.loadExtensions=async()=>{
+    await Promise.resolve();
+    window.ffnExtensions={interfaceLinkCapabilities:async name=>{
+     capReads++;if(capFail)throw Error('Controller busy');
+     return {configurable:true,source:'MP faceplate controller',current_speed_mbps:null,supported_speeds:[{speed_mbps:10000},1000,1000,{speed_mbps:'invalid'}]};
+    }};
+   };
+  });
+  await page.evaluate(()=>openIfaceModal('ethernet1/5'));
+  await page.getByRole('tab',{name:'Advanced',exact:true}).click();
+  assert.equal(await page.locator('#ifm-speed').isEnabled(),true);
+  assert.deepEqual(await page.locator('#ifm-speed option').evaluateAll(options=>options.map(o=>o.value)),['auto','1000','10000']);
+  await page.locator('#ifm-speed').selectOption('1000');
+  await page.getByRole('tab',{name:'Configuration',exact:true}).click();
+  await page.locator('#ifm-comment').fill('Keep my unsaved changes');
+  await page.getByRole('tab',{name:'Advanced',exact:true}).click();
+  await page.evaluate(()=>{capFail=true;return refreshIfaceLinkCapabilities();});
+  assert.equal(await page.locator('#ifm-speed').isDisabled(),true);
+  assert.equal(await page.locator('#ifm-speed').inputValue(),'1000');
+  assert.match(await page.locator('#ifm-link-status').innerText(),/Controller busy/);
+  await page.evaluate(()=>{capFail=false;return refreshIfaceLinkCapabilities();});
+  assert.equal(await page.locator('#ifm-speed').isEnabled(),true);
+  assert.equal(await page.locator('#ifm-speed').inputValue(),'1000');
+  assert.equal(await page.locator('#ifm-comment').inputValue(),'Keep my unsaved changes');
+  assert.equal((await page.evaluate(()=>calls)).length,5,'Refreshing capabilities must not save settings');
+  await page.getByRole('button',{name:'OK',exact:true}).click();
+  const speedChange=(await page.evaluate(()=>calls))[5];
+  assert.equal(speedChange.url,'/api/config/interfaces');assert.equal(speedChange.body.link_speed,'1000');
+  assert.equal(speedChange.body.comment,'Keep my unsaved changes');
+  await page.evaluate(()=>openIfaceModal('ethernet1/5'));
+  await page.getByRole('tab',{name:'Advanced',exact:true}).click();await page.locator('#ifm-speed').selectOption('10000');
+  await page.getByRole('button',{name:'Cancel',exact:true}).click();
+  assert.equal((await page.evaluate(()=>calls)).length,6,'Cancel must not stage the manual speed');
   console.log('Parent interface tabs, None/admin-down, IPv4/IPv6 rows, DHCP, atomic candidate save, stale edits, Cancel, read-only and LACP controls passed.');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
