@@ -1,0 +1,10 @@
+*.o
+*.ko
+*.mod
+*.mod.c
+.*.cmd
+Module.symvers
+modules.order
+ctlease-abi
+libffn-ctlease.so
+__pycache__/
