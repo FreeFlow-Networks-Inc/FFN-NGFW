@@ -383,6 +383,28 @@ let token = localStorage.getItem('ffn_token') || '';
 let currentTab = 'monitor';
 let currentSubPage = 'dashboard';
 let refreshTimer = null;
+let refreshFn = null;
+/* One poller per page. Every page starts its poller through here, so a
+   re-render (loadPlatform does one once the hardware profile arrives)
+   replaces the timer instead of stacking a second one. A tick for a page
+   that is no longer current stops itself, nothing polls while the console
+   tab is hidden, and the page refreshes as soon as it is visible again. */
+function startRefresh(fn, ms) {
+  if (refreshTimer) clearInterval(refreshTimer);
+  const page = currentSubPage;
+  const timer = setInterval(() => {
+    if (currentSubPage !== page) {
+      clearInterval(timer);
+      if (refreshTimer === timer) { refreshTimer = null; refreshFn = null; }
+      return;
+    }
+    if (document.hidden) return;
+    fn();
+  }, ms);
+  refreshTimer = timer; refreshFn = fn;
+  return timer;
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && refreshFn) refreshFn(); });
 let wsConnection = null;
 let liveLogActive = false;
 let liveLogPaused = false;
@@ -1276,11 +1298,10 @@ async function loadPlatform() {
   }
   await loadExtensions();
   // Re-render the current page so anything drawn before the profile arrived
-  // picks it up, rather than staying in its unfiltered first paint.
-  if (typeof currentSubPage === 'string' && currentSubPage) {
-    renderSidebar(TAB_MENUS[currentTab] || []);
-    renderPage(currentSubPage);
-  }
+  // picks it up, rather than staying in its unfiltered first paint. Go
+  // through switchSubPage so the first paint's poller, socket and charts are
+  // torn down first; rendering in place stacked a second poller per login.
+  if (typeof currentSubPage === 'string' && currentSubPage) switchSubPage(currentSubPage);
 }
 
 /* Does this feature belong on this hardware?
@@ -1617,7 +1638,7 @@ function renderDashOverview(c) {
       <button class="btn" onclick="switchSubPage('interfaces')">Interface Ports</button></div>`;
   initDashboardCharts();
   refreshDashboard();
-  refreshTimer = setInterval(refreshDashboard, 3000);
+  startRefresh(refreshDashboard, 3000);
 }
 
 let _dashChartInitialized = false;
@@ -1826,7 +1847,7 @@ function renderDashThroughput(c) {
   _dashChartInitialized = false;
   initDashboardCharts();
   refreshDashboard();
-  refreshTimer = setInterval(refreshDashboard, 3000);
+  startRefresh(refreshDashboard, 3000);
 }
 
 /* ---- Dashboard > Sessions (dedicated) ---- */
@@ -1841,7 +1862,7 @@ function renderDashSessions(c) {
     </div>
     <div class="card"><div id="dash-hit-ratio" class="text-dim" style="font-size:12px"></div></div>`;
   loadSessionDetail();
-  refreshTimer = setInterval(loadSessionDetail, 3000);
+  startRefresh(loadSessionDetail, 3000);
 }
 
 async function loadSessionDetail() {
@@ -1870,7 +1891,7 @@ function renderDashDDoS(c) {
       <p id="ddos-fpga-note" class="text-dim" style="font-size:11px;margin-top:8px"></p>
     </div>`;
   loadDDoSMap();
-  refreshTimer = setInterval(loadDDoSMap, 5000);
+  startRefresh(loadDDoSMap, 5000);
 }
 
 async function loadDDoSMap() {
@@ -1902,7 +1923,7 @@ function renderPatchManagement(c) {
   if (window.ffnExtensions && window.ffnExtensions.renderPatchImages) window.ffnExtensions.renderPatchImages(document.getElementById('patch-platform-images'));
   _patchData = null;
   loadPatches();
-  refreshTimer = setInterval(loadPatches, 2500);
+  startRefresh(loadPatches, 2500);
 }
 function patchLegacyUpdates() {
   clearInterval(refreshTimer);
@@ -2406,7 +2427,7 @@ async function renderDashSystemHealth(c) {
       <div class="card"><h3>Network Devices (PCI)</h3><div id="health-pci" style="font-size:11px;line-height:2"></div></div>
     </div>`;
   loadHealthDetail();
-  refreshTimer = setInterval(loadHealthDetail, 5000);
+  startRefresh(loadHealthDetail, 5000);
 }
 
 async function loadHealthDetail() {
@@ -2463,7 +2484,7 @@ function renderMonitorTraffic(c) {
       </table>
     </div></div>`;
   loadTrafficLogs();
-  refreshTimer = setInterval(()=>{ if (!liveLogPaused && !liveLogActive) loadTrafficLogs(); },3000);
+  startRefresh(()=>{ if (!liveLogPaused && !liveLogActive) loadTrafficLogs(); },3000);
 }
 
 async function loadTrafficLogs() {
@@ -2566,7 +2587,7 @@ function renderMonitorThreat(c) {
       <tbody id="threat-log-body"></tbody></table>
     </div></div>`;
   loadThreatLogs();
-  refreshTimer = setInterval(loadThreatLogs,5000);
+  startRefresh(loadThreatLogs,5000);
 }
 
 async function loadThreatLogs() {
@@ -2610,7 +2631,7 @@ function renderMonitorURLFiltering(c) {
       <div class="card"><h3>Top Blocked Categories</h3><div class="chart-container chart-sm"><canvas id="chart-url-cats"></canvas></div></div>
     </div>`;
   loadURLFilterLogs();
-  refreshTimer = setInterval(loadURLFilterLogs,10000);
+  startRefresh(loadURLFilterLogs,10000);
 }
 
 async function loadURLFilterLogs() {
@@ -2742,7 +2763,7 @@ function renderSessionBrowser(c) {
     </div></div>`;
   loadSessionVsysOptions();
   loadSessions();
-  refreshTimer = setInterval(loadSessions,3000);
+  startRefresh(loadSessions,3000);
 }
 
 async function loadSessionVsysOptions() {
@@ -2973,7 +2994,7 @@ function renderPolicyDDoS(c) {
       </div></div>`;
   loadDDoSPolicy();
   if (refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(loadDDoSPolicy, 5000);
+  startRefresh(loadDDoSPolicy, 5000);
 }
 
 async function loadDDoSPolicy() {
@@ -3651,7 +3672,7 @@ function renderNetworkInterfaces(c) {
     </details>`;
 
   loadInterfacesFull();
-  refreshTimer = setInterval(loadInterfacesFull, 10000);
+  startRefresh(loadInterfacesFull, 10000);
 }
 
 function switchIfaceKind(kind) {
@@ -5016,7 +5037,7 @@ function renderNetworkARP(c) {
       <tbody id="arp-table-body"></tbody></table>
     </div></div>`;
   loadARP();
-  refreshTimer = setInterval(loadARP,10000);
+  startRefresh(loadARP,10000);
 }
 
 async function loadARP() {
@@ -5041,7 +5062,7 @@ function renderNetworkIPSec(c) {
       <tbody id="ipsec-table-body"></tbody></table>
     </div></div>`;
   loadIPSec();
-  refreshTimer = setInterval(loadIPSec,10000);
+  startRefresh(loadIPSec,10000);
 }
 
 async function loadIPSec() {
@@ -5091,7 +5112,7 @@ function renderNetworkZeroTier(c) {
     </div>
     <div class="section"><p id="zt-status" class="text-dim" style="font-size:11px;margin-top:4px"></p></div>`;
   loadZeroTier();
-  refreshTimer = setInterval(loadZeroTier,10000);
+  startRefresh(loadZeroTier,10000);
 }
 
 async function loadZeroTier() {
@@ -5833,7 +5854,7 @@ function renderNetworkLLDP(c) {
       <tbody id="lldp-tbody"><tr><td colspan="6" class="text-dim">Loading...</td></tr></tbody></table>
     </div></div></div>`;
   loadLldp();
-  refreshTimer = setInterval(loadLldp, 10000);
+  startRefresh(loadLldp, 10000);
 }
 async function loadLldp() {
   const d = await api('/api/lldp/neighbors');
@@ -6064,7 +6085,7 @@ function renderZTTailscale(c) {
       <tbody id="ts-peers-tbody"><tr><td colspan="7" class="text-dim">Loading...</td></tr></tbody></table>
     </div></div></div>`;
   loadTailscale();
-  refreshTimer = setInterval(loadTailscale, 10000);
+  startRefresh(loadTailscale, 10000);
 }
 async function loadTailscale() {
   const d = await api('/api/tailscale/status');
@@ -6425,7 +6446,7 @@ function renderDeviceHA(c) {
   loadHaConfig();
   loadHaState();
   if (refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(loadHaState, 5000);
+  startRefresh(loadHaState, 5000);
 }
 
 function _haToggleMode() {
@@ -6735,7 +6756,7 @@ function renderDeviceCoPP(c) {
       <tbody id="copp-table-body"></tbody></table>
     </div></div>`;
   loadCoPP();
-  refreshTimer = setInterval(loadCoPP,10000);
+  startRefresh(loadCoPP,10000);
 }
 
 async function loadCoPP() {
@@ -6870,7 +6891,7 @@ function renderDeviceFPGA(c) {
   loadFpgaEmulator();
   loadMpdpStatus();
   loadDpdkWorkers();
-  refreshTimer = setInterval(()=>{loadFPGAStatus();loadDataplaneStatus();loadFpgaEmulator();loadMpdpStatus();loadDpdkWorkers()},10000);
+  startRefresh(()=>{loadFPGAStatus();loadDataplaneStatus();loadFpgaEmulator();loadMpdpStatus();loadDpdkWorkers()},10000);
 }
 
 /* ---- FPGA Emulator (AC/DFA software DPI) ---- */
@@ -7836,7 +7857,7 @@ function renderACCDashboard(c) {
       <div class="card"><h3>Risk Distribution</h3><div class="chart-container chart-sm"><canvas id="chart-risk-dist"></canvas></div></div>
     </div>`;
   loadACCDashboard();
-  refreshTimer = setInterval(loadACCDashboard,10000);
+  startRefresh(loadACCDashboard,10000);
 }
 
 async function loadACCDashboard() {
@@ -7937,7 +7958,7 @@ function renderMLInference(c) {
     </div></div></div>`;
   loadMlEngine();
   loadMLInference();
-  refreshTimer = setInterval(()=>{loadMlEngine();loadMLInference()},3000);
+  startRefresh(()=>{loadMlEngine();loadMLInference()},3000);
 }
 
 /* ---- Real ML Engine panel (ffn_ml_engine) ---- */
@@ -8080,7 +8101,7 @@ function renderCrucible(c) {
       <tbody id="wf-results-body"></tbody></table>
     </div></div></div>`;
   loadCrucible();
-  refreshTimer = setInterval(loadCrucible,10000);
+  startRefresh(loadCrucible,10000);
 }
 
 async function loadCrucible() {
@@ -8177,7 +8198,7 @@ function renderIoTDevices(c) {
       <tbody id="iot-devices-body"></tbody></table>
     </div></div></div>`;
   loadIoTDevices();
-  refreshTimer = setInterval(loadIoTDevices,10000);
+  startRefresh(loadIoTDevices,10000);
 }
 
 async function loadIoTDevices() {
