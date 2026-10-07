@@ -18,7 +18,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
 /* ---- Top bar: brand and session row, then the tab strip ---- */
 .topnav{position:fixed;top:0;left:0;right:0;z-index:100;height:var(--topnav-h);display:grid;grid-template-columns:auto 1fr;grid-template-rows:44px 38px;align-content:stretch;align-items:center;background:var(--chrome);color:var(--chrome-text)}
 .topnav .brand{grid-row:1;grid-column:1;display:flex;align-items:center;gap:8px;padding:0 18px;font-size:var(--fs-2xl);font-weight:700;letter-spacing:.2px;color:var(--chrome-text);white-space:nowrap}
-.topnav .brand img{width:26px;height:26px;display:block;flex:none}
+.topnav .brand img,.topnav .brand svg{width:26px;height:26px;display:block;flex:none}
 .topnav .user-area{grid-row:1;grid-column:2;display:flex;align-items:center;justify-content:flex-end;gap:12px;min-width:0;padding:0 14px;font-size:var(--fs-md);color:var(--chrome-text-dim)}
 .topnav .user-area .status-dot{width:7px;height:7px;border-radius:50%;background:var(--ok)}
 .topnav .user-area .btn{background:transparent;color:var(--chrome-text);border-color:var(--chrome-line);font-size:var(--fs-sm)}
@@ -287,7 +287,7 @@ tbody tr.dragging{opacity:.4}
 }
 @media(max-width:600px){
   :root{--sidebar-w:140px}
-  .topnav .brand img,.topnav #commit-indicator{display:none!important}
+  .topnav .brand img,.topnav .brand svg,.topnav #commit-indicator{display:none!important}
   .topnav .main-tabs button{padding:0 12px}
   .content{padding:10px 8px}
   .page-header{margin-left:-8px;margin-right:-8px}
