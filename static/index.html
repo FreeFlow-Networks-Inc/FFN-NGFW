@@ -4,9 +4,19 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>FFN NGFW Management Console</title>
-<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<!-- FreeFlow Networks' mark, one asset for every use: browser tab, iOS
+     home-screen bookmark, the sign-in card and the top bar. Served from this
+     appliance and never from a CDN, so the console still brands itself on a
+     management network with no route off the box. -->
+<link rel="icon" type="image/png" href="/static/ffn-icon.png">
+<link rel="apple-touch-icon" href="/static/ffn-icon.png">
 <script src="/static/theme.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<!-- Served from the appliance, never a CDN: this is executable code running
+     inside a firewall's management session, and a box on an isolated management
+     network cannot reach the internet to fetch it -- which used to leave every
+     chart in the console blank. static/vendor/README.md records the version,
+     its source and the hashes to re-verify it with. -->
+<script src="/static/vendor/chart.umd.js"></script>
 <script src="/static/plane-control.js"></script>
 <script src="/static/mp-interfaces.js"></script>
 <link rel="stylesheet" href="/static/tokens.css">
@@ -25,11 +35,7 @@
 <div id="login-screen" class="login-screen">
 <div class="login-theme"><select class="theme-picker" data-theme-picker aria-label="Color theme"><option value="light">Light</option><option value="dark">Dark</option></select></div>
   <div class="login-box">
-    <svg width="44" height="44" viewBox="0 0 48 48" style="margin-bottom:10px">
-      <rect x="4" y="4" width="40" height="40" rx="8" fill="#2f81f7" opacity=".15"/>
-      <path d="M14 16h20v4H14zM14 24h16v4H14zM14 32h12v4H14z" fill="#2f81f7"/>
-      <circle cx="38" cy="34" r="4" fill="#3fb950"/>
-    </svg>
+    <img class="mark" src="/static/ffn-icon.png" width="64" height="64" alt="">
     <h2>FFN NGFW</h2>
     <div class="sub">Next-Generation Firewall Management Console</div>
     <div class="form-group">
@@ -69,7 +75,9 @@
 <!-- Top Navigation -->
 <nav class="topnav">
   <div class="brand">
-    <svg viewBox="0 0 48 48"><rect x="4" y="4" width="40" height="40" rx="8" fill="#2f81f7" opacity=".15"/><path d="M14 16h20v4H14zM14 24h16v4H14zM14 32h12v4H14z" fill="#2f81f7"/><circle cx="38" cy="34" r="4" fill="#3fb950"/></svg>
+    <!-- alt="" on purpose: the product name sits next to it, and a screen
+         reader announcing it twice is worse than not announcing the mark. -->
+    <img src="/static/ffn-icon.png" width="28" height="28" alt="">
     FFN NGFW
   </div>
   <div class="main-tabs" id="main-tabs">
@@ -82,7 +90,7 @@
     <button data-tab="device">Device</button>
   </div>
   <div class="user-area">
-<select class="theme-picker" data-theme-picker aria-label="Color theme"><option value="light">Light</option><option value="dark">Dark</option></select><img class="header-icon" src="/static/favicon.svg" alt="FFN" style="order:99">
+<select class="theme-picker" data-theme-picker aria-label="Color theme"><option value="light">Light</option><option value="dark">Dark</option></select>
     <span id="fips-badge" class="badge" style="display:none;margin-right:8px" title="FIPS-CC mode"></span>
     <span id="commit-indicator" class="commit-indicator" style="display:none"></span>
     <button id="commit-btn" class="btn btn-sm" onclick="openCommitModal()" title="Open commit dialog">

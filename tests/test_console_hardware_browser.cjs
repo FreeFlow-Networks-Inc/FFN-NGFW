@@ -22,7 +22,7 @@ const core=path.resolve(__dirname,'..'),platform=process.env.TEST_PA5200_ROOT||p
    const ext=path.extname(file);return route.fulfill({body:fs.readFileSync(file),contentType:({'.html':'text/html','.js':'application/javascript','.css':'text/css','.svg':'image/svg+xml'})[ext]});
   });
   await page.goto('http://ffn.test/');
-  assert.equal(await page.locator('link[rel=icon]').getAttribute('href'),'/static/favicon.svg');
+  assert.equal(await page.locator('link[rel=icon]').getAttribute('href'),'/static/ffn-icon.png');
   await page.locator('.login-theme select').selectOption('dark');
   assert.equal(await page.locator('html').getAttribute('data-theme'),'dark');
   await page.reload();assert.equal(await page.locator('html').getAttribute('data-theme'),'dark');
