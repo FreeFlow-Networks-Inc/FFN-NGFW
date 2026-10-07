@@ -348,6 +348,7 @@ class Collector:
     @staticmethod
     def recoverable(reason):
         return (not reason or reason.startswith('Session event gap:') or
+                reason.startswith('Policy gate close failed:') or
                 reason=='Collector restarted with active sessions; event-gap reconciliation is required' or
                 reason==str(OSError(errno.ENOBUFS,'No buffer space available')))
 
@@ -360,7 +361,16 @@ class Collector:
             while not self.stop_event.is_set():
                 if stream is None:
                     self.update(ready=False,error=reason or 'Reconciling kernel sessions')
-                    self.close_gate()
+                    try:self.close_gate()
+                    except Exception as error:
+                        # The gate close is an nft transaction that can stall or fail
+                        # transiently: at dataplane boot it queues behind the network
+                        # stack's own transactions, and the first start on the PA-5220
+                        # timed out there. Nothing has been observed yet and the gate's
+                        # lease expires on its own, so retry rather than record a fault
+                        # that every later start, and a reboot, would re-raise untried.
+                        reason='Policy gate close failed: '+str(error);j.fault(reason)
+                        self.update(ready=False,error=reason);self.stop_event.wait(2);continue
                     try:
                         stream=subscribe()
                         rows,changes=snapshot(stream)
