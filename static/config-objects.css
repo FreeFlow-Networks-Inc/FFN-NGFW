@@ -4,13 +4,13 @@
 .object-form input, .object-form textarea, .object-form select { width: 100%; box-sizing: border-box; }
 .object-form textarea { min-height: 65px; resize: vertical; }
 .object-form fieldset, .object-form > p, .object-form .modal-footer { grid-column: 1 / -1; }
-.object-form fieldset { border: 1px solid var(--border, #ccc); padding: 12px; }
+.object-form fieldset { border: 1px solid var(--border); padding: 12px; }
 .object-form fieldset select { margin: 8px 0; }
 .object-form [hidden] { display: none !important; }
 .object-dialog .modal-header { position: relative; }
 .object-dialog #object-close { position: absolute; right: 0; top: 0; padding: 0 6px; }
-.object-form input, .object-form textarea, .object-form select { background: #fff; border: 1px solid var(--border, #ccc); border-radius: 2px; padding: 5px 7px; font: inherit; }
-.object-form .modal-footer { display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--border, #ccc); padding-top: 12px; }
+.object-form input, .object-form textarea, .object-form select { background: var(--input-bg); border: 1px solid var(--border); border-radius: 2px; padding: 5px 7px; font: inherit; }
+.object-form .modal-footer { display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--border); padding-top: 12px; }
 #object-references { white-space: pre-wrap; overflow-wrap: anywhere; }
 #object-list td { max-width: 340px; overflow-wrap: anywhere; }
 #object-search { min-width: 280px; }
@@ -21,7 +21,7 @@
 #pw-form { display: block; }
 #pw-form > p { margin-top: 12px; }
 .policy-selected { display: flex; flex-wrap: wrap; gap: 5px; min-height: 28px; }
-.policy-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 3px 7px; border: 1px solid var(--border, #ccc); border-radius: 3px; background: var(--panel, #eef3f6); overflow-wrap: anywhere; }
+.policy-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 3px 7px; border: 1px solid var(--border); border-radius: 3px; background: var(--panel); overflow-wrap: anywhere; }
 .policy-chip button { border: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; padding: 0 3px; }
 .policy-reference .policy-literal { display: flex; gap: 5px; }
 .policy-reference .policy-literal input { flex: 1; min-width: 0; }
@@ -35,7 +35,7 @@
 .nat-original [data-nat-field="destination"] { grid-area: destination; }
 .nat-original [data-nat-field="service"] { grid-area: service; }
 .nat-original [data-nat-field="to-interface"] { grid-area: to-interface; }
-.nat-original .policy-reference { padding: 8px; border: 1px solid var(--border, #ccc); }
+.nat-original .policy-reference { padding: 8px; border: 1px solid var(--border); }
 .nat-original [data-nat-field="from"] .policy-selected,
 .nat-original [data-nat-field="source"] .policy-selected,
 .nat-original [data-nat-field="destination"] .policy-selected { min-height: 95px; align-content: start; }
