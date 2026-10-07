@@ -75,7 +75,7 @@ class NatPolicyTests(unittest.TestCase):
 
     def test_persistence_failure_restores_prior_rules(self):
         old={'revision':1,'digest':'old','script':'old table'};plan=compile_policy(configuration())['plan']
-        with patch.object(runtime,'prepare',return_value=(old,'new table','replace table')),patch.object(runtime,'nft') as nft,patch.object(runtime,'inspect',return_value=({'comment':'ffn-nat:'+runtime.digest(plan)},{'nftables':[]})),patch.object(runtime,'write_state',side_effect=OSError('full')):
+        with patch.object(runtime,'COORDINATED',Path('/nonexistent/ffn-test-policy-runtime.json')),patch.object(runtime,'prepare',return_value=(old,'new table','replace table')),patch.object(runtime,'nft') as nft,patch.object(runtime,'inspect',return_value=({'comment':'ffn-nat:'+runtime.digest(plan)},{'nftables':[]})),patch.object(runtime,'write_state',side_effect=OSError('full')):
             with self.assertRaises(OSError):runtime.apply({'revision':1,'plan':plan})
             self.assertEqual(nft.call_args_list[-1].args,(['-f','-'],'delete table ip ffn_nat\nold table'))
 

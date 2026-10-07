@@ -35,7 +35,7 @@ def merge_configd(text):
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('role',choices=('mp','dp'));args=p.parse_args()
     root=Path(__file__).resolve().parents[1];writes={}
-    modules=('ffn_security_control.py','ffn_nat_control.py','ffn_policy_config.py','ffn_policy_plan.py','ffn_nat_policy.py')
+    modules=('ffn_security_control.py','ffn_nat_control.py','ffn_policy_config.py','ffn_policy_plan.py','ffn_nat_policy.py','ffn_ipv6_translation.py')
     if args.role=='mp':
         for directory in (Path('/opt/ffn-ngfw'),Path('/opt/ffn-ngfw-v2')):
             for name in modules:writes[directory/name]=(root/'opt'/name).read_text()

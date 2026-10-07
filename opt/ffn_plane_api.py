@@ -9,8 +9,14 @@ from ffn_control_plane import plane_rpc as rpc, control_rpc
 
 
 def selected():
+    """The MP control daemon's socket, or '' when controld is the gateway.
+
+    A console whose control gateway is controld has no plane socket of its
+    own; its requests still go through rpc(), so that is not a missing
+    daemon. Only a console with neither is refused.
+    """
     path = os.environ.get('FFN_PLANE_SOCKET', '')
-    if not path or not os.path.isabs(path):
+    if os.environ.get('FFN_CONTROL_GATEWAY') != 'controld' and (not path or not os.path.isabs(path)):
         raise HTTPException(503, 'No MP control daemon selected')
     return path
 

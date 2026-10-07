@@ -78,6 +78,7 @@ except Exception:
 def _platform_paths():
     here = os.path.dirname(os.path.abspath(__file__))
     return [
+        "/opt/ffn-platforms/pa5200-management",                 # selected platform package
         "/opt/ffn-ngfw-v2",                                   # installed, flat
         "/opt/ffn-ngfw",
         os.path.join(here, "..", "platform", "pa5200"),       # repo, submodule
@@ -2001,7 +2002,7 @@ ENGINE_BACKENDS = {
     "ipsec_decrypt":   {"backend": "kernel", "module": "xfrm(+crypto-assist)",  "offload": True,  "role": "IPsec ESP dec"},
     "ipsec_encrypt":   {"backend": "kernel", "module": "xfrm(+crypto-assist)",  "offload": True,  "role": "IPsec ESP enc"},
     "nat44":           {"backend": "kernel", "module": "conntrack/nftables",    "offload": True,  "role": "NAT44"},
-    "nat64":           {"backend": "kernel", "module": "conntrack/nftables",    "offload": True,  "role": "NAT64"},
+    "nat64":           {"backend": "uncommissioned", "module": "stateful IPv6/IPv4 translator required", "offload": False, "role": "NAT64"},
     "tcam_lookup":     {"backend": "dpdk",   "module": "ffn_fastpath_fwd",      "offload": True,  "role": "policy classify (rte_acl)"},
     "fib_lookup":      {"backend": "kernel", "module": "vrf/fib",               "offload": True,  "role": "routing (per-VRF, Axis 3)"},
     "dpi_l7":          {"backend": "python", "module": "inline_payload_det",    "offload": True,  "role": "L7 content sigs (IPS)"},
@@ -5088,10 +5089,12 @@ async def _detect_offload_dp(max_age: float = 15.0) -> dict:
             inv = {"ok": False, "error": "inventory failed", "detail": _public_error(exc)}
 
         if not inv.get("devices"):
+            info["dp"]["inventory_status"] = "unavailable"
             info["note"] = ("CP is answering but returned no inventory: %s"
                             % (inv.get("detail") or inv.get("error")
                                or "empty reply"))
         else:
+            info["dp"]["inventory_status"] = "available"
             info["cp"]["kernel"] = (inv.get("cp") or {}).get("release")
             info["cp"]["arch"] = (inv.get("cp") or {}).get("machine")
             info["cp_devices"] = inv["devices"]
@@ -5165,6 +5168,15 @@ async def _detect_offload_dp(max_age: float = 15.0) -> dict:
             else:
                 info["boot_state"] = "CP running, no DP found on its bus"
 
+    # A failed CP inventory request does not outweigh a live DP acknowledgement.
+    # Read the MP owner's existing stream; never probe the single-session mailbox.
+    from ffn_control_plane import control_rpc
+    from ffn_offload_status import with_dp_acknowledgement
+    try:
+        agents = await control_rpc('state/agents', timeout=3)
+    except (OSError, ValueError, asyncio.TimeoutError, ConnectionError):
+        agents = {}
+    info = with_dp_acknowledgement(info, agents)
     ent["t"] = now
     ent["data"] = info
     return info

@@ -18,6 +18,27 @@ import ffn_manager as manager
 
 
 class HardwareAPITests(unittest.IsolatedAsyncioTestCase):
+    async def test_dp_ack_survives_unavailable_cp_inventory(self):
+        info = {'present': True, 'cp': {'reachable': True}, 'dp': {'present': False}}
+        observation = {'role': 'dp', 'platform': 'pa5200', 'boot_id': 'current',
+                       'report': {'role': 'dataplane', 'octeon': True,
+                                  'boot_id': 'current', 'ready': True, 'cpu_count': 40}}
+        agents = {'agents': {'dp': {'connected': True, 'fresh': True, 'ready': True,
+                                   'last_observation': observation}}}
+        with patch.object(manager, '_probe_host_octeon', return_value=info), \
+             patch.object(manager, '_bcm_client') as bcm, \
+             patch('ffn_control_plane.control_rpc', new=AsyncMock(return_value=agents)):
+            bcm.return_value.sys_inventory = AsyncMock(return_value={'error': 'unavailable'})
+            manager._detect_offload_dp._cache = {'t': 0, 'data': None}
+            try:
+                result = await manager._detect_offload_dp(max_age=0)
+                self.assertTrue(result['dp']['present'])
+                self.assertTrue(result['dp']['ready'])
+                self.assertFalse(result['dp']['forwarding_verified'])
+                self.assertEqual(result['dp']['inventory_status'], 'unavailable')
+            finally:
+                manager._detect_offload_dp._cache = {'t': 0, 'data': None}
+
     async def test_blocking_probe_runs_off_event_loop_and_cache_is_not_mutated(self):
         fixture = Fixture()
         fixture.pci("0000:01:00.0", "10ee", "903f", "120000")

@@ -78,6 +78,7 @@ class ControldClient:
     def ipsec_sas(self):           return self.query("state/ipsec/sas")
     def capabilities(self):        return self.query("system/capabilities")
     def control_status(self):      return self.query("state/control")
+    def hardware_boot(self):       return self.query("state/hardware-boot")
     def agents(self):              return self.query("state/agents")
     def control_events(self):      return self.query("state/control-events")
     def plane_request(self, request):

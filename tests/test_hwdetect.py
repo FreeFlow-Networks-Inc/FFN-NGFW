@@ -483,14 +483,16 @@ class ProbeBoundaryTests(unittest.TestCase):
 class FEFamilyTests(unittest.TestCase):
     def test_driver_observations_are_fresh_scoped_and_redacted(self):
         driver = {'schema':1, 'available':True, 'devices':[{'pci':'0002:01:00.0', 'kernel_state':'unbound',
-                  'kernel_driver':None, 'bar0_bytes':1048576, 'memory_decode':True, 'secret':'hidden'}],
-                  'userspace':{'installed':True, 'read_verified':True, 'state':'responding', 'sha256':'a'*64},
+                  'kernel_driver':None, 'bar0_bytes':1048576, 'memory_decode':True, 'resource_present':True, 'secret':'hidden'}],
+                  'userspace':{'installed':True, 'read_verified':True, 'state':'responding', 'sha256':'a'*64, 'access':'pci-resource0'},
                   'private_config':'hidden'}
         agent = {'role':'cp', 'fresh':True, 'connected':True, 'age_seconds':2, 'stale_after_seconds':40,
                  'last_observation':{'platform':'pa5200', 'report':{'fe100_driver':driver, 'private_config':'hidden'}}}
         control = {'agents':{'cp':agent}}
         observed = hw.fe100_driver_observation(control)
         self.assertEqual(observed['userspace']['state'], 'responding')
+        self.assertEqual(observed['userspace']['access'], 'pci-resource0')
+        self.assertTrue(observed['devices'][0]['resource_present'])
         self.assertEqual(observed['expires_in_seconds'], 38)
         self.assertNotIn('hidden', json.dumps(observed))
         agent['age_seconds'] = 41

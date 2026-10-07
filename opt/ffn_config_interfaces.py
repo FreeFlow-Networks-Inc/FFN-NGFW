@@ -1,6 +1,6 @@
 """Revision-checked parent interface editor; all changes stay in candidate XML."""
 import copy
-import ipaddress
+from ffn_interface_addresses import address_choices, validate_addresses
 import xml.etree.ElementTree as ET
 from typing import Literal
 from fastapi import Depends
@@ -83,7 +83,7 @@ class InterfaceStore(SubinterfaceStore):
         return values
 
     def listing(self,name,vsys,source='candidate'):
-        _,dev,owner,revision=self.load(vsys,source)
+        root,dev,owner,revision=self.load(vsys,source)
         entry,kind=self.entry(dev,name)
         # Use actual ownership even when the caller has an old interface grid.
         owners=[e for e in dev.findall('vsys/entry') if any(m.text==name for m in e.findall('import/network/interface/member'))]
@@ -100,6 +100,7 @@ class InterfaceStore(SubinterfaceStore):
                 'virtual_router_choices':[e.get('name') for e in dev.findall('network/virtual-router/entry') if e.get('name')],
                 'vlan_choices':[e.get('name') for e in dev.findall('network/vlan/entry') if e.get('name')],
                 'aggregate_choices':[e.get('name') for e in dev.findall('network/interface/aggregate-ethernet/entry') if e.get('name')],
+                'address_choices':address_choices(root,owner),
                 'management_profile_choices':[e.get('name') for e in dev.findall('network/profiles/interface-management-profile/entry') if e.get('name')],
                 'lldp_profile_choices':[e.get('name') for e in dev.findall('network/profiles/lldp-profile/entry') if e.get('name')]}
 
@@ -137,15 +138,10 @@ class InterfaceStore(SubinterfaceStore):
         aggregates=[e.get('name') for e in dev.findall('network/interface/aggregate-ethernet/entry')]
         if spec.mode=='aggregate-group' and (kind!='ethernet' or spec.aggregate_group not in aggregates): fail('Select an existing aggregate interface')
         if spec.mode!='aggregate-group' and spec.aggregate_group: fail('Aggregate membership requires Aggregate Group mode')
-        addresses=[]
-        for address in spec.ip_addresses:
-            try:
-                if '/' not in address: raise ValueError()
-                address=str(ipaddress.ip_interface(address))
-            except ValueError: fail('IP addresses must be valid IPv4 or IPv6 CIDRs')
-            if address not in addresses: addresses.append(address)
+        try: addresses,resolved_addresses=validate_addresses(spec.ip_addresses,root,owner)
+        except ValueError as error: fail(str(error))
         if spec.dhcp_client and addresses: fail('DHCP requires no static interface addresses')
-        if (spec.ipv6_enabled or any(':' in a for a in addresses)) and spec.mtu is not None and spec.mtu<1280: fail('IPv6 requires MTU of at least 1280')
+        if (spec.ipv6_enabled or any(':' in a for a in resolved_addresses)) and spec.mtu is not None and spec.mtu<1280: fail('IPv6 requires MTU of at least 1280')
         for field,path in [('interface_management_profile','interface-management-profile'),('lldp_profile','lldp-profile')]:
             value=getattr(spec,field)
             profiles=[e.get('name') for e in dev.findall('network/profiles/'+path+'/entry')]

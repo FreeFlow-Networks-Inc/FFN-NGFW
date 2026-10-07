@@ -162,16 +162,24 @@ def tokens_for(xml, revision):
     return tokens,metadata
 
 
-def prepare(request, replay=False):
+def prepare(request, replay=False, *, candidate=False):
     if not isinstance(request,dict) or set(request)!={'revision','xml'} or not isinstance(request['xml'],str):
         raise NatError('Security request requires revision and policy XML')
     old=saved();revision=old['revision'] if old else 0
     if type(request['revision']) is not int or request['revision']!=revision:raise NatError('Security revision changed; refresh before retrying')
     health()
     current,links=bindings();data=inventory();guards=guard_scripts(links);ownership(data,guards)
+    addresses={r['ifname']:r for r in json.loads(nat.run(['ip','-n',nat.NS,'-j','address']))}
+    pending=[]
+    if candidate and nat.PLATFORM_BINDINGS.exists():
+        try:from ffn_platform_policy_bindings import preview
+        except ImportError as error:raise NatError('Selected platform candidate-validation helper is missing; update the platform runtime') from error
+        current,addresses,pending=preview(request['xml'],current,addresses)
     compiled=compile_policy(request['xml'])
     if not compiled['valid']:raise NatError(str(compiled['blockers']))
-    old_nat,_,_=nat.prepare(dict(revision=nat.saved()['revision'],plan=compiled['plan']),allow_restore=replay)
+    validation_network=({k:v['device'] for k,v in current.items()},addresses) if candidate else None
+    old_nat,_,_=nat.prepare(dict(revision=nat.saved()['revision'],plan=compiled['plan']),allow_restore=replay,
+                           validation_network=validation_network)
     same=bool(old and old['xml']==request['xml'])
     generation=revision if same else revision+1
     if same:token_generation=old['token_generation']
@@ -182,7 +190,6 @@ def prepare(request, replay=False):
     tokens,metadata=tokens_for(request['xml'],token_generation)
     security=render(request['xml'],{k:v['index'] for k,v in current.items()},tokens)
     nat_revision=old_nat['revision'] if old_nat['digest']==digest(compiled['plan']) else old_nat['revision']+1
-    addresses={r['ifname']:r for r in json.loads(nat.run(['ip','-n',nat.NS,'-j','address']))}
     nat_script=nat.render(compiled['plan'],{k:v['device'] for k,v in current.items()},addresses,nat_revision)
     scripts={('inet',GATE):gate(),('inet','ffn_security'):security['script'],('ip',nat.TABLE):nat_script}
     scripts.update({('inet',name):script for name,script in guards.items()})
@@ -196,6 +203,7 @@ def prepare(request, replay=False):
     state=dict(version=1,revision=generation,token_generation=token_generation,xml=request['xml'],digest=security['digest'],
                bindings=current,tables=list(scripts),scripts=[(list(key),value) for key,value in scripts.items()],
                boot_id=boot(),nat=dict(revision=nat_revision,plan=compiled['plan'],digest=digest(compiled['plan']),script=nat_script))
+    if candidate:state['pending_interfaces']=pending
     return old,state,batch,metadata
 
 
@@ -348,8 +356,9 @@ def main():
             request=json.loads(raw)
             if a.action=='apply':result=apply(request)
             else:
-                _,state,_,_=prepare(request)
-                result=dict(validated=True,applied=False,digest=state['digest'],revision=request['revision'])
+                _,state,_,_=prepare(request,candidate=True)
+                result=dict(validated=True,applied=False,digest=state['digest'],revision=request['revision'],
+                            pending_interfaces=state['pending_interfaces'],activation_requires_live_bindings=True)
         print(json.dumps(result))
 
 

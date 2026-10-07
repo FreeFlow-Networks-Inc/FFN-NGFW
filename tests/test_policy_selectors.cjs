@@ -37,3 +37,11 @@ assert.match(ctx.natModeNotice('none','dynamic-ip','least-sessions',{destination
 assert.match(ctx.natModeNotice('persistent-dynamic-ip-and-port','none','',{}),/not supported/);
 assert.match(ctx.policyPlanAction('security',{type:'allow',logging:{start:false,end:true},profiles:{mode:'none',individual:{}}}),/session end/);
 assert.equal(ctx.policyPlanAction('security',{type:'deny'}),'Deny');
+assert.match(ctx.ipv6NatNotice('nat64',null),/unverified/);
+assert.match(ctx.ipv6NatNotice('nptv6',{translation_types:{nptv6:{supported:false,reason:'IPv6 provider missing'}}}),/IPv6 provider missing/);
+assert.match(ctx.policyPlanAction('nat',{translation:{type:'nat64',prefix:'2001:db8:64::/96',pool:['192.0.2.10']}}),/NAT64.*192.0.2.10/);
+let nat=ctx.normalizeNatSettings({'nat-type':'nptv6','nat64-prefix':'old','nat64-pool':['old'],'source-type':'static-ip','translated-source':['old'],'nptv6-internal-prefix':'fd00::/48','nptv6-external-prefix':'2001:db8::/48'});
+assert.equal(nat['nat64-prefix'],'');assert.equal(nat['nat64-pool'].length,0);assert.equal(nat['source-type'],'none');assert.equal(nat['translated-source'].length,0);
+assert.equal(nat['nptv6-internal-prefix'],'fd00::/48');
+nat=ctx.normalizeNatSettings({...nat,'nat-type':'ipv4','source-type':'dynamic-ip-and-port'});
+assert.equal(nat['nptv6-internal-prefix'],'');assert.equal(nat['source-type'],'dynamic-ip-and-port');

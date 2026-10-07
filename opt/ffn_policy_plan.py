@@ -42,7 +42,7 @@ def applications(resolver, values, stack=()):
 
 
 def compile_entry(root,owner,kind,spec,position):
-    s=spec['settings'];resolver=Resolver(root,owner)
+    s=spec['settings'];resolver=Resolver(root,owner,6 if kind=='nat' and s.get('nat-type') in ('nat64','nptv6') else 4)
     if not spec['editable']:raise PolicyError('Imported rule contains unsupported XML fields')
     checked={k:copy.deepcopy(spec[k]) for k in ('name','description','enabled','settings')}
     validate(kind,checked,root,owner.get('name'))
@@ -66,6 +66,9 @@ def compile_entry(root,owner,kind,spec,position):
         native=compile_nat(root,owner,dict(spec,settings=s),position)
         match['egress-interface']=s.get('to-interface') or 'any'
         action={'source_translation':native['snat'],'destination_translation':native['dnat']}
+        if 'translation' in native:
+            action['translation']=native['translation']
+            match.update(source=native['source'],destination=native['destination'])
     elif kind=='qos':action={'class':int(s['class'])}
     elif kind=='pbf':
         action={'type':s['action']}
@@ -117,14 +120,15 @@ def compile_policy(xml,kind,scope='vsys1'):
             'semantics':'First matching enabled rule; packet context is supplied, not detected. This test does not authorize traffic or apply configuration.'}
 
 
-def validate_packet(packet,root,scope):
+def validate_packet(packet,root,scope,ipv6=False):
     allowed={'source','destination','from_zone','to_zone','protocol','source_port','destination_port',
            'application','source_user','source_device','destination_device','egress_interface'}
     if not isinstance(packet,dict) or set(packet)-allowed:raise PolicyError('Unknown packet fields')
     p=dict(packet)
     for key in ('source','destination'):
-        try:p[key]=str(ipaddress.IPv4Address(p[key]))
-        except (ValueError,KeyError,TypeError):raise PolicyError('Packet '+key+' must be an IPv4 address')
+        try:p[key]=str(ipaddress.ip_address(p[key]) if ipv6 else ipaddress.IPv4Address(p[key]))
+        except (ValueError,KeyError,TypeError):raise PolicyError('Packet '+key+' must be an '+('IP' if ipv6 else 'IPv4')+' address')
+    if ipaddress.ip_address(p['source']).version!=ipaddress.ip_address(p['destination']).version:raise PolicyError('Original packet addresses must have the same family')
     zones={e.get('name') for e in owners(root)[scope].findall('zone/entry')}
     for key in ('from_zone','to_zone'):
         if not isinstance(p.get(key),str) or p[key] not in zones:raise PolicyError('Select a configured '+key)
@@ -137,11 +141,11 @@ def validate_packet(packet,root,scope):
 
 
 def address_match(value,addresses):
-    address=ipaddress.IPv4Address(value)
+    address=ipaddress.ip_address(value)
     for item in addresses:
         if '-' in item:
             lo,hi=item.split('-')
-            if ipaddress.IPv4Address(lo)<=address<=ipaddress.IPv4Address(hi):return True
+            if address.version==4 and ipaddress.IPv4Address(lo)<=address<=ipaddress.IPv4Address(hi):return True
         elif address in ipaddress.ip_network(item):return True
     return False
 
@@ -181,7 +185,7 @@ def match_packet(match,packet):
 
 
 def test_policy(xml,kind,scope,packet):
-    report=compile_policy(xml,kind,scope);packet=validate_packet(packet,parse(xml),scope)
+    report=compile_policy(xml,kind,scope);packet=validate_packet(packet,parse(xml),scope,ipv6=kind=='nat')
     trace=[];selected=None;status='no-match'
     for row in report['plan']['rules']:
         matched=match_packet(row['match'],packet)

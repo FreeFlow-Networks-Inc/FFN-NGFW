@@ -48,6 +48,7 @@ trap cleanup EXIT
 # Members we inspect. Missing members are a check result, not a hard error, so
 # extraction failures are tolerated and existence is tested afterwards.
 MEMBERS="
+./usr/lib/os-release ./etc/os-release
 ./etc/shadow ./etc/passwd ./etc/hostname ./etc/default/grub
 ./etc/ffn-ngfw/update.pub ./etc/ffn-ngfw/mgmt.conf ./etc/ffn-ngfw/update-server.conf
 ./opt/ffn-ngfw-v2/ffn_manager.py ./opt/ffn-ngfw-v2/ffn_payload.py
@@ -79,6 +80,17 @@ f(){ echo "$ROOT/$1"; }
 echo "FFN image verification"
 echo "  image   : $IMG ($MODE)"
 echo "  profile : ${FFN_MODEL}"
+
+sec "0. management-plane operating system"
+if [ -f "$ROOT/usr/lib/os-release" ] && [ ! -L "$ROOT/usr/lib/os-release" ] \
+    && grep -Eq '^ID="?ubuntu"?$' "$ROOT/usr/lib/os-release"; then
+  ok "Ubuntu management-plane root"
+else
+  bad "management-plane images require Ubuntu; unknown or foreign root rejected"
+fi
+if inlist '(^|/)(etc/(centos-release|redhat-release|openwrt_release)|opt/ffn-compat)(/|$)'; then
+  bad "foreign distribution/compatibility root in management-plane image"
+fi
 
 # ---- 1. the box must be loginnable -------------------------------------------
 sec "1. console access"

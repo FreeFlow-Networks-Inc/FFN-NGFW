@@ -70,6 +70,14 @@ const {chromium}=require('playwright'), fs=require('node:fs'),path=require('node
     await page.getByRole('tab',{name:'Advanced',exact:true}).click();
     assert.equal(await page.locator('#sif-tab-advanced').getAttribute('aria-selected'),'true');
     assert.equal(await page.locator('#sif-mgmt').isDisabled(),true);assert.equal(await page.locator('#sif-save').isDisabled(),true);
-    console.log('Subinterface tabs, candidate staging, address rows, stale-save retention, Cancel, read-only and L2 browser checks passed.');
+    await page.evaluate(()=>{snapshot.can_edit=true;snapshot.address_choices=[{name:'LAN',value:'192.0.2.9/24',family:4,scope:'vsys2'},{name:'LAN6',value:'2001:db8::9/64',family:6,scope:'shared'}];});
+    await page.evaluate(()=>openSubinterfaceModal('ae1'));
+    await page.locator('#sif-unit').fill('30');await page.locator('#sif-tag').fill('300');
+    await page.getByRole('tab',{name:'IPv4',exact:true}).click();await page.getByRole('button',{name:'Add IPv4 Address',exact:true}).click();
+    await page.getByLabel('IPv4 address object',{exact:true}).selectOption('LAN');
+    assert.equal(await page.getByLabel('IPv4 address object',{exact:true}).locator('option').count(),2);
+    await page.getByRole('button',{name:'OK',exact:true}).click();
+    assert.deepEqual((await page.evaluate(()=>calls))[3].body.ip_addresses,['LAN']);
+    console.log('Subinterface tabs, object dropdowns, candidate staging, stale edits, Cancel, read-only and L2 browser checks passed.');
   } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

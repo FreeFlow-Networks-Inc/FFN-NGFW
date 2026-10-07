@@ -1,5 +1,5 @@
 """Candidate-only VLAN subinterface editing with revision and reference checks."""
-import ipaddress
+from ffn_interface_addresses import address_choices, validate_addresses
 import copy
 import re
 import xml.etree.ElementTree as ET
@@ -85,7 +85,7 @@ class SubinterfaceStore(ZoneStore):
                 'comment':entry.findtext('comment',''),'tcp_mss_preserved':entry.find('adjust-tcp-mss') is not None,'editable':bool(editable)}
 
     def listing(self,parent,vsys,source='candidate'):
-        _,dev,owner,revision=self.load(vsys,source)
+        root,dev,owner,revision=self.load(vsys,source)
         node,mode=self.parent_entry(dev,parent)
         groups=self.memberships(dev,owner,mode)
         entries=[]
@@ -101,6 +101,7 @@ class SubinterfaceStore(ZoneStore):
                 'zone_choices':[e.get('name') for e,path in groups['zone'] if e.get('name') and e.find(path) is not None],
                 'virtual_router_choices':[e.get('name') for e,path in groups['virtual_router'] if e.get('name')],
                 'vlan_choices':[e.get('name') for e,path in groups['vlan'] if e.get('name')],
+                'address_choices':address_choices(root,owner),
                 'management_profile_choices':[e.get('name') for e in dev.findall('network/profiles/interface-management-profile/entry') if e.get('name')],
                 'runtime_note':'Changes require Commit. VLAN forwarding support depends on the selected platform; check Tasks for the apply result.'}
 
@@ -147,14 +148,9 @@ class SubinterfaceStore(ZoneStore):
             old_profile=entry.findtext('interface-management-profile','') if entry is not None else ''
             if spec.interface_management_profile and spec.interface_management_profile not in profiles and spec.interface_management_profile!=old_profile:
                 fail('Select an existing interface management profile from candidate configuration')
-            addresses=[]
-            for value in spec.ip_addresses:
-                try:
-                    if '/' not in value: raise ValueError('Missing prefix')
-                    value=str(ipaddress.ip_interface(value))
-                except ValueError: fail('IP addresses must be valid IPv4 or IPv6 CIDRs')
-                if value not in addresses: addresses.append(value)
-            if any(':' in a for a in addresses) and spec.mtu is not None and spec.mtu<1280: fail('IPv6 requires MTU of at least 1280')
+            try: addresses,resolved_addresses=validate_addresses(spec.ip_addresses,root,owner)
+            except ValueError as error: fail(str(error))
+            if any(':' in a for a in resolved_addresses) and spec.mtu is not None and spec.mtu<1280: fail('IPv6 requires MTU of at least 1280')
             for text in [spec.comment,spec.interface_management_profile]:
                 if any(not(c in '\t\n\r' or 0x20<=ord(c)<=0xD7FF or 0xE000<=ord(c)<=0xFFFD or 0x10000<=ord(c)<=0x10FFFF) for c in text): fail('Invalid XML characters')
             for field,groups in self.memberships(dev,owner,mode).items():

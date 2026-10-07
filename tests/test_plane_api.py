@@ -35,6 +35,18 @@ class APITests(unittest.TestCase):
         with patch.object(ffn_plane_api,'control_rpc',new_callable=AsyncMock,return_value={'owner':'ffn-controld'}) as rpc:
             self.assertEqual(self.client.get('/api/system/control').json(),{'owner':'ffn-controld'})
             rpc.assert_awaited_once_with('state/control',timeout=5)
+    def test_gateway_uses_daemon_worker_selection_without_legacy_socket(self):
+        req=request()
+        with patch.dict(os.environ,{'FFN_CONTROL_GATEWAY':'controld','FFN_PLANE_SOCKET':''}), \
+                patch.object(ffn_plane_api,'rpc',new_callable=AsyncMock,return_value={'ok':True}) as rpc:
+            self.assertEqual(self.client.post('/api/system/planes',json=req).status_code,200)
+            rpc.assert_awaited_once_with('',req)
+
+    def test_direct_worker_requires_explicit_socket(self):
+        with patch.dict(os.environ,{'FFN_CONTROL_GATEWAY':'','FFN_PLANE_SOCKET':''}), \
+                patch.object(ffn_plane_api,'rpc',new_callable=AsyncMock) as rpc:
+            self.assertEqual(self.client.post('/api/system/planes',json=request()).status_code,503)
+            rpc.assert_not_awaited()
     def test_invalid_and_oversized_messages_rejected(self):
         with patch.object(ffn_plane_api,'rpc',new_callable=AsyncMock) as rpc:
             self.assertEqual(self.client.post('/api/system/planes',json={}).status_code,422)

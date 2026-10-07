@@ -1,0 +1,18 @@
+[Unit]
+Description=MP hardware discovery and CP/DP boot orchestration
+Wants=network-online.target ffn-controld.service
+After=network-online.target ffn-controld.service
+Before=ffn-configd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /usr/local/lib/ffn/ffn_hardware_boot.py run
+StateDirectory=ffn-ngfw/hardware-boot
+UMask=0022
+TimeoutStartSec=85min
+Restart=no
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

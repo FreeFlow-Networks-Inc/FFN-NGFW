@@ -65,9 +65,14 @@ async function render(data) {
     available:true,devices:[{pci:'0002:01:00.0',kernel_state:'unbound',memory_decode:true,bar0_bytes:1048576}],
     userspace:{installed:true,state:'responding',read_verified:true,sha256:'a'.repeat(64)}};
   const withDriver = await render({fe100_driver:driverCurrent});
-  assert.ok(withDriver.includes('Unbound (userspace access)'));
+  assert.ok(withDriver.includes('Unbound'));
   assert.ok(withDriver.includes('Responding (non-clearing register probe)'));
   assert.ok(withDriver.includes('&lt;unsafe&gt;') && !withDriver.includes('<unsafe>'));
+  const boundDriver = await render({fe100_driver:{...driverCurrent,
+    devices:[{pci:'0002:01:00.0',kernel_state:'bound',kernel_driver:'ffn_fe100',resource_present:true}],
+    userspace:{...driverCurrent.userspace,access:'pci-resource0'}}});
+  assert.ok(boundDriver.includes('ffn_fe100') && boundDriver.includes('Bound PCI BAR0 (resource0)'));
+  assert.ok(boundDriver.includes('Resource available: Yes'));
   const staleDriver = await render({fe100_driver:{...driverCurrent,fresh:false,state:'stale'}});
   assert.ok(staleDriver.includes('observation is stale') && !staleDriver.includes('Responding'));
   const expiryBody = {innerHTML:''}; let expire;

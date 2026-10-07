@@ -36,6 +36,13 @@ class SubinterfaceTests(unittest.TestCase):
         self.assertEqual(row['name'],'ethernet1/1.1');self.assertEqual(row['tag'],'100')
         self.assertEqual(self.manager.running,running)
         self.assertIn('<member>ethernet1/1.1</member>',self.manager.xml)
+    def test_subinterface_address_object_reference(self):
+        root=ET.fromstring(self.manager.xml)
+        root.find('devices/entry/vsys/entry').append(ET.fromstring('<address><entry name="LAN"><ip-netmask>192.0.2.9/24</ip-netmask></entry></address>'))
+        self.manager.xml=ET.tostring(root,encoding='unicode')
+        self.assertEqual(self.listing()['address_choices'][0]['value'],'192.0.2.9/24')
+        self.assertEqual(self.create(ip_addresses=['LAN']).status_code,200)
+        self.assertEqual(self.listing()['entries'][0]['ip_addresses'],['LAN'])
     def test_edit_replaces_addresses_and_clears_fields(self):
         self.create(mtu=1500,comment='before')
         self.manager.xml=self.manager.xml.replace('<tag>100</tag>','<adjust-tcp-mss><enable>no</enable></adjust-tcp-mss><tag>100</tag>')

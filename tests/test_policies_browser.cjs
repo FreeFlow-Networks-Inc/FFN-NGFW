@@ -53,7 +53,7 @@ async function main(){
     assert(await page.locator('#qi-form [name=interface]').isDisabled());await page.locator('#qi-cancel').click();
     const q=await (await fetch(url+'/api/config/qos/interfaces')).json();await fetch(url+'/api/config/qos/interfaces',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'delete',name:'ethernet1/1',revision:q.revision})});
     const fields={
-      nat:{'Source Translation':'dynamic-ip-and-port','Source Interface Address':'ethernet1/1','Translated Destination Address':'192.0.2.10','Translated Destination Port':'443'},
+      nat:{'source-type':'dynamic-ip-and-port','source-interface':'ethernet1/1','destination-type':'static-ip','translated-destination':'192.0.2.10','translated-port':'443'},
       pbf:{Action:'forward','Egress Interface':'ethernet1/1','Next Hop':'192.0.2.1'},
       'application-override':{Ports:'443',Application:'custom-app'},
       authentication:{'Authentication Enforcement':'auth-profile'},
@@ -82,10 +82,12 @@ async function main(){
       await open(kind);await page.locator('#pw-add').click();await page.locator('[name=rule-name]').fill(kind+' rule');
       // Tab changes must retain match values and edit controls.
       for(const [label,value] of Object.entries(fields[kind]||{})){
-        if(kind==='nat'&&label==='Source Interface Address')await page.locator('#pw-nat-method').selectOption('interface');
-        const el=page.locator('#pw-form label').filter({hasText:label}).filter({has:page.locator('input,select')}).first();
-        const panel=await el.evaluate(e=>e.closest('[data-panel]').dataset.panel);await page.locator('[data-tab="'+panel+'"]').click();
-        const control=el.locator('input,select').first();if(await control.evaluate(e=>e.tagName)==='SELECT')await control.selectOption(value);else await control.fill(value);
+        const control=kind==='nat'?page.locator('#pw-form [name="pf-'+label+'"]'):page.locator('#pw-form label').filter({hasText:label}).filter({has:page.locator('input,select')}).first().locator('input,select').first();
+        const panel=await control.evaluate(e=>e.closest('[data-panel]').dataset.panel);await page.locator('[data-tab="'+panel+'"]').click();
+        if(kind==='nat'&&label==='source-interface')await page.locator('#pw-nat-method').selectOption('interface');
+        if(await control.getAttribute('type')==='hidden'){
+          const label=control.locator('..');await label.locator('[data-reference-single]').selectOption('__literal__');await label.locator('[data-reference-literal]').fill(value);
+        }else if(await control.evaluate(e=>e.tagName)==='SELECT')await control.selectOption(value);else await control.fill(value);
       }
       await page.locator('#pw-form [type=submit]').click();await page.locator('#pw-editor').waitFor({state:'hidden'});
       await page.locator('#pw-list [data-rule-edit]').first().waitFor();
@@ -95,7 +97,7 @@ async function main(){
       await page.locator('[data-rule-clone]').click();assert.equal(await page.locator('[name=rule-enabled]').inputValue(),'false');await page.locator('[name=rule-name]').fill(kind+' clone');await page.locator('#pw-form [type=submit]').click();await page.locator('#pw-editor').waitFor({state:'hidden'});
       await page.locator('[data-rule-op=up][data-index="1"]').click();await page.waitForFunction(k=>document.querySelector('#pw-list tbody tr')?.textContent.includes(k+' clone'),kind);
       await page.locator('[data-rule-op=toggle][data-index="0"]').click();await page.waitForFunction(()=>document.getElementById('pw-status').textContent.includes('block activation'));
-      await page.locator('#pw-validate').click();await page.waitForFunction(k=>document.getElementById('pw-validation').textContent.includes(k==='nat'?'Layer 3':'No commissioned runtime provider'),kind);await page.locator('#object-close').click();
+      await page.locator('#pw-validate').click();await page.waitForFunction(k=>document.getElementById('pw-validation').textContent.includes(k==='nat'?'Layer 3':k==='security'?'Security plan compiled, but dataplane enforcement is not connected':'No commissioned runtime provider'),kind);await page.locator('#object-close').click();
       await page.locator('[data-rule-op=toggle][data-index="0"]').click();await page.waitForFunction(()=>document.getElementById('pw-status').textContent.includes('No enabled XML'));
       await page.locator('#pw-search').fill('not found');assert.equal(await page.locator('#pw-list tbody tr').count(),0);
       await page.locator('#pw-source').selectOption('running');await page.waitForFunction(()=>document.getElementById('pw-count').textContent==='0 of 0 rules');assert(await page.locator('#pw-add').isDisabled());
@@ -120,8 +122,9 @@ async function main(){
     await page.locator('[name=pf-profile-mode]').selectOption('group');
     assert.equal(await page.locator('[name=pf-profile-group]').inputValue(),'inspection');
     await page.locator('[name=pf-profile-mode]').selectOption('profiles');
-    await (await reveal('source-device')).fill('workstation');
-    await (await reveal('destination-device')).fill('workstation');
+    for(const key of ['source-device','destination-device']){
+      await reveal(key);await page.locator('[data-reference="pf-'+key+'"]').selectOption('workstation');
+    }
     await (await reveal('source-user')).fill('EXAMPLE\\alice');
     await (await reveal('action')).selectOption('reset-both');
     await page.locator('[name=pf-icmp-unreachable]').selectOption('yes');

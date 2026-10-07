@@ -37,6 +37,16 @@ class InterfaceEditorTests(unittest.TestCase):
         row=self.listing().json()['entry'];self.assertEqual((row['zone'],row['virtual_router']),('trust','default'))
         self.assertEqual(row['ip_addresses'],['198.51.100.1/24'])
         self.assertEqual(self.manager.running,before)
+    def test_address_object_choices_and_reference_staging(self):
+        root=ET.fromstring(self.manager.xml);owner=root.find('devices/entry/vsys/entry')
+        owner.append(ET.fromstring('<address><entry name="WAN"><ip-netmask>203.0.113.7/28</ip-netmask></entry><entry name="WAN6"><ip-netmask>2001:db8::7/64</ip-netmask></entry><entry name="dns"><fqdn>example.com</fqdn></entry></address>'))
+        self.manager.xml=ET.tostring(root,encoding='unicode')
+        self.assertEqual([c['name'] for c in self.listing().json()['address_choices']],['WAN','WAN6'])
+        self.assertEqual(self.save(ip_addresses=['WAN','WAN6']).status_code,200)
+        self.assertEqual(self.listing().json()['entry']['ip_addresses'],['WAN','WAN6'])
+        before=self.manager.xml
+        for values in [dict(ip_addresses=['dns']),dict(ip_addresses=['missing']),dict(ip_addresses=['WAN6'],mtu=1000),dict(ip_addresses=['WAN','203.0.113.7/28'])]:
+            self.assertEqual(self.save(**values).status_code,422);self.assertEqual(self.manager.xml,before)
     def test_invalid_values_and_refs_do_not_save(self):
         before=self.manager.xml
         for change in [dict(ip_addresses=['invalid']),dict(ip_addresses=['192.0.2.1']),dict(mtu=100),dict(mtu=1000,ip_addresses=['2001:db8::1/64']),dict(zone='switch'),dict(virtual_router='missing'),dict(interface_management_profile='missing'),dict(link_speed='invalid'),dict(dhcp_client=True),dict(name='ethernet1/99'),dict(comment='\x00')]:

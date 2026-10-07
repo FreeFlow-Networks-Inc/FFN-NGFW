@@ -41,6 +41,17 @@ const {chromium}=require('playwright'),fs=require('node:fs'),path=require('node:
   await page.getByRole('button',{name:'OK',exact:true}).click();const linkOnly=(await page.evaluate(()=>calls))[3];assert.equal(linkOnly.url,'/api/config/interfaces');assert.equal(linkOnly.body.mode,'none');assert.equal(linkOnly.body.link_state,'auto');assert.equal(linkOnly.body.bond_mode,'802.3ad');assert.deepEqual(linkOnly.body.ip_addresses,[]);
   await page.evaluate(()=>{snapshot.can_edit=false;});await page.evaluate(()=>openIfaceModal('ae1'));await page.getByRole('tab',{name:'Advanced',exact:true}).click();assert.equal(await page.locator('#ifm-save').isDisabled(),true);assert.equal(await page.locator('#ifm-state').isDisabled(),true);assert.equal(await page.getByRole('button',{name:'Cancel',exact:true}).isDisabled(),false);
   assert.equal((await page.evaluate(()=>calls)).length,4,'No immediate VR, commit, or runtime writes');
+  await page.evaluate(()=>{snapshot.can_edit=true;snapshot.entry.mode='layer3';snapshot.entry.ip_addresses=['LAN6'];snapshot.address_choices=[{name:'WAN',value:'203.0.113.7/28',family:4,scope:'shared'},{name:'LAN6',value:'2001:db8::7/64',family:6,scope:'vsys1'}];});
+  await page.evaluate(()=>openIfaceModal('ae1'));
+  await page.getByRole('tab',{name:'IPv6',exact:true}).click();
+  assert.equal(await page.getByLabel('IPv6 address object',{exact:true}).inputValue(),'LAN6');
+  assert.equal(await page.getByLabel('IPv6 address with prefix',{exact:true}).getAttribute('readonly'),'');
+  await page.getByRole('tab',{name:'IPv4',exact:true}).click();await page.getByRole('button',{name:'Add IPv4 Address',exact:true}).click();
+  assert.equal(await page.getByLabel('IPv4 address object',{exact:true}).locator('option').count(),2);
+  await page.getByLabel('IPv4 address object',{exact:true}).selectOption('WAN');
+  assert.match(await page.locator('#ifm-addresses-4').innerText(),/203\.0\.113\.7\/28/);
+  await page.getByRole('button',{name:'OK',exact:true}).click();
+  assert.deepEqual((await page.evaluate(()=>calls))[4].body.ip_addresses,['WAN','LAN6']);
   console.log('Parent interface tabs, None/admin-down, IPv4/IPv6 rows, DHCP, atomic candidate save, stale edits, Cancel, read-only and LACP controls passed.');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

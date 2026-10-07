@@ -192,7 +192,7 @@ def validate_spec(spec, kind):
         reject('Address objects do not accept source ports')
     try:
         if spec.type == 'ip-netmask':
-            spec.value = str(ipaddress.ip_network(spec.value, strict=False))
+            spec.value = str(ipaddress.ip_interface(spec.value))
         elif spec.type == 'ip-range':
             parts = spec.value.split('-')
             if len(parts) != 2:
@@ -260,6 +260,9 @@ def references(root, target):
                         result.append({'scope': scope, 'path': child_path})
                 walk(child, child_path)
         walk(node, scope)
+    if family == 'address':
+        from ffn_interface_addresses import object_references
+        result.extend(object_references(root, target[0], target[2]))
     return result
 
 

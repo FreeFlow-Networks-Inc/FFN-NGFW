@@ -3,6 +3,8 @@
 # into the FFN NGFW appliance: deps, custom builds, FFN install, services.
 set -euo pipefail
 source /config.sh
+grep -Eq '^ID="?ubuntu"?$' /usr/lib/os-release || { echo 'MP images require Ubuntu' >&2; exit 1; }
+[ "$(dpkg --print-architecture)" = amd64 ] || { echo 'MP images require amd64' >&2; exit 1; }
 export DEBIAN_FRONTEND=noninteractive
 log(){ echo -e "\n\033[1;36m[provision] $*\033[0m"; }
 
@@ -81,7 +83,7 @@ tar xzf /payload/etc-ffn-ngfw.tgz -C /etc
 # running on the image harvesting host. No platform channels are auto-enabled.
 for dir in /opt/ffn-ngfw /opt/ffn-ngfw-v2 /usr/local/lib/ffn; do
   install -d -m 0755 "$dir"
-  for name in ffn_controld_client.py ffn_control_plane.py ffn_agent_protocol.py ffn_agent_resources.py ffn_planed.py ffn_policy_config.py ffn_policy_plan.py ffn_policy_profiles.py ffn_qos_config.py ffn_nat_policy.py; do
+  for name in ffn_controld_client.py ffn_control_plane.py ffn_hardware_boot.py ffn_agent_protocol.py ffn_agent_resources.py ffn_planed.py ffn_policy_config.py ffn_policy_plan.py ffn_policy_profiles.py ffn_qos_config.py ffn_nat_policy.py ffn_ipv6_translation.py; do
     install -m 0644 "/payload/control-code/$name" "$dir/$name"
   done
 done
@@ -372,10 +374,23 @@ fi
 # These pieces let them plug a stick in and have FFN pick it up. The firmware
 # itself is NEVER packaged -- only the mechanism is.
 if [ -f /payload/99-ffn-vendor.rules ]; then
+  # All three or none. build.sh stages these with [ -f ] && cp, so a file missing
+  # from the build tree is skipped SILENTLY there and then dies here under set -e
+  # as an opaque "install: cannot stat". Name the missing piece instead.
+  for _v in 99-ffn-vendor.rules ffn-vendor-autoimport@.service vendor.conf; do
+    [ -f "/payload/$_v" ] || { echo "ABORT: vendor autodetect incomplete -- /payload/$_v missing"; exit 1; }
+  done
   install -m644 /payload/99-ffn-vendor.rules /etc/udev/rules.d/99-ffn-vendor.rules
   install -m644 /payload/ffn-vendor-autoimport@.service /etc/systemd/system/
   [ -f /etc/ffn-ngfw/vendor.conf ] || install -m644 /payload/vendor.conf /etc/ffn-ngfw/vendor.conf
-  echo "  vendor firmware autodetect installed (udev + template unit)"
+  # The unit's ExecStart is /opt/ffn-ngfw-v2/ffn-vendor-autoimport.sh. Without it
+  # the udev rule fires a unit that fails at runtime, on media insertion, long
+  # after anyone is watching -- so check it here, where the failure is visible.
+  if [ ! -x /opt/ffn-ngfw-v2/ffn-vendor-autoimport.sh ]; then
+    echo "ABORT: /opt/ffn-ngfw-v2/ffn-vendor-autoimport.sh missing or not executable"
+    exit 1
+  fi
+  echo "  vendor firmware autodetect installed (udev + template unit + importer)"
 fi
 # Belt and braces: an image must never carry vendor firmware.
 rm -rf /var/lib/ffn-ngfw/vendor

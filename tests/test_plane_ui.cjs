@@ -18,6 +18,7 @@ function inventory(blocked){return {role:'mp',relays:true,resources:{
 (async()=>{
   let n=0, calls=[], stuck=['3f1c0b6e-0000-4000-8000-00000000abcd'];
   const ctx={window:{ffnExtensions:{request:async(path,opts)=>{
+    if(path==='/api/system/control')return {hardware_boot:{phase:'ready',owner:'mp',platform:'demo',hardware_ready:true}};
     if(!opts) return inventory(stuck);
     const req=JSON.parse(opts.body);calls.push(req);
     if(req.action==='status')return {ok:true,trace:['mp','dp'],result:{config:{revision:7}}};
@@ -27,6 +28,7 @@ function inventory(blocked){return {role:'mp',relays:true,resources:{
   }}},document:{createElement:t=>new Node(t)},crypto:{randomUUID:()=>String(++n)},JSON,Error};
   vm.runInNewContext(fs.readFileSync(__dirname+'/../static/plane-control.js','utf8'),ctx);
   const root=new Node('main');await ctx.window.ffnPlanes.render(root);
+  assert(root.all().some(x=>x.textContent.includes('MP hardware startup: ready · demo')));
   const button=name=>root.all().find(x=>x.tag==='button'&&x.textContent===name);
   const selects=()=>root.all().filter(x=>x.tag==='select');
   const input=root.all().find(x=>x.tag==='textarea');
