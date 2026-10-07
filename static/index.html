@@ -212,6 +212,8 @@ tbody tr.dragging{opacity:.4}
 /* ---- Login screen ---- */
 .login-screen{display:flex;align-items:center;justify-content:center;min-height:100vh;background:var(--bg)}
 .login-box{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:36px;width:360px;text-align:center}
+.login-box .pwchange{margin-top:14px;text-align:left}
+.login-box .pwchange .sub{margin-bottom:12px;line-height:1.45}
 .login-box .mark{display:block;width:64px;height:64px;margin:0 auto 12px}
 .login-box h2{font-size:22px;margin-bottom:6px}
 .login-box .sub{color:var(--text-dim);font-size:12px;margin-bottom:20px}
@@ -304,6 +306,22 @@ button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);out
     </div>
     <button class="btn btn-primary" onclick="doLogin()">Sign In</button>
     <div id="login-error" class="error"></div>
+    <!-- Shown instead of the credential fields when the account must set a
+         new password before it may use the console (first login with a
+         generated password, or an administrator-forced change). -->
+    <div id="login-pwchange" class="pwchange" style="display:none">
+      <div class="sub">Set a new password to continue. The one you just used was issued once and is not accepted for anything else.</div>
+      <div class="form-group">
+        <label>New password</label>
+        <input type="password" id="login-new-pw" autocomplete="new-password">
+      </div>
+      <div class="form-group">
+        <label>Confirm new password</label>
+        <input type="password" id="login-confirm-pw" autocomplete="new-password">
+      </div>
+      <button class="btn btn-primary" onclick="completePasswordChange()">Set password and continue</button>
+      <div id="login-pwchange-error" class="error"></div>
+    </div>
   </div>
 </div>
 
@@ -808,6 +826,15 @@ function api(path, opts = {}) {
   return fetch(API + path, {...opts, headers}).then(r => {
     if (r.status === 401) { doLogout(); throw new Error('Unauthorized'); }
     if (r.status === 404) return null;
+    if (r.status === 403) {
+      // The change-only token after a first login refuses every API with
+      // this detail. Route the user to the password panel instead of letting
+      // each page fail on its own; other 403s (role checks) fall through.
+      return r.clone().json().then(d => {
+        if (/password change required/i.test((d && d.detail) || '')) requirePasswordChange();
+        return d;
+      }).catch(() => null);
+    }
     return r.json();
   }).catch(e => { if (e.message !== 'Unauthorized') console.warn('API error:', path, e); return null; });
 }
@@ -869,6 +896,37 @@ function sevBadge(s) {
 }
 
 /* ---- Auth ---- */
+// The password the user just signed in with, held only for the mandatory
+// change that follows a first login. Never written into the DOM.
+let pendingCurrentPassword = null;
+
+function enterApp(data) {
+  pendingCurrentPassword = null;
+  document.getElementById('user-display').textContent = data.username;
+  document.getElementById('login-pwchange').style.display = 'none';
+  document.getElementById('login-screen').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  switchTab('dashboard');
+  startCommitPolling();
+}
+
+// Show the login card in its "set a new password" state. Idempotent, so the
+// api() 403 path can call it for every refused request without flicker.
+function requirePasswordChange(currentPassword) {
+  if (currentPassword) pendingCurrentPassword = currentPassword;
+  const panel = document.getElementById('login-pwchange');
+  if (panel.style.display === 'block') return;
+  for (const id of ['login-user', 'login-pass']) {
+    document.getElementById(id).parentElement.style.display = 'none';
+  }
+  document.querySelector('#login-screen .btn-primary').style.display = 'none';
+  document.getElementById('login-error').textContent = '';
+  panel.style.display = 'block';
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('login-screen').style.display = 'flex';
+  document.getElementById('login-new-pw').focus();
+}
+
 function doLogin() {
   const user = document.getElementById('login-user').value;
   const pass = document.getElementById('login-pass').value;
@@ -879,15 +937,60 @@ function doLogin() {
     if (data.access_token) {
       token = data.access_token;
       localStorage.setItem('ffn_token',token);
-      document.getElementById('user-display').textContent = data.username;
-      document.getElementById('login-screen').style.display='none';
-      document.getElementById('app').style.display='block';
-      switchTab('dashboard');
-      startCommitPolling();
+      if (data.must_change_pw) {
+        // The token is change-only: every other API answers 403 until the
+        // password is replaced. Do that first instead of showing an app in
+        // which nothing works.
+        document.getElementById('user-display').textContent = data.username;
+        requirePasswordChange(pass);
+      } else {
+        enterApp(data);
+      }
     } else {
       document.getElementById('login-error').textContent = data.detail||'Login failed';
     }
   }).catch(()=>{document.getElementById('login-error').textContent='Connection error';});
+}
+
+async function completePasswordChange() {
+  const err = document.getElementById('login-pwchange-error');
+  const nw = document.getElementById('login-new-pw').value;
+  const conf = document.getElementById('login-confirm-pw').value;
+  err.textContent = '';
+  if (nw.length < 6) { err.textContent = 'Use at least 6 characters.'; return; }
+  if (nw !== conf) { err.textContent = 'The two entries do not match.'; return; }
+  if (pendingCurrentPassword === null) {
+    // A stale change-only token from an earlier session: the current
+    // password is not known here, so ask for a fresh sign-in.
+    err.textContent = 'Sign in again, then set the new password.';
+    doLogout();
+    return;
+  }
+  let r, data;
+  try {
+    r = await fetch(API+'/api/auth/change-password', {
+      method:'POST',
+      headers:{'Content-Type':'application/json', Authorization:'Bearer '+token},
+      body:JSON.stringify({current_password: pendingCurrentPassword, new_password: nw})
+    });
+    data = await r.json().catch(() => ({}));
+  } catch (_) { err.textContent = 'Connection error'; return; }
+  if (!r.ok) { err.textContent = data.detail || ('Password change failed (HTTP ' + r.status + ')'); return; }
+  // The change-only token is spent; sign in with the new password to get a
+  // full one, then enter the app.
+  const user = document.getElementById('user-display').textContent || document.getElementById('login-user').value;
+  try {
+    r = await fetch(API+'/api/auth/login', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({username:user, password:nw})
+    });
+    data = await r.json();
+  } catch (_) { err.textContent = 'Password set, but signing in failed. Sign in again.'; doLogout(); return; }
+  if (!data.access_token) { err.textContent = data.detail || 'Password set; sign in again.'; doLogout(); return; }
+  token = data.access_token;
+  localStorage.setItem('ffn_token', token);
+  document.getElementById('login-pass').value = '';
+  enterApp(data);
 }
 
 function doLogout() {
