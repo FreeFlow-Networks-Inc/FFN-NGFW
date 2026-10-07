@@ -1,0 +1,71 @@
+/* FFN console design tokens -- the one source of colour, type and geometry.
+   Light is the default; theme.js selects dark through data-theme on <html>.
+   Every other stylesheet uses these names only. A literal colour anywhere
+   else is a defect: it will be right in one theme and wrong in the other. */
+:root {
+  color-scheme: light;
+  /* surfaces */
+  --bg:#f3f3f3; --surface:#fff; --panel:#f0f1f2; --card:#fff; --card-hover:#eaf3f9;
+  --stripe:#f5f6f7; --selected:#d5e8f5; --selected-line:#b5d2e5; --selected-text:#164f74; --row-hover:#e6f1f9;
+  /* chrome: the top bar, tab strip, sidebar and footer */
+  --chrome:#34383c; --chrome-text:#fff; --chrome-text-dim:#eee; --chrome-line:#71777c; --chrome-hover:rgba(255,255,255,.08);
+  --tabs-bg:#e6e7e8; --tabs-line:#b1b6ba; --tab-divider:#c8cbcd; --tab-hover:#d5e6f1; --tab-hover-text:#1d4e6b;
+  --sidebar-bg:#f2f2f2; --sidebar-line:#afb6bb; --sidebar-head:#e8eaeb; --sidebar-head-line:#d2d6d9; --sidebar-search:#e7e8e9; --sidebar-hover:#e0eaf0;
+  --footer-bg:#e7e9eb; --footer-line:#b4bbc0; --footer-text:#48545c; --footer-divider:#bcc3c7;
+  /* lines */
+  --border:#c6c9cc; --border-soft:#e0e3e5; --border-cell:#e4e6e8; --border-strong:#7e8a92;
+  /* text */
+  --text:#292d30; --text-dim:#535b61; --text-muted:#687178; --heading:#343c42; --control-text:#303a40;
+  /* brand */
+  --accent:#176da0; --accent-dim:#105379; --accent-strong:#257aab; --accent-strong-hover:#17658f; --accent-line:#6db0d5; --on-accent:#fff; --link:#175d86; --ospf:#6f42c1;
+  /* status: ink on a soft field, readable in both themes */
+  --ok:#287b35;   --ok-ink:#276631;   --ok-soft:#e1efe3;
+  --warn:#946000; --warn-ink:#795000; --warn-soft:#fff0d2;
+  --err:#bf302b;  --err-ink:#a42722;  --err-soft:#f7e3e2;
+  --info:#176da0; --info-ink:#185f8a; --info-soft:#e0edf7;
+  --crit:#a12724; --crit-ink:#8f1f1c; --crit-soft:#f3d2d0;
+  --on-status:#fff; --commit-pending:#8a5900; --commit-clean:#287b35;
+  --danger-bg:#b52d29; --danger-line:#a12724; --danger-hover:#a12724;
+  /* controls and panels */
+  --btn-bg:linear-gradient(#fff,#e6e8ea); --btn-hover:#dcebf5; --btn-hover-line:#7b9db4;
+  --th-bg:linear-gradient(#f8f8f8,#e4e7e9); --card-head:linear-gradient(#f7f7f7,#e9ebed);
+  --input-bg:#fff; --modal-head:#e9ecef; --modal-head-line:#b5bdc3; --modal-foot:#f1f2f3;
+  --details-head:#edf0f2; --details-text:#35444e; --log-bg:#fff; --chart-grid:#d9dfe3;
+  --overlay:rgba(30,38,45,.32); --shadow:0 6px 26px rgba(0,0,0,.25); --shadow-login:0 8px 25px rgba(0,0,0,.13);
+  /* traffic heat map, clear to hot */
+  --heat-0:#dfe4e9; --heat-1:#bfe3c8; --heat-2:#f3dc8a; --heat-3:#e59a95;
+  /* geometry */
+  --radius:2px; --radius-lg:3px; --sidebar-w:218px; --topnav-h:82px; --footer-h:28px; --control-h:25px; --control-h-sm:23px;
+  /* type */
+  --font-ui:"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  --font-mono:"Cascadia Code","Fira Code",Consolas,"DejaVu Sans Mono",monospace;
+  --fs-xs:10px; --fs-sm:11px; --fs-md:12px; --fs-lg:13px; --fs-xl:14px; --fs-2xl:17px; --fs-3xl:22px; --fs-num:24px;
+  /* names the page templates were written against; keep them pointing at the semantic set */
+  --green:var(--ok); --red:var(--err); --orange:var(--warn); --yellow:var(--warn);
+  --blue:var(--info); --amber:var(--warn); --danger:var(--err);
+}
+:root[data-theme=dark] {
+  color-scheme: dark;
+  --bg:#10151d; --surface:#171f2b; --panel:#222e3e; --card:#1b2533; --card-hover:#24354a;
+  --stripe:#1e2a3a; --selected:#244462; --selected-line:#3a5f85; --selected-text:#e5edf7; --row-hover:#24354a;
+  --chrome:#0b1017; --chrome-text:#e5edf7; --chrome-text-dim:#b1c0d1; --chrome-line:#3a485b; --chrome-hover:rgba(255,255,255,.06);
+  --tabs-bg:#171f2b; --tabs-line:#3a485b; --tab-divider:#2a3747; --tab-hover:#24354a; --tab-hover-text:#e5edf7;
+  --sidebar-bg:#10151d; --sidebar-line:#3a485b; --sidebar-head:#222e3e; --sidebar-head-line:#3a485b; --sidebar-search:#171f2b; --sidebar-hover:#24354a;
+  --footer-bg:#171f2b; --footer-line:#3a485b; --footer-text:#b1c0d1; --footer-divider:#3a485b;
+  --border:#3a485b; --border-soft:#2a3747; --border-cell:#263345; --border-strong:#55667c;
+  --text:#e5edf7; --text-dim:#b1c0d1; --text-muted:#95a8bd; --heading:#e5edf7; --control-text:#e5edf7;
+  --accent:#70baff; --accent-dim:#3588d1; --accent-strong:#1f6394; --accent-strong-hover:#2a7ab5; --accent-line:#3588d1; --on-accent:#fff; --link:#70baff; --ospf:#a371f7;
+  --ok:#61d695;   --ok-ink:#8fe3b3;   --ok-soft:#163a2a;
+  --warn:#ecc16c; --warn-ink:#f0cf8a; --warn-soft:#3d2e00;
+  --err:#ff8b88;  --err-ink:#ffa3a0;  --err-soft:#4a1a1a;
+  --info:#70baff; --info-ink:#9ccdff; --info-soft:#0c2d6b;
+  --crit:#ff6b6b; --crit-ink:#ff8c8c; --crit-soft:#6e1a1a;
+  --on-status:#fff; --commit-pending:#8a5900; --commit-clean:#1f6b3a;
+  --danger-bg:#943734; --danger-line:#7a2c2a; --danger-hover:#b04541;
+  --btn-bg:#222e3e; --btn-hover:#2b3a4e; --btn-hover-line:#55667c;
+  --th-bg:#222e3e; --card-head:#222e3e;
+  --input-bg:#171f2b; --modal-head:#222e3e; --modal-head-line:#3a485b; --modal-foot:#1b2533;
+  --details-head:#222e3e; --details-text:#b1c0d1; --log-bg:#10151d; --chart-grid:#3a485b;
+  --overlay:rgba(0,0,0,.6); --shadow:0 6px 26px rgba(0,0,0,.6); --shadow-login:0 8px 25px rgba(0,0,0,.5);
+  --heat-0:#1a2332; --heat-1:#1a4731; --heat-2:#5c4a00; --heat-3:#8b2020;
+}

@@ -9,271 +9,13 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="/static/plane-control.js"></script>
 <script src="/static/mp-interfaces.js"></script>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-:root{
-  --bg:#0d1117;--surface:#161b22;--card:#1c2333;--card-hover:#222d3f;
-  --border:#30363d;--accent:#2f81f7;--accent-dim:#1a4f9e;
-  --green:#3fb950;--red:#f85149;--orange:#d29922;--yellow:#e3b341;
-  --text:#e6edf3;--text-dim:#8b949e;--text-muted:#484f58;
-  --radius:8px;--sidebar-w:220px;--topnav-h:48px
-}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden}
-a{color:var(--accent);text-decoration:none}
-button{cursor:pointer;font-family:inherit}
-input,select,textarea{font-family:inherit;font-size:13px}
-
-/* ---- Top navigation bar ---- */
-.topnav{display:flex;align-items:center;background:var(--surface);border-bottom:1px solid var(--border);padding:0 16px;height:var(--topnav-h);position:fixed;top:0;left:0;right:0;z-index:100}
-.topnav .brand{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:700;color:var(--text);margin-right:24px;white-space:nowrap}
-.topnav .brand svg{width:28px;height:28px}
-.topnav .main-tabs{display:flex;gap:0;flex:1}
-.topnav .main-tabs button{background:none;border:none;color:var(--text-dim);padding:0 18px;height:var(--topnav-h);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;border-bottom:2px solid transparent;transition:all .15s}
-.topnav .main-tabs button:hover{color:var(--text);background:rgba(255,255,255,.03)}
-.topnav .main-tabs button.active{color:var(--accent);border-bottom-color:var(--accent)}
-.topnav .user-area{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--text-dim);margin-left:auto}
-.topnav .user-area .status-dot{width:7px;height:7px;border-radius:50%;background:var(--green)}
-.commit-indicator{padding:3px 8px;border-radius:10px;font-size:10px;font-weight:600;background:var(--orange);color:#000}
-.commit-indicator.pending{background:var(--orange);color:#000}
-.commit-indicator.clean{background:var(--green);color:#000}
-.diff-table{width:100%;font-size:11px;border-collapse:collapse}
-.diff-table th,.diff-table td{padding:6px 8px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
-.diff-table th{font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px}
-.diff-old{color:var(--red);font-family:monospace;text-decoration:line-through}
-.diff-new{color:var(--green);font-family:monospace}
-.diff-path{color:var(--text-dim);font-family:monospace;font-size:10px}
-.commit-modal-body{max-height:60vh;overflow-y:auto}
-#modal-commit .diff-table{table-layout:fixed}
-#modal-commit .diff-table td{overflow-wrap:anywhere}
-#modal-commit .diff-table th:first-child{width:65px}
-#commit-validation{max-height:20vh;overflow:auto;overflow-wrap:anywhere}
-.btn{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:var(--radius);border:1px solid var(--border);background:var(--card);color:var(--text);font-size:12px;font-weight:500;transition:all .15s;white-space:nowrap}
-.btn:hover{background:var(--card-hover);border-color:var(--text-muted)}
-.btn-primary{background:var(--accent);border-color:var(--accent);color:#fff}
-.btn-primary:hover{background:#4a9eff}
-.btn-danger{background:#da3633;border-color:#da3633;color:#fff}
-.btn-danger:hover{background:#f85149}
-.btn-sm{padding:3px 8px;font-size:11px}
-.btn-xs{padding:2px 6px;font-size:10px}
-
-/* ---- Layout: sidebar + content ---- */
-.app-body{display:flex;padding-top:var(--topnav-h);min-height:100vh}
-.sidebar{width:var(--sidebar-w);min-width:var(--sidebar-w);background:var(--surface);border-right:1px solid var(--border);padding:12px 0;overflow-y:auto;position:fixed;top:var(--topnav-h);bottom:0;left:0;z-index:50}
-.sidebar .sb-item{display:flex;align-items:center;gap:8px;padding:8px 16px;font-size:12px;color:var(--text-dim);cursor:pointer;border-left:3px solid transparent;transition:all .12s}
-.sidebar .sb-item:hover{color:var(--text);background:rgba(255,255,255,.03)}
-.sidebar .sb-item.active{color:var(--accent);border-left-color:var(--accent);background:rgba(47,129,247,.06)}
-.sidebar .sb-section{padding:6px 16px 4px;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin-top:8px}
-.content{margin-left:var(--sidebar-w);flex:1;padding:20px 24px;max-width:1400px}
-
-/* ---- Page header ---- */
-.page{display:none}
-.page.active{display:block}
-.page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px}
-.page-header h2{font-size:18px;font-weight:600}
-.page-header .actions{display:flex;gap:8px}
-
-/* ---- Grid / cards ---- */
-.grid{display:grid;gap:14px}
-.grid-2{grid-template-columns:repeat(2,1fr)}
-.grid-3{grid-template-columns:repeat(3,1fr)}
-.grid-4{grid-template-columns:repeat(4,1fr)}
-.grid-5{grid-template-columns:repeat(5,1fr)}
-.grid-6{grid-template-columns:repeat(6,1fr)}
-.grid-8{grid-template-columns:repeat(8,1fr)}
-@media(max-width:1200px){.grid-4,.grid-5,.grid-6,.grid-8{grid-template-columns:repeat(2,1fr)}}
-@media(max-width:768px){.grid-2,.grid-3,.grid-4,.grid-5,.grid-6,.grid-8{grid-template-columns:1fr}}
-
-.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;transition:border-color .15s}
-.card:hover{border-color:var(--text-muted)}
-.card h3{font-size:11px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px}
-.card .big-num{font-size:28px;font-weight:700;line-height:1}
-.card .sub{font-size:11px;color:var(--text-dim);margin-top:4px}
-.section{margin-bottom:18px}
-.section-title{font-size:13px;font-weight:600;margin-bottom:10px;color:var(--text-dim)}
-
-/* ---- Port gauge cards ---- */
-.port-card{position:relative}
-.port-card .link-dot{position:absolute;top:16px;right:16px;width:10px;height:10px;border-radius:50%}
-.port-card .link-dot.up{background:var(--green);box-shadow:0 0 6px var(--green)}
-.port-card .link-dot.down{background:var(--red);box-shadow:0 0 6px var(--red)}
-.gauge-ring{width:80px;height:80px;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 8px}
-.gauge-ring .gauge-val{font-size:16px;font-weight:700}
-.gauge-bar{height:5px;background:var(--border);border-radius:3px;margin-top:6px;overflow:hidden}
-.gauge-bar .fill{height:100%;border-radius:3px;transition:width .5s}
-.gauge-bar .fill.rx{background:var(--accent)}
-.gauge-bar .fill.tx{background:var(--green)}
-.tp-row{display:flex;gap:12px;margin-top:6px;font-size:11px}
-.tp-row span{color:var(--text-dim)}
-
-/* ---- Tables ---- */
-.table-wrap{overflow-x:auto}
-table{width:100%;border-collapse:collapse;font-size:12px}
-thead th{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);color:var(--text-dim);font-weight:600;text-transform:uppercase;font-size:10px;letter-spacing:.5px;white-space:nowrap;position:sticky;top:0;background:var(--card)}
-tbody td{padding:7px 10px;border-bottom:1px solid var(--border);white-space:nowrap}
-tbody tr:hover{background:var(--card-hover)}
-tbody tr.dragging{opacity:.4}
-
-/* ---- Badges ---- */
-.badge{display:inline-block;padding:2px 7px;border-radius:10px;font-size:10px;font-weight:600;text-transform:uppercase}
-.badge-permit,.badge-allow{background:#1a472a;color:var(--green)}
-.badge-deny,.badge-drop,.badge-block{background:#4a1a1a;color:var(--red)}
-.badge-reset{background:#4a2a1a;color:var(--orange)}
-.badge-log{background:#3d2e00;color:var(--yellow)}
-.badge-up{background:#1a472a;color:var(--green)}
-.badge-down{background:#4a1a1a;color:var(--red)}
-.badge-info{background:#0c2d6b;color:var(--accent)}
-.badge-warning{background:#3d2e00;color:var(--orange)}
-.badge-error{background:#4a1a1a;color:var(--red)}
-.badge-critical{background:#6e1a1a;color:#ff6b6b}
-.badge-medium{background:#3d2e00;color:var(--orange)}
-.badge-low{background:#0c2d6b;color:var(--accent)}
-.badge-high{background:#4a1a1a;color:var(--red)}
-.badge-benign{background:#1a472a;color:var(--green)}
-.badge-suspicious{background:#3d2e00;color:var(--orange)}
-.badge-malicious{background:#6e1a1a;color:#ff6b6b}
-
-/* ---- Setup inner tabs ---- */
-.setup-tabs{display:flex;border-bottom:1px solid var(--border);margin-bottom:16px;gap:0;flex-wrap:wrap}
-.setup-tabs button{background:none;border:none;color:var(--text-dim);padding:8px 14px;font-size:11px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;transition:all .12s;white-space:nowrap}
-.setup-tabs button:hover{color:var(--text);background:rgba(255,255,255,.02)}
-.setup-tabs button.active{color:var(--accent);border-bottom-color:var(--accent)}
-.setup-panel{display:none}
-.setup-panel.active{display:block}
-
-/* ---- Engine grid ---- */
-.engine-card{padding:12px;cursor:pointer;position:relative;min-height:100px}
-.engine-card .e-name{font-size:11px;font-weight:600;margin-bottom:6px;word-break:break-all}
-.engine-card .e-stats{font-size:10px;color:var(--text-dim);line-height:1.6}
-.engine-card .e-toggle{position:absolute;top:10px;right:10px}
-.toggle{width:32px;height:18px;border-radius:9px;border:none;cursor:pointer;position:relative;transition:background .2s}
-.toggle.on{background:var(--green)}
-.toggle.off{background:var(--text-muted)}
-.toggle::after{content:'';position:absolute;width:14px;height:14px;border-radius:50%;background:#fff;top:2px;transition:left .2s}
-.toggle.on::after{left:16px}
-.toggle.off::after{left:2px}
-
-/* ---- DDoS heatmap ---- */
-.heatmap{display:grid;grid-template-columns:repeat(32,1fr);gap:1px}
-.heatmap .zone{aspect-ratio:1;border-radius:2px;transition:background .3s}
-.heatmap .zone.z-clear{background:#1a2332}
-.heatmap .zone.z-low{background:#1a4731}
-.heatmap .zone.z-medium{background:#5c4a00}
-.heatmap .zone.z-high{background:#8b2020}
-
-/* ---- Charts ---- */
-.chart-container{position:relative;height:260px}
-.chart-sm{height:200px}
-
-/* ---- Modal ---- */
-.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;align-items:center;justify-content:center}
-.modal-overlay.show{display:flex}
-.modal{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px;width:520px;max-width:92vw;max-height:88vh;overflow-y:auto}
-.modal h3{font-size:15px;font-weight:600;margin-bottom:14px}
-.form-group{margin-bottom:12px}
-.form-group label{display:block;font-size:11px;font-weight:600;color:var(--text-dim);margin-bottom:3px;text-transform:uppercase;letter-spacing:.3px}
-.form-group input,.form-group select,.form-group textarea{width:100%;padding:7px 10px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);outline:none}
-.form-group input:focus,.form-group select:focus,.form-group textarea:focus{border-color:var(--accent)}
-.form-row{display:flex;gap:12px}
-.form-row .form-group{flex:1}
-.form-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
-
-/* ---- Log stream ---- */
-.log-stream{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:10px;height:480px;overflow-y:auto;font-family:'Cascadia Code','Fira Code','Consolas',monospace;font-size:11px;line-height:1.7}
-.log-entry{padding:1px 0;border-bottom:1px solid #1a1f2b}
-.log-entry .ts{color:var(--text-muted)}
-.log-entry .sev{font-weight:600;min-width:56px;display:inline-block}
-.log-entry .sev-INFO{color:var(--accent)}
-.log-entry .sev-WARNING{color:var(--orange)}
-.log-entry .sev-ERROR{color:var(--red)}
-.log-entry .sev-CRITICAL{color:#ff6b6b}
-
-/* ---- Filters bar ---- */
-.filters-bar{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
-.filters-bar input,.filters-bar select{padding:5px 9px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:11px}
-.filters-bar input{min-width:160px}
-
-/* ---- Resource bars ---- */
-.res-bar{margin-bottom:8px}
-.res-bar .res-label{display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px}
-.res-bar .res-label span:last-child{color:var(--text-dim)}
-.res-bar .bar-track{height:6px;background:var(--border);border-radius:3px;overflow:hidden}
-.res-bar .bar-fill{height:100%;border-radius:3px;transition:width .5s}
-
-/* ---- Login screen ---- */
-.login-screen{display:flex;align-items:center;justify-content:center;min-height:100vh;background:var(--bg)}
-.login-box{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:36px;width:360px;text-align:center}
-.login-box .pwchange{margin-top:14px;text-align:left}
-.login-box .pwchange .sub{margin-bottom:12px;line-height:1.45}
-.login-box .mark{display:block;width:64px;height:64px;margin:0 auto 12px}
-.login-box h2{font-size:22px;margin-bottom:6px}
-.login-box .sub{color:var(--text-dim);font-size:12px;margin-bottom:20px}
-.login-box .form-group{text-align:left}
-.login-box .error{color:var(--red);font-size:11px;margin-top:6px}
-.login-box .btn{width:100%;justify-content:center;margin-top:6px}
-
-/* ---- Scrollbar ---- */
-::-webkit-scrollbar{width:7px;height:7px}
-::-webkit-scrollbar-track{background:var(--bg)}
-::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
-::-webkit-scrollbar-thumb:hover{background:var(--text-muted)}
-
-/* ---- Util ---- */
-.mono{font-family:'Cascadia Code','Fira Code','Consolas',monospace;font-size:11px}
-.text-dim{color:var(--text-dim)}
-.text-muted{color:var(--text-muted)}
-.text-green{color:var(--green)}
-.text-red{color:var(--red)}
-.text-orange{color:var(--orange)}
-.text-accent{color:var(--accent)}
-.mt-8{margin-top:8px}
-.mt-16{margin-top:16px}
-.mb-8{margin-bottom:8px}
-.mb-16{margin-bottom:16px}
-.flex{display:flex}
-.flex-between{display:flex;justify-content:space-between;align-items:center}
-.gap-8{gap:8px}
-.gap-16{gap:16px}
-.w-full{width:100%}
-.hidden{display:none!important}
-/* Navigation is keyboard accessible; groups reduce long configuration menus. */
-#sidebar .sb-item {display:block;width:100%;text-align:left;background:transparent;border:0;color:var(--text);font:inherit;cursor:pointer}
-#sidebar .sb-item.active {background:var(--card-hover);color:var(--accent)}
-.nav-search {padding:10px;position:sticky;top:0;background:var(--surface);z-index:1}
-.nav-search input {width:100%;min-width:0}
-.nav-group summary {cursor:pointer;list-style-position:inside}
-button:focus-visible, summary:focus-visible {outline:2px solid var(--accent);outline-offset:-2px}
-.workflow-actions {display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
-.nav-search input,.workflow-actions input,.workflow-actions select {padding:7px 10px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px}
-.content,.grid > * {min-width:0}
-.content > .card {margin-bottom:14px}
-.content > p {margin-bottom:14px}
-.nav-group summary {color:var(--text-dim)}
-@media (max-width:1100px) {
-  :root {--topnav-h:96px;--sidebar-w:190px}
-  .topnav {flex-wrap:wrap;align-content:center;gap:4px}
-  .topnav .brand {margin-right:8px}
-  .topnav .main-tabs {order:3;flex:0 0 100%;overflow-x:auto}
-  .topnav .main-tabs button {height:40px;padding:0 14px}
-  .content {padding:16px}
-  .grid-3,.grid-4,.grid-5,.grid-6,.grid-8 {grid-template-columns:repeat(2,minmax(0,1fr))}
-}
-@media (max-width:650px) {
-  :root {--sidebar-w:150px}
-  .topnav {padding:0 8px}
-  .topnav .brand {font-size:12px}
-  .topnav .user-area {gap:4px}
-  .topnav .user-area .btn {padding:4px 6px}
-  .grid-2,.grid-3,.grid-4,.grid-5,.grid-6,.grid-8 {grid-template-columns:minmax(0,1fr)}
-  .workflow-actions input {width:100%}
-}
-</style>
-<link rel="stylesheet" href="/static/console-shell.css">
+<link rel="stylesheet" href="/static/tokens.css">
+<link rel="stylesheet" href="/static/console.css">
 <link rel="stylesheet" href="/static/modal-layers.css">
 <script src="/static/config-objects.js"></script>
 <link rel="stylesheet" href="/static/config-objects.css">
 <script src="/static/config-policies.js"></script>
 <script src="/static/policy-profiles.js"></script>
-<link rel="stylesheet" href="/static/theme.css">
 </head>
 <body>
 
@@ -1304,17 +1046,17 @@ async function viewHistoryDiff(version) {
     + `<span style="color:var(--red)">-${diff.removed.length}</span>)</p>`;
   html += '<table class="diff-table"><thead><tr><th>Type</th><th>Path</th><th>Value</th></tr></thead><tbody>';
   diff.modified.forEach(m=>{
-    html += `<tr><td><span class="badge" style="background:var(--orange);color:#000">MOD</span></td>
+    html += `<tr><td><span class="badge" style="background:var(--warn-soft);color:var(--warn-ink)">MOD</span></td>
       <td class="diff-path">${m.path}</td>
       <td><span class="diff-old">${m.old||'(empty)'}</span> → <span class="diff-new">${m.new||'(empty)'}</span></td></tr>`;
   });
   diff.added.forEach(a=>{
-    html += `<tr><td><span class="badge" style="background:var(--green);color:#000">ADD</span></td>
+    html += `<tr><td><span class="badge" style="background:var(--ok-soft);color:var(--ok-ink)">ADD</span></td>
       <td class="diff-path">${a.path}</td>
       <td><span class="diff-new">${a.new||'(empty)'}</span></td></tr>`;
   });
   diff.removed.forEach(r=>{
-    html += `<tr><td><span class="badge" style="background:var(--red);color:#fff">DEL</span></td>
+    html += `<tr><td><span class="badge" style="background:var(--err-soft);color:var(--err-ink)">DEL</span></td>
       <td class="diff-path">${r.path}</td>
       <td><span class="diff-old">${r.old||'(empty)'}</span></td></tr>`;
   });
@@ -2120,10 +1862,10 @@ function renderDashDDoS(c) {
     <div class="card">
       <div class="heatmap" id="ddos-heatmap"></div>
       <div style="display:flex;gap:14px;margin-top:6px;font-size:10px;color:var(--text-dim)">
-        <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#1a2332;vertical-align:middle"></span> Clear</span>
-        <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#1a4731;vertical-align:middle"></span> Low</span>
-        <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#5c4a00;vertical-align:middle"></span> Medium</span>
-        <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#8b2020;vertical-align:middle"></span> High</span>
+        <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:var(--heat-0);vertical-align:middle"></span> Clear</span>
+        <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:var(--heat-1);vertical-align:middle"></span> Low</span>
+        <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:var(--heat-2);vertical-align:middle"></span> Medium</span>
+        <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:var(--heat-3);vertical-align:middle"></span> High</span>
       </div>
       <p id="ddos-fpga-note" class="text-dim" style="font-size:11px;margin-top:8px"></p>
     </div>`;
@@ -2247,7 +1989,7 @@ async function loadUpdates(){
       <button class="btn btn-sm" onclick="updCheck()">Check for updates</button>
     </div>
     <div style="font-size:11px;margin-top:8px" class="text-dim">
-      Verification: ${d.key_present?('<span class="badge badge-up">'+_escSP(d.key_type||'present')+'</span>'+(d.ed25519?'':' <span class="badge" style="background:var(--orange);color:#000" title="A shared secret must ship in every image, so anyone with an image could forge updates. Use ed25519 for distributed images.">shared secret</span>')):'<span class="badge badge-down">no key &mdash; all updates will be refused</span>'}
+      Verification: ${d.key_present?('<span class="badge badge-up">'+_escSP(d.key_type||'present')+'</span>'+(d.ed25519?'':' <span class="badge" style="background:var(--warn-soft);color:var(--warn-ink)" title="A shared secret must ship in every image, so anyone with an image could forge updates. Use ed25519 for distributed images.">shared secret</span>')):'<span class="badge badge-down">no key &mdash; all updates will be refused</span>'}
       &nbsp;&middot;&nbsp; Running root: <span class="mono">${_escSP(d.running_root||'unknown')}</span>
       &nbsp;&middot;&nbsp; Updater: ${d.updater?'installed':'<span class="badge badge-down">missing</span>'}
     </div></div>
@@ -2314,7 +2056,7 @@ async function loadVendorFW(){
         const up = r.carrier==='1';
         return '<div style="font-size:11px;line-height:1.8"><span class="mono">'+_escSP(r.iface||'(absent)')
           + '</span> &mdash; '+_escSP(ROLE_LABEL[k]||k)
-          + ' <span class="badge" style="font-size:8px;background:'+(up?'var(--green)':'var(--text-muted)')+';color:#000">'
+          + ' <span class="badge" style="font-size:8px;background:'+(up?'var(--ok)':'var(--text-muted)')+';color:var(--surface)">'
           + (up?'link up':'link down')+'</span>'
           + '<span class="text-dim mono" style="font-size:9px"> '+_escSP(r.pci)+'</span></div>';
       }).join('') + '</div>') : '';
@@ -3037,7 +2779,7 @@ function renderSessionTable(data) {
   tbody.innerHTML = data.map((s,i)=>{
     const vt = _sessVsys(s);
     return `<tr>
-    <td>${vt!=null?`<span class="badge" style="background:var(--accent-dim);color:#fff;font-family:monospace">${vt}</span>`:'<span class="text-dim">--</span>'}</td>
+    <td>${vt!=null?`<span class="badge" style="background:var(--accent-dim);color:var(--on-accent);font-family:var(--font-mono)">${vt}</span>`:'<span class="text-dim">--</span>'}</td>
     <td>${s.proto||'-'}</td>
     <td class="mono">${s.local||'-'}</td>
     <td class="mono">${s.remote||'-'}</td>
@@ -3596,7 +3338,7 @@ async function runScan() {
   const r = await api('/api/detection/scan', {method:'POST', body:JSON.stringify(body)});
   if (msg) msg.textContent='';
   if (!out) return;
-  if (!r) { out.innerHTML='<span style="color:var(--danger,#e55)">scan failed</span>'; return; }
+  if (!r) { out.innerHTML='<span style="color:var(--err)">scan failed</span>'; return; }
   const il = r.inline||{}, am = r.antimalware||{};
   const pill = v => { const bad=/malware|drop|reset|block|phish|grayware/i.test(v||''); return `<span class="badge ${bad?'badge-block':'badge-allow'}">${_escSP(v||'clean')}</span>`; };
   out.innerHTML = `
@@ -4066,7 +3808,7 @@ function _linkStateDot(state) {
     return '<span title="up" style="display:inline-block;width:16px;height:10px;background:var(--green);border-radius:2px"></span>';
   if (state === false)
     return '<span title="down" style="display:inline-block;width:16px;height:10px;background:var(--red);border-radius:2px"></span>';
-  return '<span title="unknown" style="display:inline-block;width:16px;height:10px;background:#30363d;border-radius:2px"></span>';
+  return '<span title="unknown" style="display:inline-block;width:16px;height:10px;background:var(--border);border-radius:2px"></span>';
 }
 
 /* The second line under an interface name. On a switch-ASIC chassis an
@@ -4104,7 +3846,7 @@ function _ifaceRowHTML(r, isSub) {
             : `<strong class="mono" style="color:var(--accent);cursor:pointer" onclick="openIfaceModal('${r.name}')">${r.name}</strong>`}
          ${_ifaceSubtitle(r)}
        </td>`;
-  const typeBadge = r.type ? `<span class="badge" style="background:#1a4f9e;color:#fff;font-size:10px">${r.type}</span>` : '';
+  const typeBadge = r.type ? `<span class="badge" style="background:var(--accent-dim);color:var(--on-accent);font-size:10px">${r.type}</span>` : '';
   const ipCell = (r.ip_address && r.ip_address.length)
     ? r.ip_address.map(ip=>`<div class="mono" style="font-size:10px">${ip}</div>`).join('')
     : '<span class="text-dim">none</span>';
@@ -4116,7 +3858,7 @@ function _ifaceRowHTML(r, isSub) {
   const sdwan = r.sdwan_interface_profile || '<span class="text-dim">none</span>';
   const unat = r.upstream_nat ? '<span class="badge badge-up">Enabled</span>' : '<span class="text-dim">Disabled</span>';
   const feats = (r.features && r.features.length)
-    ? r.features.map(f=>`<span class="badge" style="background:#243447;color:#fff;font-size:9px;margin-right:2px">${f}</span>`).join('')
+    ? r.features.map(f=>`<span class="badge" style="background:var(--panel);color:var(--text);font-size:9px;margin-right:2px">${f}</span>`).join('')
     : '';
   // A faceplate port the chassis does not let you use as a data interface --
   // hsci, the cluster interconnect -- is shown but not offered for editing.
@@ -4203,7 +3945,7 @@ function _renderConfiguredAE() {
         const missing = live.members_missing_from_bond||[];
         const extra = live.members_extra_in_bond||[];
         if (missing.length || extra.length) {
-          statusBadge = '<span class="badge" style="background:var(--orange);color:#000">DRIFT</span>';
+          statusBadge = '<span class="badge" style="background:var(--warn-soft);color:var(--warn-ink)">DRIFT</span>';
           statusDetail = (missing.length?`Missing slaves: ${missing.join(', ')}. `:'')
                         + (extra.length?`Extra slaves: ${extra.join(', ')}.`:'');
         } else {
@@ -4231,7 +3973,7 @@ function _renderConfiguredAE() {
     return `<tr>
       <td><strong>${ae.name}</strong></td>
       <td class="mono" style="font-size:11px">${bondName}${hardware||live&&live.kernel_exists?'':' <span class="text-red" style="font-size:9px">(not created)</span>'}</td>
-      <td><span class="badge" style="background:#1a4f9e;color:#fff">${ae.mode}</span></td>
+      <td><span class="badge" style="background:var(--accent-dim);color:var(--on-accent)">${ae.mode}</span></td>
       <td class="mono" style="font-size:10px;white-space:normal;min-width:170px">${cfgMemStr}</td>
       <td class="mono" style="font-size:10px;white-space:normal;min-width:230px">${liveMemStr}</td>
       <td class="mono">${(ae.ip_addresses||[]).join(', ')||'--'}</td>
@@ -4890,7 +4632,7 @@ function openVrRouting(name) {
   document.getElementById('info-modal-body').innerHTML = `
     <input type="hidden" id="vrr-name" value="${_escSP(name)}">
     <div style="display:flex;min-height:370px">
-      <div style="width:172px;flex:none;border-right:1px solid var(--border,#333);padding-right:6px">
+      <div style="width:172px;flex:none;border-right:1px solid var(--border);padding-right:6px">
         ${_vrrNav('general','Router Settings',true)}
         ${_vrrNav('static','Static Routes')}
         ${_vrrNav('redist','Redistribution Profile')}
@@ -4902,7 +4644,7 @@ function openVrRouting(name) {
       </div>
       <div style="flex:1;padding-left:16px;max-height:56vh;overflow:auto">
         <div class="vrr-pane" id="vrr-p-general">
-          <div style="display:flex;gap:2px;border-bottom:1px solid var(--border,#333);margin-bottom:10px">
+          <div style="display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:10px">
             <div id="vrr-sub-general" onclick="vrrSubTab('general')" style="padding:5px 14px;cursor:pointer;font-size:12px;border-bottom:2px solid var(--accent);font-weight:600">General</div>
             <div id="vrr-sub-ecmp" onclick="vrrSubTab('ecmp')" style="padding:5px 14px;cursor:pointer;font-size:12px;border-bottom:2px solid transparent">ECMP</div>
           </div>
@@ -4965,7 +4707,7 @@ function openVrRouting(name) {
         </div>
       </div>
     </div>
-    <div style="display:flex;gap:8px;margin-top:12px;border-top:1px solid var(--border,#333);padding-top:10px">
+    <div style="display:flex;gap:8px;margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
       <button class="btn btn-primary btn-sm" id="vrr-save" disabled onclick="saveVrRouting()">OK</button>
       <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
       <span id="vrr-msg" style="font-size:11px;align-self:center"></span></div>`;
@@ -5045,10 +4787,10 @@ function vrCardHtml(vr) {
   const up = (vr.admin_up === false)
     ? '<span class="badge badge-down">admin down</span>'
     : '<span class="badge badge-up">admin up</span>';
-  const vsys = vr.vsys ? `<span class="badge" style="background:var(--accent-dim);color:#fff;font-size:10px">vsys ${_escSP(vr.vsys)}</span>` : '';
+  const vsys = vr.vsys ? `<span class="badge" style="background:var(--accent-dim);color:var(--on-accent);font-size:10px">vsys ${_escSP(vr.vsys)}</span>` : '';
   const proto = (vr.protocol || 'static');
-  const protoColor = proto === 'bgp' ? 'var(--accent)' : (proto === 'ospf' ? '#a371f7' : 'var(--text-muted)');
-  const protoBadge = `<span class="badge" style="font-size:10px;background:${protoColor};color:#000">${_escSP(proto.toUpperCase())}</span>`;
+  const protoColor = proto === 'bgp' ? 'var(--accent)' : (proto === 'ospf' ? 'var(--ospf)' : 'var(--text-muted)');
+  const protoBadge = `<span class="badge" style="font-size:10px;background:${protoColor};color:var(--on-accent)">${_escSP(proto.toUpperCase())}</span>`;
   const rid = vr.router_id ? `<span class="text-dim" style="font-size:11px">rid ${_escSP(vr.router_id)}</span>` : '';
   const asn = (vr.asn != null && vr.asn !== '') ? `<span class="text-dim" style="font-size:11px">AS ${_escSP(vr.asn)}</span>` : '';
   return `<div class="card" style="margin-bottom:14px" id="vr-card-${name}">
@@ -6257,7 +5999,7 @@ function renderZTWireguard(c) {
     <div class="section"><div class="section-title">Configured Peers</div>
     ${netPageHTML(_CTX_WG_PEER).replace(/page-header[\s\S]*?<\/div>/, '')}</div>
     <div class="section"><div class="section-title">Live State (wg show)</div>
-    <div class="card"><pre id="wg-live" class="mono" style="font-size:11px;max-height:400px;overflow:auto;padding:10px;background:#0d1117">Loading...</pre></div></div>`;
+    <div class="card"><pre id="wg-live" class="mono" style="font-size:11px;max-height:400px;overflow:auto;padding:10px;background:var(--log-bg);color:var(--text)">Loading...</pre></div></div>`;
   netRenderList(_CTX_WG_IFACE);
   netRenderList(_CTX_WG_PEER);
   loadWireguardLive();
@@ -6955,9 +6697,9 @@ async function loadSsh() {
     </div>
   </div>
   <div class="card"><div class="section-title">CLI Access</div>
-    <div style="background:#000;border-radius:4px;padding:12px;font-family:monospace;font-size:12px;color:#0f0">
+    <div style="background:var(--log-bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px;font-family:var(--font-mono);font-size:12px;color:var(--ok)">
       <div>$ ssh ${_escSP(cli.gateway_user || 'admin')}@${location.hostname}</div>
-      <div class="text-dim" style="color:#6a6">${_escSP(cli.note || '')}</div>
+      <div class="text-dim" style="color:var(--ok)">${_escSP(cli.note || '')}</div>
     </div></div>`;
 }
 
@@ -7057,7 +6799,7 @@ function renderDeviceFPGA(c) {
           <p class="text-dim" style="font-size:10px;margin-top:6px">Restarts the live DPDK unit (ffn-dpdk-fwd) — hugepages + isolcpus binding preserved. This is the primary host fast path.</p>
         </div>`}
         <div style="border:1px solid var(--border);border-radius:var(--radius);padding:16px">
-          <h3 style="margin-bottom:8px">${hasCard ? 'FPGA Dataplane <span class="badge" style="font-size:9px;background:var(--text-muted);color:#000">optional offload</span>' : 'Forwarding Complex'}</h3>
+          <h3 style="margin-bottom:8px">${hasCard ? 'FPGA Dataplane <span class="badge" style="font-size:9px;background:var(--text-muted);color:var(--surface)">optional offload</span>' : 'Forwarding Complex'}</h3>
           <div id="dp-fpga-status" style="font-size:12px;line-height:2;margin-bottom:10px">Loading...</div>
           ${!hasCard ? `<p class="text-dim" style="font-size:10px;margin-top:6px">${hasPlatformControls ? 'Processor restart controls above report availability and acknowledgment through the management control daemon.' : 'This chassis forwards on its own silicon. Restart controls require a supported hardware module.'}</p>` : `<div style="display:flex;gap:8px">
             <button class="btn btn-sm btn-danger" onclick="restartDataplane('fpga')">Restart FPGA (PCIe Reset)</button>
@@ -7074,7 +6816,7 @@ function renderDeviceFPGA(c) {
           <button class="btn btn-sm btn-danger" onclick="if(confirm('Restart ALL dataplanes? Traffic will be interrupted.'))restartDataplane('all')">Restart All Dataplanes</button>
         </div>`}
       </div>
-      <div id="dp-restart-log" style="background:#0d1117;border:1px solid var(--border);border-radius:4px;padding:10px;margin-top:12px;font-family:monospace;font-size:11px;color:var(--green);max-height:150px;overflow-y:auto;display:none"></div>
+      <div id="dp-restart-log" style="background:var(--log-bg);border:1px solid var(--border);border-radius:var(--radius);padding:10px;margin-top:12px;font-family:monospace;font-size:11px;color:var(--green);max-height:150px;overflow-y:auto;display:none"></div>
     </div></div>
     ${!hasPlanes ? '' : `<div class="section"><div class="section-title">CPU Processing Planes</div>
       <div id="cpu-planes-card" class="card">Loading&hellip;</div>
@@ -7147,7 +6889,7 @@ async function loadFpgaEmulator() {
     const mode = s.mode || 'emulated';
     return `<tr>
       <td class="mono">${_escSP(nm)}</td>
-      <td><span class="badge" style="background:#a371f7;color:#fff;font-size:9px">${_escSP(mode)}</span></td>
+      <td><span class="badge" style="background:var(--ospf);color:var(--on-accent);font-size:9px">${_escSP(mode)}</span></td>
       <td>${s.enabled===false?'<span class="text-dim">off</span>':'<span class="text-green">on</span>'}</td>
       <td>${fmt(s.packets)}</td><td>${fmt(s.matches)}</td><td>${fmt(s.drops)}</td>
       <td class="mono text-dim" style="font-size:10px">${_escSP(path||'--')}</td>
@@ -7259,7 +7001,7 @@ async function loadCpuPlanes() {
       <div class="text-dim" style="font-size:11px;margin-top:4px">${description}</div></div>`;
   }).join('');
   const caps = d.capabilities||{};
-  const warns = (d.warnings||[]).map(w=>`<div style="color:var(--amber,#e0a030);font-size:11px">⚠ ${_escSP(w)}</div>`).join('');
+  const warns = (d.warnings||[]).map(w=>`<div style="color:var(--warn);font-size:11px">⚠ ${_escSP(w)}</div>`).join('');
   box.innerHTML = `
     ${hardwareRoleSummary(d.cpu_role || 'unknown', d.role_reason, d.isolated, d.ncpu)}
     <div class="text-dim" style="font-size:11px;margin-bottom:8px">
@@ -7629,7 +7371,7 @@ function renderDeviceTroubleshooting(c) {
         </select></div>
         <div class="form-group"><label>Target</label><input type="text" id="diag-target" placeholder="8.8.8.8 or hostname"></div>
         <button class="btn btn-primary btn-sm" onclick="runDiagnostic()">Run</button>
-        <pre id="diag-output" style="background:#0d1117;border:1px solid var(--border);border-radius:4px;padding:10px;margin-top:10px;font-size:11px;color:var(--green);max-height:300px;overflow-y:auto;white-space:pre-wrap">Ready...</pre>
+        <pre id="diag-output" style="background:var(--log-bg);border:1px solid var(--border);border-radius:var(--radius);padding:10px;margin-top:10px;font-size:11px;color:var(--green);max-height:300px;overflow-y:auto;white-space:pre-wrap">Ready...</pre>
       </div>
       <div class="card">
         <h3>System Diagnostics</h3>
@@ -7640,7 +7382,7 @@ function renderDeviceTroubleshooting(c) {
           <button class="btn btn-sm" onclick="runDiagAction('pcap')">Start Packet Capture</button>
           <button class="btn btn-sm btn-danger" onclick="if(confirm('Reboot the entire system?'))runDiagAction('reboot')">Reboot System</button>
         </div>
-        <pre id="diag-action-output" style="background:#0d1117;border:1px solid var(--border);border-radius:4px;padding:10px;margin-top:10px;font-size:11px;color:var(--text-dim);max-height:200px;overflow-y:auto">No actions run</pre>
+        <pre id="diag-action-output" style="background:var(--log-bg);border:1px solid var(--border);border-radius:var(--radius);padding:10px;margin-top:10px;font-size:11px;color:var(--text-dim);max-height:200px;overflow-y:auto">No actions run</pre>
       </div>
     </div>`;
 }
@@ -7794,7 +7536,7 @@ async function loadLicenses() {
       return `<tr>
         <td class="mono">${_escSP(f.feature_id_hex || idHex || '--')}</td>
         <td>${_escSP(f.name || '--')}</td>
-        <td><span class="badge" style="font-size:9px;background:${isAccel?'var(--accent-dim)':'var(--card-hover)'};color:#fff">${bound}</span></td>
+        <td><span class="badge" style="font-size:9px;background:${isAccel?'var(--accent-dim)':'var(--card-hover)'};color:${isAccel?'var(--on-accent)':'var(--text)'}">${bound}</span></td>
         <td>${f.licensed ? '<span class="badge badge-up">Active</span>' : '<span class="badge badge-info">Inactive</span>'}</td>
       </tr>`;
     }).join('') : '<tr><td colspan="4" class="text-dim">No features reported</td></tr>';
@@ -7968,7 +7710,7 @@ async function loadVirtualSystems() {
   }
   tbody.innerHTML = entries.map(v=>`<tr>
     <td><strong>${v.name}</strong></td>
-    <td><span class="badge" style="background:var(--accent-dim);color:#fff;font-family:monospace">${v.vsys_id!=null?v.vsys_id:'--'}</span></td>
+    <td><span class="badge" style="background:var(--accent-dim);color:var(--on-accent);font-family:var(--font-mono)">${v.vsys_id!=null?v.vsys_id:'--'}</span></td>
     <td>${v.display_name||'--'}</td>
     <td class="text-dim" style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${v.description||''}</td>
     <td class="mono" style="font-size:10px">${(v.import_interfaces||[]).join(', ')||'(none)'}</td>

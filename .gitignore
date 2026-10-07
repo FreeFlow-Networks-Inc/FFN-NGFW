@@ -100,3 +100,5 @@ tmp/
 scratch/
 core
 core.*
+# throwaway databases created by opt/dev_serve_ui.py previews
+opt/_ui_preview_*.db
