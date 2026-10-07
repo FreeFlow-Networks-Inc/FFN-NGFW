@@ -8,6 +8,7 @@ Management INPUT/OUTPUT and platform LACP owners are not changed.
 """
 import argparse
 import contextlib
+import subprocess
 import fcntl
 import hashlib
 import json
@@ -76,6 +77,20 @@ def close_gate():
     if any(x.get('table',{}).get('name')==GATE and x['table']['family']=='inet' for x in data['nftables']):
         nat.nft(['flush','set','inet',GATE,'live'])
     else:nat.nft(['-f','-'],gate())
+
+
+def gate_close_problem():
+    """Close the transit gate; return None, or why it could not be closed now.
+
+    A stalled or failed nft (at dataplane boot the first exec can take longer
+    than its budget on a cold NFS root) is transient: the gate's lease expires
+    on its own and the next tick retries. It must never be journaled as a
+    fault, which no later collector start could recover from."""
+    try:
+        with lock():close_gate()
+    except (subprocess.TimeoutExpired,subprocess.CalledProcessError,OSError,NatError) as error:
+        return 'Policy gate close failed: '+str(error)
+    return None
 
 
 def renew():
@@ -312,7 +327,10 @@ def serve():
             collector_ready=ready,forwarding_revision=revision,error=error,events=collector.status()))
     next_check=0;last_forwarding=None;last_error=None
     try:
-        with lock():close_gate()
+        while running:
+            problem=gate_close_problem()
+            if problem is None:break
+            publish(False,error=problem);time.sleep(2)
         for key in ('nf_conntrack_acct','nf_conntrack_events'):
             nat.run(['sysctl','-qw','net.netfilter.'+key+'=1'])
         collector.start()
@@ -324,9 +342,9 @@ def serve():
             fault=j.fault_reason() or (events.get('error') or 'Session collector is not current'
                 if not events['ready'] or time.monotonic()-events['monotonic']>3 else None)
             if fault:
-                with lock():close_gate()
+                problem=gate_close_problem()
                 last_forwarding=None
-                publish(False,error=fault);continue
+                publish(False,error=problem or fault);continue
             publish(True,last_forwarding,last_error)
             try:
                 with lock():
@@ -345,8 +363,8 @@ def serve():
                         raise NatError(events.get('error') or 'Session collector is not current')
                     renew();last_forwarding=state['revision'];last_error=None;publish(True,last_forwarding)
             except (NatError,OSError,ValueError) as error:
-                with lock():close_gate()
-                last_forwarding=None;last_error=str(error);publish(True,error=last_error)
+                problem=gate_close_problem()
+                last_forwarding=None;last_error=problem or str(error);publish(True,error=last_error)
     except BaseException as error:
         j.fault(str(error));publish(False,error=str(error));raise
     finally:
