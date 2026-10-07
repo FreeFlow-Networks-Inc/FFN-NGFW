@@ -44,7 +44,11 @@ libpam-systemd rsync cloud-guest-utils openssl"
 # mdadm brings up the chassis log RAID (see ffn-logvol.sh). Without it a
 # reclaimed PA-5200's two internal 2TB log drives stay invisible and FFN
 # fills the 24GB system partition instead.
-export PKGS_STORAGE="mdadm"
+# parted (which also supplies partprobe) is what install-to-disk.sh partitions
+# with, and installer media runs that script FROM THIS ROOT. Without it the
+# installer menu offers an install that dies on the first partition -- on a box
+# that has just been booted from the medium specifically to be installed.
+export PKGS_STORAGE="mdadm parted"
 
 # nfs-kernel-server: the OCTEON planes NFS-root from the MP SSD over PCIC,
 # which is what makes the control plane editable in place.
@@ -66,7 +70,19 @@ export PKGS_BOOT="${FFN_KERNEL_META} initramfs-tools grub-pc-bin grub-efi-amd64-
 # NOTE: the dev box uses isolcpus=12-47 hugepages=2048 for a 48-thread Xeon. That is
 # hardware-specific and would break a smaller CPU, so the image ships a conservative
 # default and ffn-hwtune.sh recomputes it on first boot from the actual core count.
-export GRUB_CMDLINE_DEFAULT="intel_iommu=on iommu=pt default_hugepagesz=2M hugepagesz=2M hugepages=512 transparent_hugepage=never"
+# rootfstype and init are not tuning -- without them this image does not boot on
+# the appliance, proven at a 9600 console on a PA-5220:
+#
+#   * /sbin/init is an ABSOLUTE symlink to /lib/systemd/systemd. The initramfs
+#     resolves it against ITSELF, where systemd does not exist, so run-init is
+#     called with an empty argument and the boot ends in "No init found. Try
+#     passing init= bootarg." Naming the real path settles it.
+#   * blkid reports an md mirror member as linux_raid_member and the initramfs
+#     then tries `mount -t linux_raid_member`, which fails ENODEV. rootfstype
+#     tells it what the filesystem actually is.
+#
+# Neither is RAID-specific in principle; the first bites every boot.
+export GRUB_CMDLINE_DEFAULT="rootfstype=ext4 init=/usr/lib/systemd/systemd intel_iommu=on iommu=pt default_hugepagesz=2M hugepagesz=2M hugepages=512 transparent_hugepage=never"
 
 # --- admin gateway (mirrors what we wired on the live box) ---
 export FFN_CLI="/usr/local/bin/ffn-cli"
@@ -84,10 +100,25 @@ export FFN_SERIAL_BAUD="${FFN_SERIAL_BAUD:-115200}"
 # --- console / SSH access -------------------------------------------------
 # The image used to ship with no root password and no authorized_keys, which
 # made local login impossible (admin/admin is the WebUI account, not a Unix
-# one). Set at build time:
+# one). Worse, the build only WARNED about it, so an image would be written to
+# disk, carried to an appliance and booted before anyone discovered there was
+# no way to log in -- on a chassis whose only console is 9600 baud serial.
+#
+# So there is a default now. image/PUBLISH-POLICY permits exactly this and says
+# why: "A default setup credential is allowed BECAUSE a headless appliance needs
+# a first console login." It stays permissible only while it is a SETUP
+# credential -- provision.sh runs `chage -d 0` on root and the admin account, so
+# it must be changed before either account is usable for anything else. A
+# non-expiring shared password would be a standing credential and is not
+# allowed. Do not remove that expiry to make automation easier.
+#
+# The value matches the WebUI's own default so there is one thing to remember,
+# and both are meant to be changed on the first login.
+#
+# Override at build time for anything you intend to keep:
 #     FFN_ROOT_PW='...' FFN_SSH_PUBKEY="$(cat ~/.ssh/id_ed25519.pub)" ./build.sh
-# Leaving FFN_ROOT_PW empty keeps the accounts locked (previous behaviour).
-export FFN_ROOT_PW="${FFN_ROOT_PW:-}"
+# FFN_ROOT_PW= (explicitly empty) restores the old locked-account behaviour.
+export FFN_ROOT_PW="${FFN_ROOT_PW-admin}"
 export FFN_SSH_PUBKEY="${FFN_SSH_PUBKEY:-}"
 
 # --- FFN payload updater ------------------------------------------------------

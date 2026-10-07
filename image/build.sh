@@ -201,7 +201,13 @@ if [ -n "${FFN_PROFILE:-}" ] && [ -f "${FFN_PROFILE}" ]; then
   echo "  model profile staged: ${FFN_MODEL:-?}"
 fi
 mkdir -p "$ROOTFS/payload"; cp -a "$PAYLOAD/." "$ROOTFS/payload/"
-mount -t proc proc "$ROOTFS/proc"; mount -t sysfs sys "$ROOTFS/sys"; mount --rbind /dev "$ROOTFS/dev"
+# --make-rslave is not optional. Without it the rbind is a SHARED mount, so the
+# recursive `umount -l` in the cleanup below propagates back to the host and
+# unmounts the BUILD MACHINE's /dev/pts. The symptom is remote: every later
+# login on the build host fails to allocate a PTY, long after the build that
+# did it has exited, and nothing points at the build. Observed doing exactly
+# that. Slave propagation keeps unmounts inside the chroot.
+mount -t proc proc "$ROOTFS/proc"; mount -t sysfs sys "$ROOTFS/sys"; mount --rbind /dev "$ROOTFS/dev"; mount --make-rslave "$ROOTFS/dev"
 chroot "$ROOTFS" /provision.sh
 safe_umount_tree "$ROOTFS"
 rm -f "$ROOTFS/config.sh" "$ROOTFS/provision.sh" "$ROOTFS/profile.conf" "$ROOTFS/factory-running-config.xml"; rm -rf "$ROOTFS/payload"
@@ -270,11 +276,62 @@ esac
 
 LOOP=$(losetup --find --show --partscan "$RAW")
 [ "$P_ESP" != 0 ] && mkfs.vfat -F 32 -n FFNESP "${LOOP}p${P_ESP}" >/dev/null
-mkfs.ext4 -q -L "$IMG_LABEL_ROOT"     "${LOOP}p${P_ROOT}"
-mkfs.ext4 -q -L "$IMG_LABEL_RECOVERY" "${LOOP}p${P_REC}"
+# The GRUB that has to read this filesystem is the one INSIDE the image, not the
+# one on the build host. e2fsprogs 1.47 turns on orphan_file and
+# metadata_csum_seed by default; orphan_file is an INCOMPAT feature that jammy's
+# GRUB 2.06 refuses, so the in-chroot `grub-install --target=x86_64-efi` fails
+# with "unknown filesystem" and the image gets no EFI bootloader. The BIOS half
+# runs on the host's newer grub and passes, so this shows up as a half-installed
+# hybrid image rather than an obvious build failure.
+#
+# Probed rather than written flat: `-O ^orphan_file` is itself an error on an
+# e2fsprogs that predates the feature, which would break building on jammy.
+EXT4_OFF=""
+_probe=$(mktemp); truncate -s 16M "$_probe"
+for _f in orphan_file metadata_csum_seed; do
+  if mkfs.ext4 -q -F -O "^$_f" "$_probe" >/dev/null 2>&1; then
+    EXT4_OFF="${EXT4_OFF:+$EXT4_OFF,}^$_f"
+  fi
+done
+rm -f "$_probe"
+if [ -n "$EXT4_OFF" ]; then
+  echo "  ext4: disabling $EXT4_OFF (unreadable by the image's own GRUB)"
+  EXT4_OFF="-O $EXT4_OFF"
+fi
+# shellcheck disable=SC2086
+mkfs.ext4 -q $EXT4_OFF -L "$IMG_LABEL_ROOT"     "${LOOP}p${P_ROOT}"
+# shellcheck disable=SC2086
+mkfs.ext4 -q $EXT4_OFF -L "$IMG_LABEL_RECOVERY" "${LOOP}p${P_REC}"
 MNT=$(mktemp -d); MNT2=$(mktemp -d)
 mount "${LOOP}p${P_ROOT}" "$MNT";  tar -C "$ROOTFS"   -cf - . | tar --xattrs -C "$MNT"  -xf -
 mount "${LOOP}p${P_REC}"  "$MNT2"; tar -C "$RECOVERY" -cf - . | tar --xattrs -C "$MNT2" -xf -
+
+# ---- installer media --------------------------------------------------------
+# This image is BOTH a runnable appliance and the medium that installs it.
+# What makes it an installer is /etc/ffn-installer-mode, and that marker is
+# written HERE -- into the image only -- never into $ROOTFS.
+#
+# That distinction is the whole design. Stage 4 already packaged the tarballs
+# from $ROOTFS, so the payload a target disk receives carries no marker and no
+# menu: install from this USB and the installed box boots straight into the
+# firewall. Put the marker in $ROOTFS instead and every appliance you ever
+# install would come up asking which disk to install to.
+#
+# image/README.md has described this medium for some time; nothing built it,
+# so a stick written from the qcow2 booted into an appliance with no way to
+# install itself.
+install -d -m 0755 "$MNT/opt/ffn-installer"
+install -m 0755 "$HERE/ffn-installer.sh" "$HERE/install-to-disk.sh" "$MNT/opt/ffn-installer/"
+cp "$OUT/$VERSION-rootfs.tar.zst" "$OUT/$VERSION-recovery.tar.zst" "$MNT/opt/ffn-installer/"
+echo "$VERSION" > "$MNT/opt/ffn-installer/VERSION"
+install -m 0644 "$HERE/ffn-installer.service" "$MNT/etc/systemd/system/"
+# Linked rather than `systemctl enable`d in a chroot: the unit's own
+# ConditionPathExists is what actually gates it, and this keeps the build from
+# running the target's systemd on the build host.
+install -d -m 0755 "$MNT/etc/systemd/system/multi-user.target.wants"
+ln -sf ../ffn-installer.service "$MNT/etc/systemd/system/multi-user.target.wants/ffn-installer.service"
+printf '%s\n' "$VERSION" > "$MNT/etc/ffn-installer-mode"
+echo "  installer media: marker + /opt/ffn-installer ($(du -sh "$MNT/opt/ffn-installer" | cut -f1))"
 # GRUB on the main partition, with a manual recovery menu entry (root=partition 2)
 KVER=$(ls "$MNT/boot"/vmlinuz-* 2>/dev/null | sed 's#.*/vmlinuz-##' | sort | tail -1)
 cat > "$MNT/etc/grub.d/40_custom" <<EOF
@@ -288,7 +345,7 @@ menuentry 'FFN NGFW Recovery / Maintenance' --class ffn {
 EOF
 chmod +x "$MNT/etc/grub.d/40_custom"
 echo "GRUB_DISABLE_OS_PROBER=true" >> "$MNT/etc/default/grub"
-mount -t proc proc "$MNT/proc"; mount -t sysfs sys "$MNT/sys"; mount --rbind /dev "$MNT/dev"
+mount -t proc proc "$MNT/proc"; mount -t sysfs sys "$MNT/sys"; mount --rbind /dev "$MNT/dev"; mount --make-rslave "$MNT/dev"
 # Install GRUB for every firmware this image may land on. part_gpt and
 # search_label are in the module list because the recovery entry now finds its
 # partition by label rather than by a hardcoded (hd0,msdosN).
@@ -310,7 +367,15 @@ safe_umount_tree "$MNT"; safe_umount_tree "$MNT2"
 rmdir "$MNT" "$MNT2"; MNT=""; MNT2=""
 losetup -d "$LOOP"; LOOP=""
 qemu-img convert -f raw -O qcow2 -c "$RAW" "$OUT/$VERSION.qcow2"
-rm -f "$RAW"
+# Keep the raw as the USB image. The build used to convert to qcow2 and delete
+# it, so writing a stick meant knowing to convert back first -- an easy step to
+# get wrong for the one artifact an operator actually needs at the appliance.
+# It is sparse, so on disk it costs about what the qcow2 does.
+if [ "${IMG_KEEP_RAW:-1}" = 1 ]; then
+  mv "$RAW" "$OUT/$VERSION.img"
+else
+  rm -f "$RAW"
+fi
 
 # ---------------------------------------------------------------- 6. manifest
 stage "6. checksums + manifest"
@@ -320,3 +385,5 @@ ls -la "$OUT"
 echo -e "\n\033[1;32mBUILD COMPLETE: $VERSION\033[0m"
 echo "  bare-metal: $OUT/$VERSION-rootfs.tar.zst + $VERSION-recovery.tar.zst + install-to-disk.sh"
 echo "  vm image  : $OUT/$VERSION.qcow2  (main + recovery partitions)"
+[ -f "$OUT/$VERSION.img" ] && \
+echo "  USB image : $OUT/$VERSION.img    (dd to a stick; boots and offers the installer)"

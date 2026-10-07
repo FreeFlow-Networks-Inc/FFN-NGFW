@@ -55,6 +55,13 @@ installer media, so the menu can never appear on a running appliance even if the
 unit is left enabled in the image. `ffn-installer.sh` refuses to run without it
 as well, because the unit is not the only way to invoke a script.
 
+`build.sh` produces this medium. The marker and `/opt/ffn-installer` are written
+into the IMAGE during assembly, never into `$ROOTFS`, so the tarballs a target
+disk receives carry neither: install from the USB and the installed box boots
+straight into the firewall. That gating is the whole point, and putting the
+marker in the rootfs instead would make every appliance you install come up
+asking which disk to install to.
+
 Installer media carries:
 
     /etc/ffn-installer-mode          the marker
@@ -65,10 +72,17 @@ Installer media carries:
         <ver>-recovery.tar.zst
         VERSION
 
-The menu offers auto/GPT/MBR installs, a `--dry-run` rehearsal, a disk list, a
-shell and reboot/poweroff. It is a plain numbered prompt on `/dev/console`, not a
-TUI, because appliances are installed over a serial console or an IPMI text
-redirect where there is no graphical display to fall back on.
+The menu offers an install, a disk list, a shell and reboot/poweroff. It is a
+plain numbered prompt on `/dev/console`, not a TUI, because appliances are
+installed over a serial console or an IPMI text redirect where there is no
+graphical display to fall back on.
+
+The menu is deliberately thin: `install-to-disk.sh` is interactive and owns the
+decisions. It enumerates candidate disks itself, excludes the medium booted
+from, asks which disks hold the OS (single or RAID 1) and which hold the logs
+(none, one, mirror or stripe), prints what it will destroy and requires the word
+ERASE. Duplicating any of that in the menu would create two places that could
+disagree about which disk is about to be wiped.
 
 **It never picks a disk for you.** An installer that helpfully chooses "the
 biggest disk" and proceeds will eventually eat somebody's data array.

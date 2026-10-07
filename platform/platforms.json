@@ -23,7 +23,7 @@
       "url": "https://github.com/FreeFlow-Networks-Inc/ffn-platform-pa5200.git",
       "status": "supported",
       "hardware": "Palo Alto Networks PA-5200-series appliances",
-      "silicon": "Cavium OCTEON CN73XX (control plane) + CN78XX (data plane), Broadcom BCM88375 switch fabric, FE100 FPGA",
+      "silicon": "Cavium OCTEON CN73XX (control plane) + CN78XX (data plane), Broadcom BCM88375 switch fabric, FE100 front-end ASIC",
       "datapath": "offload",
       "cpu_isolation": "none",
       "notes": "Forwarding runs on the co-processors, so host CPU isolation is not applied."

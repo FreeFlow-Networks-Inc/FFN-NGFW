@@ -6,7 +6,7 @@ import tempfile
 import unittest
 import uuid
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'opt'))
-from ffn_planed import Plane, decode, encode, process
+from ffn_planed import INVENTORY, MAX_TIMEOUT, Plane, decode, encode, process
 
 
 def request(action='apply', payload=None, resource='network'):
@@ -14,10 +14,15 @@ def request(action='apply', payload=None, resource='network'):
             'payload':{'revision':0,'ports':{'p1':{'mode':'l3','addresses':['192.0.2.1/24']}}} if payload is None else payload}
 
 
+def describe():
+    return {'v':1,'id':str(uuid.uuid4()),'resource':INVENTORY,'action':'inventory','payload':{}}
+
+
 class Backend:
-    def __init__(self): self.revision=0; self.applies=0; self.fail=False
+    def __init__(self): self.revision=0; self.applies=0; self.fail=False; self.budgets=[]
     async def __call__(self, argv, raw, timeout):
         data=decode(raw); action=argv[-1]
+        self.budgets.append((action,timeout))
         if action=='status': return {'config':{'revision':self.revision}}
         if data['revision']!=self.revision: raise ValueError('revision conflict')
         if action=='validate': return {'validated':True}
@@ -133,6 +138,71 @@ class PlaneTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await cp.dispatch(request('status',{},'nif')))['trace'],['cp'])
         mp=await self.relay('mp',self.dp)
         self.assertEqual((await mp.dispatch(request()))['trace'],['mp','dp'])
+
+    async def test_node_describes_resources_budgets_and_recovery(self):
+        """The vocabulary comes from the node, so a platform needs no core change."""
+        config={'role':'dp','commands':{'network':{a:[sys.executable,a] for a in ('status','validate','apply','lookup')},
+                                        'bcm':{'status':[sys.executable,'status']}},
+                'timeouts':{'default':{'status':25},'network':{'apply':110}}}
+        plane=Plane(config,Path(self.temp.name)/'describe.db',self.backend)
+        self.planes.append(plane)
+        answer=await plane.dispatch(describe())
+        self.assertEqual(answer['state'],'observed')
+        described=answer['result']
+        self.assertEqual((described['role'],described['relays']),('dp',False))
+        network=described['resources']['network']
+        self.assertEqual(network['actions'],['apply','lookup','resolve','result','status','validate'])
+        self.assertEqual(network['timeouts'],{'apply':110,'lookup':20,'status':25,'validate':20})
+        # A resource with no apply offers no recovery vocabulary it cannot honour.
+        self.assertEqual(described['resources']['bcm']['actions'],['status'])
+        # Describing a node must not map it: no controller path is returned.
+        self.assertNotIn(Path(sys.executable).name,encode(described).decode())
+
+    async def test_reserved_description_resource_cannot_be_driven(self):
+        with self.assertRaises(ValueError):
+            Plane({'role':'dp','commands':{INVENTORY:{'status':[sys.executable,'status']}}},
+                  Path(self.temp.name)/'reserved.db',self.backend)
+        for bad in (dict(describe(),action='status'),request('inventory',{},'network'),
+                    dict(describe(),payload={'revision':0})):
+            self.assertEqual((await self.dp.dispatch(bad))['state'],'rejected')
+
+    async def test_description_names_the_request_that_blocks_a_resource(self):
+        """Recovery must not depend on whoever issued the interrupted apply."""
+        self.backend.fail=True;req=request()
+        self.assertEqual((await self.dp.dispatch(req))['state'],'unknown')
+        described=(await self.dp.dispatch(describe()))['result']
+        self.assertEqual(described['resources']['network']['blocked'],[req['id']])
+        self.assertEqual(described['resources']['network']['blocked_total'],1)
+        self.backend.fail=False
+        await self.dp.dispatch(request('resolve',{'request_id':req['id'],'observed_revision':1}))
+        described=(await self.dp.dispatch(describe()))['result']
+        self.assertEqual(described['resources']['network']['blocked'],[])
+
+    async def test_relay_describes_its_peer_or_reports_silence(self):
+        mp=await self.relay('mp',self.dp)
+        described=(await mp.dispatch(describe()))['result']
+        self.assertEqual((described['relays'],described['resources']),(True,{}))
+        self.assertTrue(described['peer']['reachable'])
+        self.assertIn('network',described['peer']['resources'])
+        async def silent(*args): raise ConnectionError('peer down')
+        mp.runner=silent
+        # Silence about a downstream node must not read as a node with nothing on it.
+        self.assertEqual((await mp.dispatch(describe()))['result']['peer'],{'reachable':False})
+
+    async def test_configured_budget_reaches_the_controller(self):
+        plane=Plane(dict(self.config,timeouts={'default':{'status':25},'network':{'apply':110}}),
+                    Path(self.temp.name)/'budget.db',self.backend)
+        self.planes.append(plane)
+        await plane.dispatch(request('status',{}))
+        await plane.dispatch(request())
+        self.assertIn(('status',25),self.backend.budgets)
+        self.assertIn(('apply',110),self.backend.budgets)
+        self.assertIn(('validate',20),self.backend.budgets)
+        # Outside the response ladder, or for something this node does not run.
+        for outside in ({'default':{'apply':MAX_TIMEOUT+1}},{'network':{'status':0}},
+                        {'absent':{'status':5}},{'network':{'lookup':5}}):
+            with self.assertRaises(ValueError):
+                Plane(dict(self.config,timeouts=outside),Path(self.temp.name)/'rejected.db',self.backend)
 
 
 if __name__=='__main__': unittest.main()

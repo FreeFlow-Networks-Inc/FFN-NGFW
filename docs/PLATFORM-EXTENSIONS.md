@@ -91,7 +91,18 @@ SQLite audit/users, bearer authentication and an XML candidate/commit system.
 `ffn_ifctl.py` targets an earlier MP/DP command-ring port table. Existing BCM
 endpoints target `ffn-bcmd`. Neither interface controls the new Debian namespace
 forwarder. Treating those older paths as live forwarding would report success
-against the wrong backend.
+against the wrong backend. `ffn_ifctl.py` now says so in its own header, refuses
+to apply while a control daemon is selected -- two owners of one set of ports is
+a silent failure whose survivor is whoever wrote last -- and no longer carries a
+built-in PA-5220 port complement, which described a chassis this one is not. A
+port complement belongs to the platform module that can see the hardware.
+
+A platform's control-daemon resources are a second, independent way in, and one
+the core does not enumerate for itself: the MP daemon describes what it offers
+and the Control Planes page lists that. Installing the PA-5200 node profiles is
+therefore enough to reach every resource they declare -- ten on the MP -- with
+the platform's own controller budgets, and with no core change and no core-side
+resource list. See [plane-control-architecture.md](plane-control-architecture.md).
 
 The optional `ffn-platform-pa5200/management` extension instead invokes the
 installed MP controllers: `ffn-network`, `ffn-overlay`, `ffn-inspection`,
