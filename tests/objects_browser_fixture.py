@@ -13,10 +13,8 @@ app.mount('/static',StaticFiles(directory=root/'static'),name='static')
 
 @app.get('/')
 def page():
-    shell=(root/'static/index.html').read_text(encoding='utf-8')
-    style=shell[shell.index('<style>'):shell.index('</style>')+8]
-    return HTMLResponse('''<!doctype html><html><head>'''+style+'''
-    <link rel="stylesheet" href="/static/console-shell.css">
+    return HTMLResponse('''<!doctype html><html><head>
+    <link rel="stylesheet" href="/static/tokens.css"><link rel="stylesheet" href="/static/console.css">
     <link rel="stylesheet" href="/static/config-objects.css"></head><body>
     <main id="content-area"></main><script>
     function _escSP(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}

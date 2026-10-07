@@ -235,7 +235,13 @@ def _verification_secrets() -> list:
 DB_PATH = os.getenv("FFN_DB_PATH", "/var/lib/ffn-ngfw/config.db")
 DEV_PATH = os.getenv("FFN_NGFW_DEV", "/dev/ngfw0")
 LOG_PATH = "/var/log/ffn-ngfw"
-STATIC_DIR = Path(__file__).parent / "static"
+# Deployed, the manager and static/ sit side by side (/opt/ffn-ngfw-v2/). In
+# the repository the manager lives in opt/ and static/ at the root, so the
+# first candidate does not exist there and dev_serve_ui.py served the API's
+# JSON root instead of the console. Deployed layout first, repo layout second.
+STATIC_DIR = next((p for p in (Path(__file__).parent / "static",
+                               Path(__file__).parent.parent / "static")
+                   if p.is_dir()), Path(__file__).parent / "static")
 CONFIG_DIR = Path(os.getenv("FFN_CONFIG_DIR", "/var/lib/ffn-ngfw/config"))
 RUNNING_CONFIG = CONFIG_DIR / "running-config.xml"
 CANDIDATE_CONFIG = CONFIG_DIR / "candidate-config.xml"
@@ -3342,6 +3348,12 @@ async def _cli_auth_start():
         os.makedirs(os.path.dirname(CLI_AUTH_SOCK), exist_ok=True)
         if os.path.exists(CLI_AUTH_SOCK):
             os.unlink(CLI_AUTH_SOCK)
+        # The CLI authenticates over a Unix socket. Where the platform has none
+        # (a dev preview on Windows) there is nothing to serve: say so once and
+        # let the rest of the manager start, instead of an incident every boot.
+        if not hasattr(asyncio, "start_unix_server"):
+            logger.warning("CLI auth socket unavailable: no AF_UNIX on this platform")
+            return
         srv = await asyncio.start_unix_server(_cli_auth_conn, path=CLI_AUTH_SOCK)
         os.chmod(CLI_AUTH_SOCK, 0o666)
         app.state._cli_auth_srv = srv
