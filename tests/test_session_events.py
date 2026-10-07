@@ -147,5 +147,33 @@ class EventsTests(unittest.TestCase):
             self.assertFalse(event['counters_complete']);self.assertIsNone(event['ended'])
             self.assertEqual(j.db.execute('SELECT count(*) FROM sessions').fetchone()[0],0);j.close()
 
+    def test_gate_close_failure_at_start_is_retried_not_latched(self):
+        """A gate close that stalls or fails at startup (the PA-5220's first
+        dataplane boot: nft timed out after 15 s) is retried; it must not become
+        a fault that every later start re-raises before trying anything."""
+        import subprocess, threading, time
+        class Quick(threading.Event):
+            def wait(self,timeout=None):return self.is_set()
+        class Stream:
+            def close(self):pass
+            def getsockopt(self,*a):return 4096
+        attempts=[]
+        def close_gate():
+            attempts.append(1)
+            if len(attempts)==1:raise subprocess.TimeoutExpired(['nft','flush','set'],15)
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'sessions.db'
+            with patch('ffn_session_events.subscribe',return_value=Stream()),                  patch('ffn_session_events.snapshot',return_value=([],[])),                  patch('ffn_session_events.select.select',side_effect=lambda *a:(time.sleep(.01),([],[],[]))[1]):
+                c=Collector(path,'boot',close_gate);c.stop_event=Quick();c.start()
+                deadline=time.monotonic()+5
+                while time.monotonic()<deadline and not c.status()['ready']:time.sleep(.02)
+                state=c.status();c.stop()
+            self.assertTrue(state['ready'],state)
+            self.assertEqual(len(attempts),2)
+            self.assertEqual(state['recoveries'],1)
+            j=Journal(path,'boot');self.assertIsNone(j.fault_reason());j.close()
+        self.assertTrue(Collector.recoverable('Policy gate close failed: x'))
+        self.assertFalse(Collector.recoverable("Command 'nft' timed out after 15 seconds"))
+
 
 if __name__=='__main__':unittest.main()
