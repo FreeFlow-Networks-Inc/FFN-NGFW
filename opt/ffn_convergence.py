@@ -168,6 +168,13 @@ def faceplate(root, status):
         elif bool(row.get('enabled')) != want['enabled']:
             drift.append('%s: %s, committed %s' % (want['interface'], 'enabled' if row.get('enabled') else 'disabled',
                                                    'enabled' if want['enabled'] else 'disabled'))
+        if row.get('media') == 'sfp' and (row.get('optics') or {}).get('present') is False:
+            # An empty cage: nothing links or negotiates until a module is
+            # inserted, when the insertion watcher re-applies the committed
+            # speed for the module found. Not drift: there is nothing to re-apply.
+            if want['enabled']:
+                pending.append('%s: no transceiver present (committed %s, enabled)' % (want['interface'], want['speed']))
+            continue
         if want['member'] or not row.get('speed_configuration'):
             continue
         acceptable = {want['speed']}

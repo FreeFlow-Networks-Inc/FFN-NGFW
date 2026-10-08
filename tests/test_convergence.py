@@ -156,6 +156,15 @@ class ConvergenceTests(unittest.TestCase):
         report = self.run_assess(dp_views=lambda: (_ for _ in ()).throw(RuntimeError('relay down')))
         self.assertEqual(self.states(report)['interface-management'], 'unavailable')
 
+    def test_empty_sfp_cage_on_an_enabled_port_is_pending_not_drift(self):
+        self.faceplate['ports'][1].update(optics=dict(present=False, tx_enabled=True), module=None, configured_speed='auto', link=False)
+        report = self.run_assess()
+        face = {s['id']: s for s in report['subsystems']}['faceplate']
+        self.assertEqual((face['state'], report['overall'], report['actions']), ('pending', 'pending', []))
+        self.assertIn('ethernet1/5: no transceiver present (committed 1000, enabled)', face['details'])
+        self.assertNotIn('ethernet1/5: enabled, link down', face['details'])
+        self.assertFalse([d for d in face['details'] if d.startswith('ethernet1/5: speed')])
+
     def test_security_runtime_states(self):
         self.assertEqual(conv.security_runtime(None, 505.0, 'dp-boot')['state'], 'unavailable')
         healthy = conv.security_runtime(dict(HEALTHY), 505.0, 'dp-boot')
