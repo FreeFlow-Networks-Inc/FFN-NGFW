@@ -18,6 +18,7 @@
      its source and the hashes to re-verify it with. -->
 <script src="/static/vendor/chart.umd.js"></script>
 <script src="/static/plane-control.js"></script>
+<script src="/static/convergence.js"></script>
 <script src="/static/mp-interfaces.js"></script>
 <link rel="stylesheet" href="/static/tokens.css">
 <link rel="stylesheet" href="/static/console.css">
@@ -519,6 +520,7 @@ const TAB_MENUS = {
     {section:'Hardware & Runtime'},
     {id:'dash-hardware',label:'Hardware Inventory'},
     {id:'dash-system',label:'System Health'},
+    {id:'device-convergence',label:'Boot & Convergence'},
     {id:'dash-offload',label:'Dataplane Offload',needs:'offload_complex'},
     {id:'dataplane-engines',label:'Dataplane & Engines'},
     {id:'device-control-planes',label:'Control Planes',needs:'plane_control'},
@@ -1440,6 +1442,7 @@ function renderPage(pageId) {
     'dash-ddos': renderDashDDoS,
     'dash-system': renderDashSystemHealth,
     'dash-hardware': renderDashHardware,
+    'device-convergence': renderDeviceConvergence,
     'dash-offload': renderDPOffload,
     'device-updates': renderPatchManagement,
     'vendor-fw': renderVendorFW,
@@ -1596,6 +1599,7 @@ function renderPage(pageId) {
 function renderDashOverview(c) {
   c.innerHTML = `
     <div class="page-header"><h2>Dashboard</h2><span id="dash-time" class="text-dim" style="font-size:11px"></span></div>
+    <div class="section"><div class="card conv-card" id="dash-convergence" aria-live="polite"><span class="conv-lead text-dim">Configuration convergence: checking…</span></div></div>
     <div class="section"><div class="grid grid-4" id="port-cards"></div></div>
     <div class="section"><div class="grid grid-2">
       <div class="card"><h3 id="data-port-history">Data Port Traffic</h3><div class="chart-container"><canvas id="chart-throughput"></canvas></div></div>
@@ -1644,6 +1648,7 @@ function renderDashOverview(c) {
     <div class="workflow-actions"><button class="btn" onclick="switchSubPage('dash-ddos')">DDoS Detail</button>
       <button class="btn" onclick="switchSubPage('dash-hardware')">Hardware Inventory</button>
       <button class="btn" onclick="switchSubPage('interfaces')">Interface Ports</button></div>`;
+  if (window.ffnConvergence) window.ffnConvergence.card(document.getElementById('dash-convergence'));
   initDashboardCharts();
   refreshDashboard();
   startRefresh(refreshDashboard, 3000);
@@ -8283,6 +8288,14 @@ if (token) {
 // Enter key on login
 document.getElementById('login-pass').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
 document.getElementById('login-user').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
+
+function renderDeviceConvergence(c) {
+  c.innerHTML = `<div class="page-header"><h2>Boot &amp; Convergence</h2></div>
+    <p class="conv-intro">After the control and data planes boot, the lifecycle supervisor replays the committed configuration through configd. This page shows whether that replay reached every subsystem that can be observed, from the running configuration and live state. Nothing here changes configuration; re-apply replays what is committed.</p>
+    <div id="device-convergence-body"></div>`;
+  if (window.ffnConvergence) window.ffnConvergence.page(document.getElementById('device-convergence-body'));
+  else document.getElementById('device-convergence-body').textContent = 'Convergence view unavailable';
+}
 </script>
 <script src="/static/vr-interfaces.js"></script>
 <script src="/static/modal-layers.js"></script>
