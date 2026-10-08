@@ -30,6 +30,7 @@ class L3Tests(unittest.TestCase):
 
     def test_routes_actual_translation_both_directions_and_retains_vlan_owner(self):
         result = l3.plan(self.row, self.bindings, self.state)
+        self.assertEqual(result['pair'], ['lan', 'wan'])
         self.assertTrue(result['available'], result)
         self.assertFalse(result['hardware_admission'])
         forward, reverse = result['directions']
@@ -53,6 +54,30 @@ class L3Tests(unittest.TestCase):
         result = l3.plan(self.row, self.bindings, self.state)
         self.assertFalse(result['available'])
         self.assertIn('management-profile', result['blockers'][0])
+
+    def test_pair_is_selected_by_the_routes_and_authorised_by_the_rule(self):
+        # A second WAN interface: the rule authorises both pairs, the routes pick one.
+        self.bindings['wan2'] = dict(device='p8', index=13, alias='')
+        self.state['links'].append(dict(ifname='p8', ifindex=13, ifalias='', address='02:00:00:00:00:02', flags=['UP', 'LOWER_UP'], mtu=1500))
+        self.state['neighbors'].append(dict(dst='198.51.100.1', dev='p8', state=['REACHABLE'], lladdr='02:00:00:00:00:09'))
+        self.row['rule'] = {'interface_pairs': [['lan', 'wan'], ['lan', 'wan2']]}
+        result = l3.plan(self.row, self.bindings, self.state)
+        self.assertTrue(result['available'], result['blockers']); self.assertEqual(result['pair'], ['lan', 'wan'])
+        self.assertEqual(result['directions'][0]['interface'], 'wan')
+        self.state['routes'].append(dict(dst='198.51.100.0/24', dev='p8', gateway='198.51.100.1'))
+        result = l3.plan(self.row, self.bindings, self.state)
+        self.assertTrue(result['available'], result['blockers']); self.assertEqual(result['pair'], ['lan', 'wan2'])
+        self.assertEqual((result['directions'][0]['interface'], result['directions'][1]['interface']), ('wan2', 'lan'))
+        # The routes select a pair the rule does not list: blocked, never guessed.
+        self.row['rule'] = {'interface_pairs': [['wan', 'wan2'], ['wan2', 'wan']]}
+        result = l3.plan(self.row, self.bindings, self.state)
+        self.assertFalse(result['available']); self.assertIn('does not authorise', result['blockers'][0]); self.assertNotIn('pair', result)
+        # One authorised pair is still verified against the routes.
+        self.row['rule'] = {'interface_pairs': [['lan', 'wan']]}
+        result = l3.plan(self.row, self.bindings, self.state)
+        self.assertFalse(result['available']); self.assertIn('disagrees', result['blockers'][0])
+        self.row['rule'] = {'interface_pairs': []}
+        self.assertIn('No interface pair', l3.plan(self.row, self.bindings, self.state)['blockers'][0])
 
     def test_rejects_failed_unresolved_or_multicast_neighbor(self):
         for change in ({'state': ['FAILED']}, {'state': ['INCOMPLETE']}, {'state': []}, {'valid': False},

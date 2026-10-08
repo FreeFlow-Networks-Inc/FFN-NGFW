@@ -148,7 +148,8 @@ def attachment(name, bindings, state):
     return result
 
 
-def resolve(destination, outgoing, bindings, state):
+def route_for(destination, state):
+    """The one main-table unicast route that forwards to `destination`, or a reason it cannot be used."""
     address = ipaddress.IPv4Address(destination)
     if address.is_unspecified or address.is_multicast or address.is_loopback or address.is_link_local:
         raise ValueError('Destination requires the software exception path')
@@ -174,6 +175,36 @@ def resolve(destination, outgoing, bindings, state):
         route.get('tos', 0) not in (0, '0x00') or route.get('flags') or
         route.get('table', 'main') not in ('main', 254)):
         raise ValueError('Selected route requires the software exception path')
+    return route
+
+
+def select_pair(pairs, forward_destination, reverse_destination, bindings, state):
+    """The interface pair the routes select, provided the rule authorises it.
+
+    A security rule between zones yields every ingress/egress combination of
+    their interfaces; a session actually enters where the reverse route for
+    its original source points and leaves where the forward route for its
+    translated destination points. One pair, when a rule has one, is verified
+    against the routes by resolve(); with several, the routes choose and the
+    rule must list the choice. Nothing is guessed from traffic.
+    """
+    if not pairs:
+        raise ValueError('No interface pair is authorised for this session')
+    if len(pairs) == 1:
+        return list(pairs[0])
+    forward_dev = route_for(forward_destination, state).get('dev')
+    reverse_dev = route_for(reverse_destination, state).get('dev')
+    matches = [list(pair) for pair in pairs
+               if (bindings.get(pair[0]) or {}).get('device') == reverse_dev
+               and (bindings.get(pair[1]) or {}).get('device') == forward_dev]
+    if len(matches) != 1:
+        raise ValueError('Routes select %s to %s, which the rule does not authorise as an interface pair'
+                         % (reverse_dev, forward_dev))
+    return matches[0]
+
+
+def resolve(destination, outgoing, bindings, state):
+    route = route_for(destination, state)
     target = attachment(outgoing, bindings, state)
     if route.get('dev') != target['device']:
         raise ValueError('Route egress disagrees with the authorized interface pair')
@@ -203,13 +234,14 @@ def plan(row, bindings, state):
         return result
     try:
         main_table_only(state)
-        incoming, outgoing = row['rule']['interface_pairs'][0]
-        attachment(incoming, bindings, state)
         # Routing follows DNAT but precedes SNAT. The actual conntrack tuples
         # supply each direction's post-translation destination.
+        incoming, outgoing = select_pair(row['rule']['interface_pairs'], row['translated']['destination'],
+                                         row['original']['source'], bindings, state)
+        attachment(incoming, bindings, state)
         forward = resolve(row['translated']['destination'], outgoing, bindings, state)
         reverse = resolve(row['original']['source'], incoming, bindings, state)
-        result.update(available=True, directions=[forward, reverse])
+        result.update(available=True, directions=[forward, reverse], pair=[incoming, outgoing])
     except (ValueError, KeyError, TypeError) as error:
         result['blockers'] = [str(error)]
     return result
