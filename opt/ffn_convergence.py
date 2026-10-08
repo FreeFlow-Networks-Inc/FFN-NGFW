@@ -43,9 +43,12 @@ REQUEST = Path('/var/lib/ffn/lifecycle/reconcile-request.json')
 LIFECYCLE = Path('/run/ffn-lifecycle/mp.json')
 LIFECYCLE_JOURNAL = Path('/var/lib/ffn/lifecycle/mp.json')
 BOOT_ID = Path('/proc/sys/kernel/random/boot_id')
-HEALTH = Path('/run/ffn-security-health.json')
+HEALTH = '/run/ffn-security-health.json'   # on the dataplane, where the Security collector runs
 REPLAY_UNIT = 'ffn-lifecycle-reconcile.service'
-HEALTH_FRESH_SECONDS = 120
+HEALTH_FRESH_SECONDS = 30
+HEALTH_SPLIT = 'FFN_CONVERGENCE_HEALTH_SPLIT'
+# One dataplane round trip: the record, the DP's own clock to judge its age by, and the DP boot it must belong to.
+HEALTH_COLLECT = 'cat %s 2>/dev/null; echo %s; cat /proc/uptime; cat /proc/sys/kernel/random/boot_id' % (HEALTH, HEALTH_SPLIT)
 RANK = {'converged': 0, 'unavailable': 1, 'pending': 2, 'drift': 3, 'failed': 4}
 
 
@@ -237,21 +240,45 @@ def interface_management(root, views):
 
 
 # ---------------------------------------------------------------- security runtime
-def security_runtime(health, now):
-    if not isinstance(health, dict):
-        return subsystem('security-runtime', 'mp', 'unavailable', 'Security collector health is not published',
-                         ['no /run/ffn-security-health.json on the management plane'])
-    stamp = health.get('time') or health.get('updated') or health.get('observed_at')
+def parse_health(output):
+    """(record, dp uptime seconds, dp boot id) from the HEALTH_COLLECT output; the record is None when absent."""
+    head, marker, tail = output.partition(HEALTH_SPLIT)
+    if not marker:
+        raise ValueError('dataplane health collection returned no marker')
+    lines = [line.strip() for line in tail.strip().splitlines() if line.strip()]
+    if len(lines) < 2:
+        raise ValueError('dataplane health collection returned no uptime or boot id')
+    uptime = float(lines[0].split()[0])
     try:
-        age = None if stamp is None else max(0.0, now - float(stamp))
+        record = json.loads(head)
+    except ValueError:
+        record = None
+    return (record if isinstance(record, dict) else None), uptime, lines[1]
+
+
+def security_runtime(record, uptime, dp_boot):
+    """The Security collector's own record, read on the dataplane: it stamps the DP boot and the DP monotonic
+    clock, so its age is judged against the DP's uptime, never against the management plane's clock."""
+    if not isinstance(record, dict):
+        return subsystem('security-runtime', 'dp', 'unavailable', 'Security collector health is not published',
+                         ['no ' + HEALTH + ' on the dataplane'])
+    if record.get('boot_id') != dp_boot:
+        return subsystem('security-runtime', 'dp', 'pending', 'Security collector health is from another dataplane boot')
+    try:
+        age = max(0.0, float(uptime) - float(record.get('monotonic')))
     except (TypeError, ValueError):
-        age = None
-    if age is not None and age > HEALTH_FRESH_SECONDS:
-        return subsystem('security-runtime', 'mp', 'pending', 'Security collector health is stale (%d s)' % age)
-    if health.get('faulted') or health.get('fault'):
-        return subsystem('security-runtime', 'mp', 'failed', 'Security collector reports a fault',
-                         [str(health.get('fault') or health.get('reason'))[:200]])
-    return subsystem('security-runtime', 'mp', 'converged', 'Security collector healthy')
+        return subsystem('security-runtime', 'dp', 'pending', 'Security collector health carries no clock')
+    if age > HEALTH_FRESH_SECONDS:
+        return subsystem('security-runtime', 'dp', 'pending', 'Security collector health is stale (%d s)' % age)
+    events = record.get('events') if isinstance(record.get('events'), dict) else {}
+    faults = [str(f)[:200] for f in (record.get('error'), events.get('error')) if f]
+    if faults:
+        return subsystem('security-runtime', 'dp', 'failed', 'Security collector reports a fault', faults)
+    if not record.get('collector_ready') or not events.get('ready'):
+        return subsystem('security-runtime', 'dp', 'pending', 'Security collector is not ready',
+                         ['collector_ready=%s events.ready=%s' % (record.get('collector_ready'), events.get('ready'))])
+    return subsystem('security-runtime', 'dp', 'converged', 'Security collector healthy',
+                     ['forwarding revision %s' % record.get('forwarding_revision')])
 
 
 # ---------------------------------------------------------------- management access
@@ -303,8 +330,9 @@ def overall(subsystems):
 
 
 def assess(config_path=CONFIG, receipt_path=RECEIPT, lifecycle=(LIFECYCLE, LIFECYCLE_JOURNAL), boot_id_path=BOOT_ID,
-           health_path=HEALTH, resources=None, dp_views=None, clock=time.time, tunnel=None, dp_status=None):
+           dp_health=None, resources=None, dp_views=None, clock=time.time, tunnel=None, dp_status=None):
     """resources: {('faceplate','status'): result-or-None, ('aggregate','status'): ...};
+    dp_health: callable returning (record, dp uptime, dp boot id) for the Security collector, or None;
     dp_views: callable returning (ruleset, published, boot_id) for the interface audit, or None;
     tunnel: callable returning the tunnel unit's systemd state, or None to skip the access check;
     dp_status: callable returning the dataplane front end's status record, or None."""
@@ -337,7 +365,13 @@ def assess(config_path=CONFIG, receipt_path=RECEIPT, lifecycle=(LIFECYCLE, LIFEC
             subsystems.append(subsystem('interface-management', 'dp', 'unavailable', 'Dataplane collection failed', [str(error)[:200]]))
     if dp_views is None or views is not None:
         subsystems.append(interface_management(root, views))
-    subsystems.append(security_runtime(read_json(health_path), now))
+    if dp_health is not None:
+        try:
+            subsystems.append(security_runtime(*dp_health()))
+        except Exception as error:
+            subsystems.append(subsystem('security-runtime', 'dp', 'unavailable', 'Dataplane health collection failed', [str(error)[:200]]))
+    else:
+        subsystems.append(security_runtime(None, None, None))
     if tunnel is not None:
         status = None
         try:
@@ -397,11 +431,13 @@ def main(argv=None):
                 views = lambda: audit.collect(audit.run_dp)
         except ImportError:
             views = None
-    status = None
+    status = health = None
     if views is not None:
         import ffn_ifmgmt_audit as audit
         status = lambda: json.loads(audit.run_dp('cat ' + DP_SERVICES_STATUS))
-    report = assess(resources=resources, dp_views=views, tunnel=None if args.no_planes else unit_active, dp_status=status)
+        health = lambda: parse_health(audit.run_dp(HEALTH_COLLECT))
+    report = assess(resources=resources, dp_views=views, tunnel=None if args.no_planes else unit_active, dp_status=status,
+                    dp_health=health)
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:

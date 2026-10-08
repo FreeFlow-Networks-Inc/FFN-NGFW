@@ -31,6 +31,10 @@ def port(number, enabled=True, speed='auto', media='sfp', link=True, module=None
                 optics=dict(present=True, tx_enabled=bool(enabled)) if media == 'sfp' else None)
 
 
+HEALTHY = {'pid': 769, 'process_start': '3230', 'boot_id': 'dp-boot', 'monotonic': 500.0, 'collector_ready': True,
+           'forwarding_revision': 9, 'error': None, 'events': {'ready': True, 'error': None, 'recoveries': 1}}
+
+
 class ConvergenceTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
@@ -42,7 +46,7 @@ class ConvergenceTests(unittest.TestCase):
         self.receipt = self.root / 'reconcile-result.json'
         self.receipt.write_text(json.dumps(dict(version=1, mp_boot_id=MP_BOOT, processor_boots=BOOTS, state='applied',
                                                 config_sha256=self.generation, apply={'overall': 'applied', 'errors': []})))
-        self.health = self.root / 'health.json'; self.health.write_text(json.dumps({'time': 1000.0}))
+        self.health = lambda: (dict(HEALTHY), 505.0, 'dp-boot')
         self.faceplate = {'revision': 1, 'ports': [
             port(1, media='copper', speed='auto'), port(5, speed='1000', module=dict(optical=True, speeds=[1000])),
             port(9, speed='10000'), port(10, enabled=False, speed='10000'), port(12, enabled=False), port(13, enabled=False)]}
@@ -51,7 +55,7 @@ class ConvergenceTests(unittest.TestCase):
     def run_assess(self, **kw):
         kw.setdefault('resources', {('faceplate', 'status'): self.faceplate, ('aggregates', 'status'): self.aggregates})
         kw.setdefault('dp_views', None)
-        return conv.assess(self.config, self.receipt, (self.journal,), self.boot, self.health, clock=lambda: 1010.0, **kw)
+        return conv.assess(self.config, self.receipt, (self.journal,), self.boot, kw.pop('dp_health', self.health), clock=lambda: 1010.0, **kw)
 
     def states(self, report):
         return {s['id']: s['state'] for s in report['subsystems']}
@@ -153,10 +157,27 @@ class ConvergenceTests(unittest.TestCase):
         self.assertEqual(self.states(report)['interface-management'], 'unavailable')
 
     def test_security_runtime_states(self):
-        self.assertEqual(conv.security_runtime(None, 1000)['state'], 'unavailable')
-        self.assertEqual(conv.security_runtime({'time': 1000}, 1010)['state'], 'converged')
-        self.assertEqual(conv.security_runtime({'time': 1000}, 1300)['state'], 'pending')
-        self.assertEqual(conv.security_runtime({'time': 1000, 'fault': 'collector died'}, 1010)['state'], 'failed')
+        self.assertEqual(conv.security_runtime(None, 505.0, 'dp-boot')['state'], 'unavailable')
+        healthy = conv.security_runtime(dict(HEALTHY), 505.0, 'dp-boot')
+        self.assertEqual((healthy['state'], healthy['plane'], healthy['details']), ('converged', 'dp', ['forwarding revision 9']))
+        self.assertEqual(conv.security_runtime(dict(HEALTHY), 505.0, 'other-boot')['state'], 'pending')
+        self.assertEqual(conv.security_runtime(dict(HEALTHY), 500.0 + conv.HEALTH_FRESH_SECONDS + 1, 'dp-boot')['state'], 'pending')
+        self.assertEqual(conv.security_runtime(dict(HEALTHY, collector_ready=False), 505.0, 'dp-boot')['state'], 'pending')
+        self.assertEqual(conv.security_runtime(dict(HEALTHY, error='collector died'), 505.0, 'dp-boot')['state'], 'failed')
+        self.assertEqual(conv.security_runtime(dict(HEALTHY, events=dict(ready=True, error='socket lost')), 505.0, 'dp-boot')['state'], 'failed')
+        self.assertEqual(conv.security_runtime(dict(HEALTHY, monotonic=None), 505.0, 'dp-boot')['state'], 'pending')
+
+    def test_health_collection_is_parsed_from_one_dataplane_round_trip(self):
+        output = json.dumps(HEALTHY) + '\n' + conv.HEALTH_SPLIT + '\n20489.47 799386.79\ndp-boot\n'
+        self.assertEqual(conv.parse_health(output), (HEALTHY, 20489.47, 'dp-boot'))
+        self.assertEqual(conv.parse_health(conv.HEALTH_SPLIT + '\n20489.47 799386.79\ndp-boot\n'), (None, 20489.47, 'dp-boot'))
+        with self.assertRaises(ValueError):
+            conv.parse_health('no marker at all')
+        with self.assertRaises(ValueError):
+            conv.parse_health(conv.HEALTH_SPLIT + '\n')
+        failing = self.run_assess(dp_health=lambda: (_ for _ in ()).throw(OSError('ssh: connect failed')))
+        state = {s['id']: s['state'] for s in failing['subsystems']}
+        self.assertEqual(state['security-runtime'], 'unavailable')
 
     def test_management_access_states(self):
         ready = dict(channel_ready=True, services=[dict(interface='ae1.69', protocol='tcp', port=443, provider_listening=True, state='ready')])
