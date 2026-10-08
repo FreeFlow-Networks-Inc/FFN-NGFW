@@ -1744,7 +1744,8 @@ function statusPalette(names) {
   const fallback = {ok:'#3fb950', warn:'#d29922', err:'#f85149', crit:'#ff6b6b', info:'#2f81f7', muted:'#484f58'};
   let style = null;
   try { style = getComputedStyle(document.documentElement); } catch (e) { style = null; }
-  return names.map(name => (style && style.getPropertyValue('--' + name).trim()) || fallback[name]);
+  const tokens = {muted: '--text-muted'};
+  return names.map(name => (style && style.getPropertyValue(tokens[name] || ('--' + name)).trim()) || fallback[name]);
 }
 
 function _setPlaneWidget(prefix, info) {
