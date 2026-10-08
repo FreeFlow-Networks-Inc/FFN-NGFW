@@ -6,7 +6,8 @@
    the Device page with details and the re-apply action. */
 window.ffnConvergence = {
   LABELS: {'committed-replay': 'Committed replay', 'faceplate': 'Front ports', 'aggregates': 'Aggregates',
-           'interface-management': 'Interface management', 'security-runtime': 'Security runtime'},
+           'interface-management': 'Interface management', 'security-runtime': 'Security runtime',
+           'management-access': 'Management access'},
   PLANES: {mp: 'MP', cp: 'CP', dp: 'DP'},
   BADGE: {converged: 'badge-up', drift: 'badge-warning', failed: 'badge-error', pending: 'badge-info', unavailable: 'badge-log'},
   WORDS: {converged: 'Converged', drift: 'Drift', failed: 'Failed', pending: 'Pending', unavailable: 'Unavailable'},
@@ -52,7 +53,7 @@ window.ffnConvergence = {
       this.node('span', this.LABELS[s.id] || s.id, chip);
     }
     const link = this.node('a', 'Details', row, 'conv-link');
-    link.href = '#'; link.onclick = (ev) => { ev.preventDefault(); if (typeof switchTab === 'function') switchTab('device', 'device-convergence'); };
+    link.href = '#'; link.onclick = async (ev) => { ev.preventDefault(); if (typeof switchTab === 'function') await switchTab('device'); if (typeof switchSubPage === 'function') switchSubPage('device-convergence'); };
     this.node('span', 'checked ' + this.when(report.checked_at), row, 'conv-when text-dim');
   },
   /* Device page: table of subsystems, details, re-check and re-apply. */
