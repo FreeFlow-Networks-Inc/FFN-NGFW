@@ -79,7 +79,11 @@ class L3Tests(unittest.TestCase):
         import json
         from unittest.mock import patch
         raw = {
-            'link': [dict(ifindex=1, ifname='p7', flags=['UP'], mtu=1500, stats64={'rx': {'bytes': 1}})],
+            'link': [dict(ifindex=1, ifname='p7', flags=['UP'], mtu=1500, stats64={'rx': {'bytes': 1}}),
+                     dict(ifindex=3, ifname='br-data', flags=['UP'], mtu=1500,
+                          linkinfo={'info_kind': 'bridge', 'info_data': {'ageing_time': 30000, 'hello_timer': 1.52, 'gc_timer': 24.1}}),
+                     dict(ifindex=4, ifname='trunk.80', flags=['UP'], mtu=1500, link='trunk', link_index=5,
+                          linkinfo={'info_kind': 'vlan', 'info_data': {'id': 80, 'protocol': '802.1Q', 'flags': {'bits': 1}}})],
             'address': [dict(ifindex=1, ifname='p7', addr_info=[dict(family='inet', local='203.0.113.2', prefixlen=24, valid_life_time=100)])],
             'route': [dict(dst='default', dev='p7', gateway='203.0.113.1')],
             'rule': [dict(priority=32766, src='all', table='main')],
@@ -92,12 +96,19 @@ class L3Tests(unittest.TestCase):
             first = l3.snapshot(5)
             raw['neigh'][0]['state'] = ['STALE']; raw['link'][0]['stats64']['rx']['bytes'] = 2
             raw['address'][0]['addr_info'][0]['valid_life_time'] = 50
+            raw['link'][1]['linkinfo']['info_data'].update(hello_timer=0.52, gc_timer=23.1)
             second = l3.snapshot(5)
+            raw['link'][2]['linkinfo']['info_data']['id'] = 81
+            retagged = l3.snapshot(5)
+            raw['link'][2]['linkinfo']['info_data']['id'] = 80
             raw['neigh'][0]['state'] = ['FAILED']; del raw['neigh'][0]['lladdr']
             failed = l3.snapshot(5)
             raw['neigh'][0].update(lladdr='02:00:00:00:00:08', state=['REACHABLE'])
             moved = l3.snapshot(5)
         self.assertEqual(first, second); self.assertEqual(l3.fingerprint(first), l3.fingerprint(second))
+        self.assertEqual([r.get('linkinfo') for r in first['links']],
+                         [None, {'info_kind': 'bridge', 'info_data': {}}, {'info_kind': 'vlan', 'info_data': {'id': 80, 'protocol': '802.1Q'}}])
+        self.assertNotEqual(first, retagged)
         self.assertEqual(first['neighbors'], [dict(dst='203.0.113.1', dev='p7', lladdr='02:00:00:00:00:07', valid=True)])
         self.assertNotEqual(first, failed); self.assertFalse(failed['neighbors'][0]['valid'])
         self.assertNotEqual(first, moved); self.assertEqual(moved['neighbors'][0]['lladdr'], '02:00:00:00:00:08')

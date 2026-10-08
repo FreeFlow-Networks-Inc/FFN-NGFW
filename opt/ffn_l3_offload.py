@@ -35,6 +35,17 @@ def project_neighbor(row):
     return dict({k: row[k] for k in ('dst', 'dev', 'lladdr') if k in row}, valid=neighbor_valid(row))
 
 
+def project_linkinfo(info):
+    # Bridge info carries hello/gc/topology-change timers that advance every
+    # second, and bond slave data changes with LACP; planning reads only the
+    # kind and the VLAN identity.
+    result = {k: info[k] for k in ('info_kind', 'info_slave_kind') if k in info}
+    data = info.get('info_data')
+    if isinstance(data, dict):
+        result['info_data'] = {k: data[k] for k in ('id', 'protocol') if k in data}
+    return result
+
+
 def snapshot(deadline):
     result = {}
     commands = {
@@ -64,6 +75,10 @@ def snapshot(deadline):
             raise ValueError('Invalid or oversized L3 inventory')
         if key in fields:
             rows = [{k: row[k] for k in fields[key] if k in row} for row in rows]
+        if key == 'links':
+            for row in rows:
+                if isinstance(row.get('linkinfo'), dict):
+                    row['linkinfo'] = project_linkinfo(row['linkinfo'])
         if key == 'addresses':
             for row in rows:
                 row['addr_info'] = [{k: a[k] for k in ('family', 'local', 'prefixlen') if k in a}
