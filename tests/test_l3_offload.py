@@ -54,12 +54,53 @@ class L3Tests(unittest.TestCase):
         self.assertFalse(result['available'])
         self.assertIn('management-profile', result['blockers'][0])
 
-    def test_rejects_stale_unresolved_or_multicast_neighbor(self):
-        for change in ({'state': ['STALE']}, {'state': ['FAILED']}, {'lladdr': 'ff:ff:ff:ff:ff:ff'},
-                       {'lladdr': '00:00:00:00:00:00'}, {'dst': '203.0.113.99'}):
+    def test_rejects_failed_unresolved_or_multicast_neighbor(self):
+        for change in ({'state': ['FAILED']}, {'state': ['INCOMPLETE']}, {'state': []}, {'valid': False},
+                       {'lladdr': 'ff:ff:ff:ff:ff:ff'}, {'lladdr': '00:00:00:00:00:00'}, {'dst': '203.0.113.99'}):
             state = copy.deepcopy(self.state); state['neighbors'][1].update(change)
             with self.subTest(change=change):
                 self.assertFalse(l3.plan(self.row, self.bindings, state)['available'])
+        no_lladdr = copy.deepcopy(self.state); del no_lladdr['neighbors'][1]['lladdr']
+        self.assertFalse(l3.plan(self.row, self.bindings, no_lladdr)['available'])
+
+    def test_kernel_valid_neighbor_states_keep_the_next_hop(self):
+        # STALE/DELAY/PROBE entries still carry the link address the kernel
+        # forwards with; the generation must survive the state machine.
+        for states in (['STALE'], ['DELAY'], ['PROBE'], ['REACHABLE'], ['NOARP']):
+            state = copy.deepcopy(self.state); state['neighbors'][1]['state'] = states
+            with self.subTest(states=states):
+                self.assertTrue(l3.plan(self.row, self.bindings, state)['available'])
+        projected = copy.deepcopy(self.state)
+        projected['neighbors'] = [l3.project_neighbor(n) for n in projected['neighbors']]
+        self.assertEqual(projected['neighbors'][1], dict(dst='203.0.113.1', dev='p7', lladdr='02:00:00:00:00:07', valid=True))
+        self.assertTrue(l3.plan(self.row, self.bindings, projected)['available'])
+
+    def test_snapshot_projection_is_stable_across_neighbor_state_churn(self):
+        import json
+        from unittest.mock import patch
+        raw = {
+            'link': [dict(ifindex=1, ifname='p7', flags=['UP'], mtu=1500, stats64={'rx': {'bytes': 1}})],
+            'address': [dict(ifindex=1, ifname='p7', addr_info=[dict(family='inet', local='203.0.113.2', prefixlen=24, valid_life_time=100)])],
+            'route': [dict(dst='default', dev='p7', gateway='203.0.113.1')],
+            'rule': [dict(priority=32766, src='all', table='main')],
+            'neigh': [dict(dst='203.0.113.1', dev='p7', lladdr='02:00:00:00:00:07', state=['REACHABLE'])],
+        }
+        def run(argv, **kw):
+            kind = next(k for k in raw if k in argv)
+            return type('R', (), {'stdout': json.dumps(raw[kind])})()
+        with patch.object(l3.subprocess, 'run', side_effect=run), patch.object(l3.time, 'monotonic', return_value=0):
+            first = l3.snapshot(5)
+            raw['neigh'][0]['state'] = ['STALE']; raw['link'][0]['stats64']['rx']['bytes'] = 2
+            raw['address'][0]['addr_info'][0]['valid_life_time'] = 50
+            second = l3.snapshot(5)
+            raw['neigh'][0]['state'] = ['FAILED']; del raw['neigh'][0]['lladdr']
+            failed = l3.snapshot(5)
+            raw['neigh'][0].update(lladdr='02:00:00:00:00:08', state=['REACHABLE'])
+            moved = l3.snapshot(5)
+        self.assertEqual(first, second); self.assertEqual(l3.fingerprint(first), l3.fingerprint(second))
+        self.assertEqual(first['neighbors'], [dict(dst='203.0.113.1', dev='p7', lladdr='02:00:00:00:00:07', valid=True)])
+        self.assertNotEqual(first, failed); self.assertFalse(failed['neighbors'][0]['valid'])
+        self.assertNotEqual(first, moved); self.assertEqual(moved['neighbors'][0]['lladdr'], '02:00:00:00:00:08')
 
     def test_ownership_carrier_vlan_and_route_mismatches(self):
         for change in ({'ifindex': 100}, {'ifalias': 'replaced'}, {'flags': ['UP']}, {'master': 'vrf1'}):

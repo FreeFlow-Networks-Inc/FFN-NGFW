@@ -13,8 +13,26 @@ import subprocess
 import time
 
 
+# Neighbour states the kernel itself forwards with (NUD_VALID). A forwarded
+# flow gives the kernel no transport confirmation, so under traffic an entry
+# cycles REACHABLE -> STALE -> DELAY -> PROBE -> REACHABLE every reachable_time
+# while its link address stays the same; only the address or a failed entry
+# changes what a next hop means.
+NUD_VALID = frozenset(('PERMANENT', 'NOARP', 'REACHABLE', 'PROBE', 'STALE', 'DELAY'))
+
+
 def fingerprint(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def neighbor_valid(neighbor):
+    if 'valid' in neighbor:
+        return neighbor['valid'] is True
+    return bool(set(neighbor.get('state', [])) & NUD_VALID) and bool(neighbor.get('lladdr'))
+
+
+def project_neighbor(row):
+    return dict({k: row[k] for k in ('dst', 'dev', 'lladdr') if k in row}, valid=neighbor_valid(row))
 
 
 def snapshot(deadline):
@@ -50,6 +68,10 @@ def snapshot(deadline):
             for row in rows:
                 row['addr_info'] = [{k: a[k] for k in ('family', 'local', 'prefixlen') if k in a}
                                     for a in row.get('addr_info', [])]
+        if key == 'neighbors':
+            # The neighbour state machine advances under traffic without
+            # changing the next hop; keep only what planning depends on.
+            rows = [project_neighbor(row) for row in rows]
         result[key] = sorted(rows, key=lambda row: json.dumps(row, sort_keys=True))
     return result
 
@@ -145,8 +167,8 @@ def resolve(destination, outgoing, bindings, state):
     if len(neighbors) != 1:
         raise ValueError('Next-hop neighbor is unresolved: ' + neighbor_ip)
     neighbor = neighbors[0]
-    if not set(neighbor.get('state', [])) & {'REACHABLE', 'PERMANENT'}:
-        raise ValueError('Next-hop neighbor requires software reachability confirmation: ' + neighbor_ip)
+    if not neighbor_valid(neighbor):
+        raise ValueError('Next-hop neighbor is not valid for forwarding: ' + neighbor_ip)
     metrics = route.get('metrics', [])
     if metrics:
         # MTU locks, encapsulation metrics and other route attributes need an
