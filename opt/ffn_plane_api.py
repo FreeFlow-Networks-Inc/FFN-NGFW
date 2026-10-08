@@ -57,7 +57,7 @@ def install(app, current_user, require_admin, audit):
             path = selected()
         except HTTPException as error:
             path = None
-        for key in (('faceplate', 'status'), ('aggregate', 'status')):
+        for key in (('faceplate', 'status'), ('aggregates', 'status')):
             if path is None:
                 resources[key] = {'error': 'No MP control daemon selected'}
                 continue

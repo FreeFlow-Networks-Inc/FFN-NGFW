@@ -155,6 +155,11 @@ def faceplate(root, status):
         if row is None or not row.get('available'):
             pending.append('%s: port not available on the control plane' % want['interface'])
             continue
+        if row.get('media') == 'sfp' and not row.get('optics'):
+            # The transmitter and module could not be read this time (cage I2C);
+            # neither the administrative state nor the speed can be judged.
+            pending.append('%s: SFP cage state not observable' % want['interface'])
+            continue
         if row.get('enabled') is None:
             pending.append('%s: administrative state unknown' % want['interface'])
         elif bool(row.get('enabled')) != want['enabled']:
@@ -251,6 +256,9 @@ def security_runtime(health, now):
 
 # ---------------------------------------------------------------- management access
 TUNNEL_UNIT = 'ffn-interface-service-tunnel.service'
+# Services the manager itself provides through the tunnel; a profile may permit
+# others (user-id, response pages, SNMP) that this appliance has no provider for.
+CORE_SERVICES = {('tcp', 22), ('tcp', 443), ('tcp', 8443)}
 DP_SERVICES_STATUS = '/run/ffn-interface-services/status.json'
 
 
@@ -278,11 +286,15 @@ def management_access(tunnel_state, dp_status, now):
     if not dp_status.get('channel_ready'):
         return subsystem('management-access', 'dp', 'pending', 'Dataplane service channel not ready',
                          ['%d profile listener(s) waiting for the upstream channel' % len(services)])
-    unverified = ['%s %s/%d: %s' % (s.get('interface'), s.get('protocol'), s.get('port', 0), s.get('state'))
-                  for s in services if not s.get('provider_listening')]
-    if unverified:
-        return subsystem('management-access', 'dp', 'pending', '%d listener(s) without a verified provider' % len(unverified), unverified[:8])
-    return subsystem('management-access', 'dp', 'converged', '%d profile listener(s) reach the manager' % len(services))
+    unverified = [s for s in services if not s.get('provider_listening')]
+    core = [s for s in unverified if (s.get('protocol'), s.get('port')) in CORE_SERVICES]
+    notes = ['%s %s/%d: no provider on this appliance' % (s.get('interface'), s.get('protocol'), s.get('port', 0))
+             for s in unverified if s not in core]
+    if core:
+        return subsystem('management-access', 'dp', 'pending', '%d management listener(s) without a verified provider' % len(core),
+                         ['%s %s/%d: %s' % (s.get('interface'), s.get('protocol'), s.get('port', 0), s.get('state')) for s in core][:8] + notes[:8])
+    return subsystem('management-access', 'dp', 'converged',
+                     '%d profile listener(s) reach the manager' % (len(services) - len(unverified)), notes[:8])
 
 
 # ---------------------------------------------------------------- assessment
@@ -311,7 +323,7 @@ def assess(config_path=CONFIG, receipt_path=RECEIPT, lifecycle=(LIFECYCLE, LIFEC
         mp_boot = None
     boots = processor_boots(lifecycle)
     subsystems = [replay(read_json(receipt_path), mp_boot, boots, current)]
-    for check, key in ((faceplate, ('faceplate', 'status')), (aggregates, ('aggregate', 'status'))):
+    for check, key in ((faceplate, ('faceplate', 'status')), (aggregates, ('aggregates', 'status'))):
         try:
             subsystems.append(check(root, resources.get(key)))
         except Exception as error:
@@ -374,11 +386,11 @@ def main(argv=None):
             from ffn_controld_client import get
             import uuid
             client = get()
-            for key in (('faceplate', 'status'), ('aggregate', 'status')):
+            for key in (('faceplate', 'status'), ('aggregates', 'status')):
                 answer = client.plane_request({'v': 1, 'id': str(uuid.uuid4()), 'resource': key[0], 'action': key[1], 'payload': {}})
                 resources[key] = answer.get('result') if isinstance(answer, dict) and answer.get('ok') else {'error': str((answer or {}).get('error'))}
         except Exception as error:
-            resources = {('faceplate', 'status'): {'error': str(error)}, ('aggregate', 'status'): {'error': str(error)}}
+            resources = {('faceplate', 'status'): {'error': str(error)}, ('aggregates', 'status'): {'error': str(error)}}
         try:
             import ffn_ifmgmt_audit as audit
             if Path('/etc/ffn-ngfw/ssh-cp.conf').exists():

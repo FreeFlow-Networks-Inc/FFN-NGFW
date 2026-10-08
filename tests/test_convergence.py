@@ -27,7 +27,8 @@ CONFIG = '''<config><devices><entry name="localhost.localdomain">
 
 def port(number, enabled=True, speed='auto', media='sfp', link=True, module=None, available=True, speed_configuration=True):
     return dict(port=number, name='ethernet1/%d' % number, available=available, enabled=enabled, configured_speed=speed,
-                media=media, link=link, module=module, speed_configuration=speed_configuration)
+                media=media, link=link, module=module, speed_configuration=speed_configuration,
+                optics=dict(present=True, tx_enabled=bool(enabled)) if media == 'sfp' else None)
 
 
 class ConvergenceTests(unittest.TestCase):
@@ -48,7 +49,7 @@ class ConvergenceTests(unittest.TestCase):
         self.aggregates = {'aggregates': [dict(ae_name='ae1', applied=True, state='active', committed=True, blockers=[])]}
 
     def run_assess(self, **kw):
-        kw.setdefault('resources', {('faceplate', 'status'): self.faceplate, ('aggregate', 'status'): self.aggregates})
+        kw.setdefault('resources', {('faceplate', 'status'): self.faceplate, ('aggregates', 'status'): self.aggregates})
         kw.setdefault('dp_views', None)
         return conv.assess(self.config, self.receipt, (self.journal,), self.boot, self.health, clock=lambda: 1010.0, **kw)
 
@@ -117,6 +118,11 @@ class ConvergenceTests(unittest.TestCase):
         self.assertEqual((result['state'], result['details']), ('converged', ['ethernet1/5: enabled, link down']))
         self.faceplate['ports'][0]['available'] = False
         self.assertEqual(conv.faceplate(root, self.faceplate)['state'], 'pending')
+        # An SFP cage whose I2C read failed this time carries no optics: no judgement, pending.
+        self.faceplate['ports'][0]['available'] = True
+        self.faceplate['ports'][1].update(optics=None, module=None, enabled=None, configured_speed='auto')
+        result = conv.faceplate(root, self.faceplate)
+        self.assertEqual(result['state'], 'pending'); self.assertIn('ethernet1/5: SFP cage state not observable', result['details'])
         self.assertEqual(conv.faceplate(root, {'error': 'controld down'})['state'], 'unavailable')
         self.assertEqual(conv.faceplate(root, None)['state'], 'unavailable')
 
@@ -163,6 +169,13 @@ class ConvergenceTests(unittest.TestCase):
         waiting = dict(channel_ready=True, services=[dict(interface='ae1.69', protocol='tcp', port=443, provider_listening=False, state='listening-provider-unverified')])
         result = conv.management_access('active', waiting, 1)
         self.assertEqual(result['state'], 'pending'); self.assertEqual(result['details'], ['ae1.69 tcp/443: listening-provider-unverified'])
+        # Services the appliance does not provide (user-id, SNMP) are notes, not a pending convergence.
+        extras = dict(channel_ready=True, services=ready['services'] + [
+            dict(interface='ae1.69', protocol='tcp', port=5007, provider_listening=False, state='listening-provider-unverified'),
+            dict(interface='ae1.69', protocol='udp', port=161, provider_listening=False, state='listening-provider-unverified')])
+        result = conv.management_access('active', extras, 1)
+        self.assertEqual((result['state'], result['summary']), ('converged', '1 profile listener(s) reach the manager'))
+        self.assertEqual(result['details'], ['ae1.69 tcp/5007: no provider on this appliance', 'ae1.69 udp/161: no provider on this appliance'])
         report = self.run_assess(dp_views=self.dataplane_views, tunnel=lambda: 'inactive', dp_status=lambda: ready)
         self.assertEqual(report['overall'], 'drift'); self.assertIn('reapply', report['actions'])
         def broken():
