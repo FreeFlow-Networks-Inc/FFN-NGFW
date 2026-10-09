@@ -306,7 +306,11 @@ class Plane:
                 if action == 'result': return self.response(request, 'observed', prior)
                 if prior['state'] != 'unknown': raise ValueError('only unknown requests require reconciliation')
                 observed = await self.command(resource, 'status', {})
-                revision = observed.get('config', {}).get('revision')
+                # A controller whose status carries no config object keeps its
+                # revision at the top level (the faceplate, the PHYs); without
+                # this a request on such a resource could never be reconciled.
+                config = observed.get('config') if isinstance(observed.get('config'), dict) else observed
+                revision = config.get('revision')
                 if type(payload['observed_revision']) is not int or revision != payload['observed_revision']:
                     raise ValueError('observed revision changed; review runtime status again')
                 resolved = self.response({'id':payload['request_id']}, 'reconciled', {'observed_revision':revision})
