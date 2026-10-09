@@ -23,16 +23,20 @@ class Barrier(unittest.TestCase):
                      if isinstance(n,ast.AsyncFunctionDef) and n.name=='_config_commit_serial')
         handler.decorator_list=[];handler.returns=None;handler.args.defaults=[]
         for arg in handler.args.args:arg.annotation=None
-        calls=[]
+        calls=[];seen=[]
         class AtWrite(Exception):pass
         def commit(**kwargs):calls.append('write');raise AtWrite()
+        # The proposal must be rendered by the same routine that saves
+        # running-config.xml: the platform barrier digests those bytes.
+        def save(root,path):
+            self.assertEqual(path.name,'running-config.xml');path.write_bytes(b'<rendered>'+ET.tostring(root)+b'</rendered>')
         async def prepare(scope):return dict(revision='review',diff={'has_changes':True},effective=ET.fromstring('<config/>'))
         with tempfile.TemporaryDirectory() as tmp:
             candidate=Path(tmp)/'candidate.xml';candidate.write_bytes(b'<config/>')
             config=SimpleNamespace(lock_status=lambda:{'locked':True,'holder':'admin'},
-                diff=lambda:{'has_changes':True,'total_changes':1},commit=commit,
+                diff=lambda:{'has_changes':True,'total_changes':1},commit=commit,_save=save,
                 release_lock=lambda u:calls.append('unlock'))
-            def guard(data):calls.append('drain');raise RuntimeError('hardware unavailable')
+            def guard(data):calls.append('drain');seen.append(data);raise RuntimeError('hardware unavailable')
             app=SimpleNamespace(state=SimpleNamespace(platform_policy_guard=guard))
             scope=dict(config_mgr=config,_prepare_commit_review=prepare,app=app,ET=ET,Path=Path,asyncio=asyncio,
                        CANDIDATE_CONFIG=candidate,HTTPException=HTTPException,logger=logging.getLogger('test'))
@@ -42,6 +46,7 @@ class Barrier(unittest.TestCase):
                 asyncio.run(scope['_config_commit_serial'](req,{'username':'admin'}))
             self.assertEqual(failure.exception.status_code,409)
             self.assertEqual(calls,['drain','unlock'])
+            self.assertEqual(seen,[b'<rendered><config /></rendered>'])
             calls.clear()
             app.state.platform_policy_guard=lambda data:calls.append('drain')
             with self.assertRaises(AtWrite):asyncio.run(scope['_config_commit_serial'](req,{'username':'admin'}))
