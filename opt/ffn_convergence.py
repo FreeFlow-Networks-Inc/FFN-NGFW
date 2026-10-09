@@ -17,6 +17,7 @@ subsystem, from the running configuration and live observations:
   interface-management   the interface management profiles are enforced on
                          the dataplane (ffn_ifmgmt_audit);
   security-runtime       the Security collector publishes a fresh health record;
+  dhcp-server            the dataplane daemon serves every committed DHCP server;
   management-access      the MP's interface-service tunnel is running and the
                          dataplane front end reports its channel ready, so the
                          management profiles' listeners reach the manager.
@@ -246,6 +247,43 @@ def interface_management(root, views):
     return subsystem('interface-management', 'dp', state, '%d finding(s): %s' % (len(report['findings']), ', '.join(codes)), details)
 
 
+# ---------------------------------------------------------------- dhcp server
+def dhcp_server(root, status):
+    """Every enabled server in the committed tree is applied on the dataplane and serving."""
+    try:
+        import ffn_dhcp_intent
+        expected = ffn_dhcp_intent.compile_intent(root)['servers']
+    except (ValueError, ImportError) as error:
+        return subsystem('dhcp-server', 'dp', 'failed', 'Committed DHCP configuration does not compile', [str(error)[:200]])
+    if not expected:
+        return subsystem('dhcp-server', 'dp', 'converged', 'No DHCP servers committed')
+    if not isinstance(status, dict) or not isinstance(status.get('config'), dict):
+        return subsystem('dhcp-server', 'dp', 'unavailable', 'Dataplane DHCP state is not observable',
+                         [str((status or {}).get('error', 'no dhcp status'))[:200]])
+    applied = status['config'].get('servers') or {}
+    if applied != expected:
+        missing = sorted(set(expected) - set(applied)); extra = sorted(set(applied) - set(expected))
+        changed = sorted(d for d in set(expected) & set(applied) if expected[d] != applied[d])
+        return subsystem('dhcp-server', 'dp', 'drift', '%d committed DHCP server(s) differ from the dataplane intent' % len(expected),
+                         [s for s in ('not applied: ' + ', '.join(missing) if missing else '', 'stale on the dataplane: ' + ', '.join(extra) if extra else '',
+                                      'differ: ' + ', '.join(changed) if changed else '') if s])
+    running = status.get('running')
+    if not isinstance(running, dict):
+        return subsystem('dhcp-server', 'dp', 'pending', 'DHCP intent applied; the dataplane daemon is not running')
+    if running.get('revision') != status['config'].get('revision'):
+        return subsystem('dhcp-server', 'dp', 'pending', 'DHCP daemon has not reloaded the applied intent')
+    details, state = [], 'converged'
+    for device, spec in sorted(expected.items()):
+        live = (running.get('servers') or {}).get(device) or {}
+        if live.get('state') != 'serving':
+            state = 'failed' if live.get('state') == 'error' else 'pending'
+            details.append('%s: %s%s' % (spec['interface'], live.get('state', 'not started'), (' (' + live['detail'] + ')') if live.get('detail') else ''))
+    if state != 'converged':
+        return subsystem('dhcp-server', 'dp', state, '%d of %d DHCP server(s) not serving' % (len(details), len(expected)), details)
+    return subsystem('dhcp-server', 'dp', 'converged', '%d DHCP server(s) serving' % len(expected),
+                     ['%s: %s bound' % (spec['interface'], (running['servers'][d] or {}).get('bound', 0)) for d, spec in sorted(expected.items())])
+
+
 # ---------------------------------------------------------------- security runtime
 def parse_health(output):
     """(record, dp uptime seconds, dp boot id) from the HEALTH_COLLECT output; the record is None when absent."""
@@ -294,6 +332,7 @@ TUNNEL_UNIT = 'ffn-interface-service-tunnel.service'
 # others (user-id, response pages, SNMP) that this appliance has no provider for.
 CORE_SERVICES = {('tcp', 22), ('tcp', 443), ('tcp', 8443)}
 DP_SERVICES_STATUS = '/run/ffn-interface-services/status.json'
+DHCP_STATUS_COMMAND = 'python3 /usr/local/lib/ffn/ffn_dhcp_server.py status'
 
 
 def unit_active(unit=TUNNEL_UNIT, run=subprocess.run):
@@ -337,8 +376,9 @@ def overall(subsystems):
 
 
 def assess(config_path=CONFIG, receipt_path=RECEIPT, lifecycle=(LIFECYCLE, LIFECYCLE_JOURNAL), boot_id_path=BOOT_ID,
-           dp_health=None, resources=None, dp_views=None, clock=time.time, tunnel=None, dp_status=None):
+           dp_health=None, resources=None, dp_views=None, clock=time.time, tunnel=None, dp_status=None, dp_dhcp=None):
     """resources: {('faceplate','status'): result-or-None, ('aggregate','status'): ...};
+    dp_dhcp: callable returning the dataplane's `dhcp status` record, or None;
     dp_health: callable returning (record, dp uptime, dp boot id) for the Security collector, or None;
     dp_views: callable returning (ruleset, published, boot_id) for the interface audit, or None;
     tunnel: callable returning the tunnel unit's systemd state, or None to skip the access check;
@@ -372,6 +412,11 @@ def assess(config_path=CONFIG, receipt_path=RECEIPT, lifecycle=(LIFECYCLE, LIFEC
             subsystems.append(subsystem('interface-management', 'dp', 'unavailable', 'Dataplane collection failed', [str(error)[:200]]))
     if dp_views is None or views is not None:
         subsystems.append(interface_management(root, views))
+    if dp_dhcp is not None:
+        try:
+            subsystems.append(dhcp_server(root, dp_dhcp()))
+        except Exception as error:
+            subsystems.append(dhcp_server(root, {'error': str(error)[:200]}))
     if dp_health is not None:
         try:
             subsystems.append(security_runtime(*dp_health()))
@@ -438,13 +483,14 @@ def main(argv=None):
                 views = lambda: audit.collect(audit.run_dp)
         except ImportError:
             views = None
-    status = health = None
+    status = health = dhcp = None
     if views is not None:
         import ffn_ifmgmt_audit as audit
         status = lambda: json.loads(audit.run_dp('cat ' + DP_SERVICES_STATUS))
         health = lambda: parse_health(audit.run_dp(HEALTH_COLLECT))
+        dhcp = lambda: json.loads(audit.run_dp(DHCP_STATUS_COMMAND))
     report = assess(resources=resources, dp_views=views, tunnel=None if args.no_planes else unit_active, dp_status=status,
-                    dp_health=health)
+                    dp_health=health, dp_dhcp=dhcp)
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:

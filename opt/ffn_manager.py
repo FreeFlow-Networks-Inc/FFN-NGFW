@@ -10185,69 +10185,6 @@ async def lldp_neighbors(user: dict = Depends(get_current_user)):
     return {"available": True, "interfaces": interfaces}
 
 
-def _parse_dhcp_leases(path: str) -> list:
-    """Parse ISC dhcpd.leases blocks or a Kea leases4 CSV into a lease list."""
-    leases = []
-    try:
-        if path.endswith(".csv"):
-            import csv
-            with open(path) as f:
-                for row in csv.DictReader(f):
-                    st = str(row.get("state", "")).strip()
-                    state = {"0": "active", "1": "declined",
-                             "2": "expired"}.get(st, st or "active")
-                    leases.append({
-                        "ip": row.get("address", ""), "mac": row.get("hwaddr", ""),
-                        "hostname": row.get("hostname", ""), "state": state,
-                        "expires": row.get("expire", ""),
-                    })
-        else:
-            cur = None
-            with open(path) as f:
-                for line in f:
-                    t = line.strip()
-                    if t.startswith("lease ") and t.endswith("{"):
-                        cur = {"ip": t.split()[1], "mac": "", "hostname": "",
-                               "state": "", "expires": ""}
-                    elif cur is not None:
-                        if t.startswith("hardware ethernet"):
-                            cur["mac"] = t.split()[2].rstrip(";")
-                        elif t.startswith("client-hostname"):
-                            cur["hostname"] = t.split(None, 1)[1].strip(' ";')
-                        elif t.startswith("binding state"):
-                            cur["state"] = t.split()[2].rstrip(";")
-                        elif t.startswith("ends "):
-                            cur["expires"] = t.split(None, 1)[1].rstrip(";")
-                        elif t == "}":
-                            leases.append(cur)
-                            cur = None
-    except Exception:
-        pass
-    # dhcpd.leases appends history -> keep the last block per IP
-    dedup = {}
-    for l in leases:
-        dedup[l["ip"]] = l
-    return [l for l in dedup.values()
-            if l.get("state") in ("", "active") or path.endswith(".csv")]
-
-
-@app.get("/api/dhcp/leases")
-async def dhcp_leases(user: dict = Depends(get_current_user)):
-    """Active DHCP leases parsed from the system lease DB (isc-dhcp-server / Kea)."""
-    candidates = [
-        "/var/lib/dhcp/dhcpd.leases",
-        "/var/lib/dhcpd/dhcpd.leases",
-        "/var/lib/kea/kea-leases4.csv",
-    ]
-    for p in candidates:
-        if os.path.exists(p):
-            leases = _parse_dhcp_leases(p)
-            return {"available": True, "source": p,
-                    "count": len(leases), "leases": leases}
-    return {"available": False, "leases": [],
-            "message": "No DHCP server lease database found (no isc-dhcp-server / Kea running)"}
-
-
 # ---- DNS Proxy config + honest resolver stats -----------------------------
 DNS_PROXY_PATH = "/etc/ffn-ngfw/dns-proxy.json"
 _DNS_PROXY_DEFAULT = {"enable": False, "primary": "", "secondary": "",
@@ -12231,6 +12168,8 @@ _install_patch_api(app, get_current_user, _require_admin, _extension_audit, _upd
 
 from ffn_config_objects import install as _install_object_api
 _install_object_api(app, get_current_user, _require_admin, _extension_audit, config_mgr, CANDIDATE_CONFIG)
+from ffn_config_dhcp import install as _install_dhcp_api
+_install_dhcp_api(app, get_current_user, _require_admin, _audit, config_mgr, CANDIDATE_CONFIG)
 from ffn_policy_api import install as _install_policy_api
 _install_policy_api(app, get_current_user, _require_admin, _extension_audit, config_mgr)
 

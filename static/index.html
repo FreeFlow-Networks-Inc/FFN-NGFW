@@ -19,6 +19,7 @@
 <script src="/static/vendor/chart.umd.js"></script>
 <script src="/static/plane-control.js"></script>
 <script src="/static/convergence.js"></script>
+<script src="/static/dhcp.js"></script>
 <script src="/static/mp-interfaces.js"></script>
 <link rel="stylesheet" href="/static/tokens.css">
 <link rel="stylesheet" href="/static/console.css">
@@ -5182,44 +5183,9 @@ async function loadZeroTier() {
 
 /* ---- Network > DHCP ---- */
 const NET_PAGES = {};
-const _CTX_DHCP = netRegister({
-  kind: 'dhcp-scopes',
-  title: 'DHCP Server',
-  desc: 'DHCP server address pools (scopes). Each scope leases addresses on an interface subnet.',
-  fields: [
-    {key:'interface',   label:'Interface',   type:'text',   required:true, placeholder:'eno2np1'},
-    {key:'range_start', label:'Range Start', type:'text',   required:true, placeholder:'10.0.0.100'},
-    {key:'range_end',   label:'Range End',   type:'text',   required:true, placeholder:'10.0.0.200'},
-    {key:'gateway',     label:'Gateway',     type:'text',   placeholder:'10.0.0.1'},
-    {key:'dns',         label:'DNS',         type:'text',   placeholder:'8.8.8.8, 1.1.1.1'},
-    {key:'lease_time',  label:'Lease (sec)', type:'number', placeholder:'86400'},
-  ],
-});
 function renderNetworkDHCP(c) {
-  c.innerHTML = netPageHTML(_CTX_DHCP) +
-    `<div class="section"><div class="section-title">Active Leases</div>
-      <div class="card"><div class="table-wrap"><table>
-        <thead><tr><th>IP Address</th><th>MAC</th><th>Hostname</th><th>State</th><th>Expires</th></tr></thead>
-        <tbody id="dhcp-leases-body"><tr><td colspan="5" class="text-dim">Loading&hellip;</td></tr></tbody>
-      </table></div><div id="dhcp-leases-note" class="text-dim" style="font-size:var(--fs-xs);margin-top:6px"></div></div></div>`;
-  netRenderList(_CTX_DHCP);
-  loadDhcpLeases();
-}
-async function loadDhcpLeases() {
-  const r = await api('/api/dhcp/leases');
-  const tb = document.getElementById('dhcp-leases-body');
-  const note = document.getElementById('dhcp-leases-note');
-  if (!tb) return;
-  const leases = (r && r.leases) || [];
-  if (!r || !r.available) {
-    tb.innerHTML = '<tr><td colspan="5" class="text-dim">No active leases</td></tr>';
-    if (note) note.textContent = (r && r.message) || '';
-    return;
-  }
-  tb.innerHTML = leases.length
-    ? leases.map(l => `<tr><td class="mono">${_escSP(l.ip)}</td><td class="mono">${_escSP(l.mac || '')}</td><td>${_escSP(l.hostname || '')}</td><td><span class="badge ${l.state === 'active' ? 'badge-up' : 'badge'}">${_escSP(l.state || '')}</span></td><td class="text-dim" style="font-size:var(--fs-sm)">${_escSP(l.expires || '')}</td></tr>`).join('')
-    : '<tr><td colspan="5" class="text-dim">No active leases</td></tr>';
-  if (note) note.textContent = 'Source: ' + _escSP(r.source || '') + ' — ' + leases.length + ' lease(s)';
+  if (window.ffnDhcp) { window.ffnDhcp.page(c); return; }
+  c.innerHTML = '<div class="page-header"><h2>DHCP Servers</h2></div><p class="text-dim">The DHCP console script did not load.</p>';
 }
 
 /* ---- Network > DNS Proxy ---- */

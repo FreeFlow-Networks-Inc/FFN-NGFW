@@ -165,6 +165,38 @@ class ConvergenceTests(unittest.TestCase):
         self.assertNotIn('ethernet1/5: enabled, link down', face['details'])
         self.assertFalse([d for d in face['details'] if d.startswith('ethernet1/5: speed')])
 
+    def test_dhcp_server_states_follow_the_committed_tree_and_the_daemon(self):
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(CONFIG)
+        self.assertEqual(conv.dhcp_server(root, None)['state'], 'converged')          # nothing committed
+        device = root.find("devices/entry[@name='localhost.localdomain']")
+        net = device.find('network')
+        ET.SubElement(ET.SubElement(net, 'interface'), 'ethernet') if net.find('interface') is None else None
+        eth = net.find('interface/ethernet')
+        entry = ET.SubElement(eth, 'entry', name='ethernet1/5')
+        ET.SubElement(ET.SubElement(ET.SubElement(entry, 'layer3'), 'ip'), 'entry', name='192.0.2.1/24')
+        server = ET.SubElement(ET.SubElement(ET.SubElement(ET.SubElement(net, 'dhcp'), 'interface'), 'entry', name='ethernet1/5'), 'server')
+        ET.SubElement(ET.SubElement(server, 'ip-pool'), 'member').text = '192.0.2.100-192.0.2.150'
+        import ffn_dhcp_intent
+        expected = ffn_dhcp_intent.compile_intent(root)['servers']
+        self.assertEqual(sorted(expected), ['p5'])
+        self.assertEqual(conv.dhcp_server(root, {'error': 'ssh failed'})['state'], 'unavailable')
+        applied = dict(config=dict(revision=2, configuration=None, servers=expected), boot_id='b', running=None)
+        self.assertEqual(conv.dhcp_server(root, applied)['state'], 'pending')
+        drift = conv.dhcp_server(root, dict(applied, config=dict(revision=2, servers={})))
+        self.assertEqual((drift['state'], drift['details']), ('drift', ['not applied: p5']))
+        serving = dict(applied, running=dict(revision=2, servers={'p5': dict(state='serving', bound=3)}))
+        ok = conv.dhcp_server(root, serving)
+        self.assertEqual((ok['state'], ok['plane'], ok['details']), ('converged', 'dp', ['ethernet1/5: 3 bound']))
+        absent = dict(applied, running=dict(revision=2, servers={'p5': dict(state='interface-absent', detail='no such device')}))
+        self.assertEqual(conv.dhcp_server(root, absent)['state'], 'pending')
+        self.assertEqual(conv.dhcp_server(root, dict(applied, running=dict(revision=1, servers={})))['state'], 'pending')
+        self.assertEqual(conv.dhcp_server(root, dict(applied, running=dict(revision=2, servers={'p5': dict(state='error', detail='bind failed')})))['state'], 'failed')
+        report = self.run_assess(dp_dhcp=lambda: serving)
+        self.assertIn('dhcp-server', self.states(report))
+        failing = self.run_assess(dp_dhcp=lambda: (_ for _ in ()).throw(OSError('ssh: connect failed')))
+        self.assertEqual(self.states(failing)['dhcp-server'], 'converged')   # nothing committed in the fixture
+
     def test_security_runtime_states(self):
         self.assertEqual(conv.security_runtime(None, 505.0, 'dp-boot')['state'], 'unavailable')
         healthy = conv.security_runtime(dict(HEALTHY), 505.0, 'dp-boot')

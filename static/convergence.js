@@ -7,7 +7,7 @@
 window.ffnConvergence = {
   LABELS: {'committed-replay': 'Committed replay', 'faceplate': 'Front ports', 'aggregates': 'Aggregates',
            'interface-management': 'Interface management', 'security-runtime': 'Security runtime',
-           'management-access': 'Management access'},
+           'management-access': 'Management access', 'dhcp-server': 'DHCP servers'},
   PLANES: {mp: 'MP', cp: 'CP', dp: 'DP'},
   BADGE: {converged: 'badge-up', drift: 'badge-warning', failed: 'badge-error', pending: 'badge-info', unavailable: 'badge-log'},
   WORDS: {converged: 'Converged', drift: 'Drift', failed: 'Failed', pending: 'Pending', unavailable: 'Unavailable'},
