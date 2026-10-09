@@ -70,6 +70,11 @@ class DhcpServerEdit(BaseModel):
         extra = 'forbid'
 
 
+def as_dict(model):
+    """pydantic 2 and 1 alike (the installed manager may run either)."""
+    return model.model_dump() if hasattr(model, 'model_dump') else model.dict()
+
+
 def fail(message, code=422):
     raise HTTPException(code, message)
 
@@ -176,7 +181,7 @@ class DhcpStore:
         if not info['addresses']:
             fail('Interface has no static IPv4 address in the candidate: ' + spec.interface)
         described = dict(interface=spec.interface, mode=spec.mode, probe_ip=spec.probe_ip, lease_minutes=spec.lease_minutes,
-                         pools=spec.pools, reserved=[r.model_dump() for r in spec.reserved], options=spec.options.model_dump())
+                         pools=spec.pools, reserved=[as_dict(r) for r in spec.reserved], options=as_dict(spec.options))
         try:
             server_spec(described, info['addresses'][0])
         except ValueError as error:
