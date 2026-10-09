@@ -34,8 +34,22 @@ if os.environ.get("FFN_DEV_PREVIEW") != "1":
 
 import ffn_manager as m  # noqa: E402
 
-# Dev-only: bypass bcrypt so init_db can seed an account locally.
-m.pwd_context.hash = lambda secret, **k: "$dev-preview-stub$"
+# Dev-only: bypass bcrypt so init_db can seed an account locally. Both halves
+# of the context are replaced, consistently: stubbing only hash() left verify()
+# facing a value passlib cannot identify, so /api/auth/login returned 500 and
+# the preview could never be signed into. A SHA-256 digest keeps the password
+# check real for the preview without touching bcrypt; it is not a password
+# store and must never leave this script.
+import hashlib  # noqa: E402
+
+def _dev_hash(secret, **kw):
+    return "$dev-sha256$" + hashlib.sha256(str(secret).encode()).hexdigest()
+
+def _dev_verify(secret, stored, **kw):
+    return stored == _dev_hash(secret)
+
+m.pwd_context.hash = _dev_hash
+m.pwd_context.verify = _dev_verify
 
 if __name__ == "__main__":
     import uvicorn

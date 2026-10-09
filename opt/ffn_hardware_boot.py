@@ -261,11 +261,53 @@ def orchestrate(config, inventory, boot_id, state_path=STATE, services=None, obs
         raise
 
 
-def status(control=None, path=STATE, boot_path=BOOT_ID):
+LIFECYCLE = Path('/run/ffn-lifecycle/mp.json')
+
+
+def lifecycle_status(path=LIFECYCLE, boot_path=BOOT_ID):
+    """The MP lifecycle supervisor's view, when it owns startup instead.
+
+    A PA-5200 commissioned with the lifecycle packages has no hardware-boot
+    manifest; ffn-supervisord publishes its stages at /run/ffn-lifecycle/mp.json.
+    Without this the console reported 'unavailable' on every such box.
+    Returns None when the supervisor is not running for this MP boot.
+    """
+    try:
+        snapshot = json.loads(path.read_text())
+        if (snapshot.get('version') != 1 or snapshot.get('role') != 'mp' or
+                not snapshot.get('running') or
+                snapshot.get('boot_id') != boot_path.read_text().strip()):
+            return None
+        stages = snapshot.get('stages') or {}
+        if not isinstance(stages, dict):
+            return None
+        waiting = ['%s: %s' % (name, (stage or {}).get('reason') or (stage or {}).get('state') or 'not ready')
+                   for name, stage in stages.items()
+                   if not isinstance(stage, dict) or not stage.get('ready')]
+        failed = [name for name, stage in stages.items()
+                  if isinstance(stage, dict) and stage.get('state') == 'failed']
+        ready = bool(snapshot.get('ready'))
+        phase = 'ready' if ready else ('failed' if failed else 'starting')
+        result = {'phase': phase, 'hardware_ready': bool(snapshot.get('board_ready')),
+                  'owner': 'mp', 'source': 'lifecycle',
+                  'platform': 'pa5200', 'boot_profile': snapshot.get('boot_profile'),
+                  'processor_boots': snapshot.get('processor_boots'),
+                  'current_step': waiting[0].split(':')[0] if waiting else None}
+        if waiting:
+            result['waiting_for'] = waiting
+        if failed:
+            result['error'] = 'lifecycle stage failed: ' + ', '.join(failed)
+        return result
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def status(control=None, path=STATE, boot_path=BOOT_ID, lifecycle=LIFECYCLE):
     try:
         state = json.loads(path.read_text())
         if state.get('mp_boot_id') != boot_path.read_text().strip():
-            return {'phase': 'stale', 'hardware_ready': False, 'owner': 'mp'}
+            return (lifecycle_status(lifecycle, boot_path) or
+                    {'phase': 'stale', 'hardware_ready': False, 'owner': 'mp'})
         if state.get('phase') == 'ready':
             profile = {'platform': state['platform'], 'acknowledgments': state['requirements']}
             ids, errors = acknowledgments(profile, control or {})
@@ -274,7 +316,8 @@ def status(control=None, path=STATE, boot_path=BOOT_ID):
                              waiting_for=errors or ['Plane boot identity changed; recovery acknowledgment required'])
         return state
     except (OSError, ValueError, KeyError, TypeError):
-        return {'phase': 'unavailable', 'hardware_ready': False, 'owner': 'mp'}
+        return (lifecycle_status(lifecycle, boot_path) or
+                {'phase': 'unavailable', 'hardware_ready': False, 'owner': 'mp'})
 
 
 def main():

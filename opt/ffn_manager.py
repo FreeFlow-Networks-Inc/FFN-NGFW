@@ -235,7 +235,13 @@ def _verification_secrets() -> list:
 DB_PATH = os.getenv("FFN_DB_PATH", "/var/lib/ffn-ngfw/config.db")
 DEV_PATH = os.getenv("FFN_NGFW_DEV", "/dev/ngfw0")
 LOG_PATH = "/var/log/ffn-ngfw"
-STATIC_DIR = Path(__file__).parent / "static"
+# Deployed, the manager and static/ sit side by side (/opt/ffn-ngfw-v2/). In
+# the repository the manager lives in opt/ and static/ at the root, so the
+# first candidate does not exist there and dev_serve_ui.py served the API's
+# JSON root instead of the console. Deployed layout first, repo layout second.
+STATIC_DIR = next((p for p in (Path(__file__).parent / "static",
+                               Path(__file__).parent.parent / "static")
+                   if p.is_dir()), Path(__file__).parent / "static")
 CONFIG_DIR = Path(os.getenv("FFN_CONFIG_DIR", "/var/lib/ffn-ngfw/config"))
 RUNNING_CONFIG = CONFIG_DIR / "running-config.xml"
 CANDIDATE_CONFIG = CONFIG_DIR / "candidate-config.xml"
@@ -3344,6 +3350,12 @@ async def _cli_auth_start():
         os.makedirs(os.path.dirname(CLI_AUTH_SOCK), exist_ok=True)
         if os.path.exists(CLI_AUTH_SOCK):
             os.unlink(CLI_AUTH_SOCK)
+        # The CLI authenticates over a Unix socket. Where the platform has none
+        # (a dev preview on Windows) there is nothing to serve: say so once and
+        # let the rest of the manager start, instead of an incident every boot.
+        if not hasattr(asyncio, "start_unix_server"):
+            logger.warning("CLI auth socket unavailable: no AF_UNIX on this platform")
+            return
         srv = await asyncio.start_unix_server(_cli_auth_conn, path=CLI_AUTH_SOCK)
         os.chmod(CLI_AUTH_SOCK, 0o666)
         app.state._cli_auth_srv = srv
@@ -9185,12 +9197,16 @@ async def _config_commit_serial(req, user):
         if (await _prepare_commit_review(req.partial_xpath))['revision'] != prepared['revision']:
             raise HTTPException(409, 'Configuration changed during validation. Preview again.')
         # Validate the projected scope BEFORE any hardware invalidation. The
-        # barrier reads a temporary copy of exactly the proposed running config.
+        # barrier reads a temporary copy rendered exactly as commit() will save
+        # running-config.xml, so a platform that fences on the digest of those
+        # bytes (the PA-5200 session feed hashes the saved file) sees the same
+        # digest before and after the write. A compact ET.tostring() rendering
+        # never matched the pretty-printed file and left that feed restarting.
         from ffn_policy_barrier import before_commit as _before_policy_commit
         import tempfile
         with tempfile.TemporaryDirectory(prefix='ffn-commit-') as directory:
             proposal = Path(directory) / 'running-config.xml'
-            proposal.write_bytes(ET.tostring(prepared['effective']))
+            config_mgr._save(prepared['effective'], proposal)
             try:
                 policy_barrier = await _before_policy_commit(app, proposal)
             except Exception as exc:
@@ -10194,69 +10210,6 @@ async def lldp_neighbors(user: dict = Depends(get_current_user)):
                 "ttl": port.get("ttl", 0),
             })
     return {"available": True, "interfaces": interfaces}
-
-
-def _parse_dhcp_leases(path: str) -> list:
-    """Parse ISC dhcpd.leases blocks or a Kea leases4 CSV into a lease list."""
-    leases = []
-    try:
-        if path.endswith(".csv"):
-            import csv
-            with open(path) as f:
-                for row in csv.DictReader(f):
-                    st = str(row.get("state", "")).strip()
-                    state = {"0": "active", "1": "declined",
-                             "2": "expired"}.get(st, st or "active")
-                    leases.append({
-                        "ip": row.get("address", ""), "mac": row.get("hwaddr", ""),
-                        "hostname": row.get("hostname", ""), "state": state,
-                        "expires": row.get("expire", ""),
-                    })
-        else:
-            cur = None
-            with open(path) as f:
-                for line in f:
-                    t = line.strip()
-                    if t.startswith("lease ") and t.endswith("{"):
-                        cur = {"ip": t.split()[1], "mac": "", "hostname": "",
-                               "state": "", "expires": ""}
-                    elif cur is not None:
-                        if t.startswith("hardware ethernet"):
-                            cur["mac"] = t.split()[2].rstrip(";")
-                        elif t.startswith("client-hostname"):
-                            cur["hostname"] = t.split(None, 1)[1].strip(' ";')
-                        elif t.startswith("binding state"):
-                            cur["state"] = t.split()[2].rstrip(";")
-                        elif t.startswith("ends "):
-                            cur["expires"] = t.split(None, 1)[1].rstrip(";")
-                        elif t == "}":
-                            leases.append(cur)
-                            cur = None
-    except Exception:
-        pass
-    # dhcpd.leases appends history -> keep the last block per IP
-    dedup = {}
-    for l in leases:
-        dedup[l["ip"]] = l
-    return [l for l in dedup.values()
-            if l.get("state") in ("", "active") or path.endswith(".csv")]
-
-
-@app.get("/api/dhcp/leases")
-async def dhcp_leases(user: dict = Depends(get_current_user)):
-    """Active DHCP leases parsed from the system lease DB (isc-dhcp-server / Kea)."""
-    candidates = [
-        "/var/lib/dhcp/dhcpd.leases",
-        "/var/lib/dhcpd/dhcpd.leases",
-        "/var/lib/kea/kea-leases4.csv",
-    ]
-    for p in candidates:
-        if os.path.exists(p):
-            leases = _parse_dhcp_leases(p)
-            return {"available": True, "source": p,
-                    "count": len(leases), "leases": leases}
-    return {"available": False, "leases": [],
-            "message": "No DHCP server lease database found (no isc-dhcp-server / Kea running)"}
 
 
 # ---- DNS Proxy config + honest resolver stats -----------------------------
@@ -12242,6 +12195,8 @@ _install_patch_api(app, get_current_user, _require_admin, _extension_audit, _upd
 
 from ffn_config_objects import install as _install_object_api
 _install_object_api(app, get_current_user, _require_admin, _extension_audit, config_mgr, CANDIDATE_CONFIG)
+from ffn_config_dhcp import install as _install_dhcp_api
+_install_dhcp_api(app, get_current_user, _require_admin, _audit, config_mgr, CANDIDATE_CONFIG)
 from ffn_policy_api import install as _install_policy_api
 _install_policy_api(app, get_current_user, _require_admin, _extension_audit, config_mgr)
 

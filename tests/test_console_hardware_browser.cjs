@@ -19,10 +19,10 @@ const core=path.resolve(__dirname,'..'),platform=process.env.TEST_PA5200_ROOT||p
    }
    const file=name==='/'?path.join(core,'static/index.html'):name.startsWith('/static/extensions/pa5200/')?path.join(platform,'management/static',path.basename(name)):path.join(core,'static',path.basename(name));
    if(!fs.existsSync(file))return route.fulfill({status:404,body:''});
-   const ext=path.extname(file);return route.fulfill({body:fs.readFileSync(file),contentType:({'.html':'text/html','.js':'application/javascript','.css':'text/css','.svg':'image/svg+xml'})[ext]});
+   const ext=path.extname(file);return route.fulfill({body:fs.readFileSync(file),contentType:({'.html':'text/html','.js':'application/javascript','.css':'text/css','.svg':'image/svg+xml','.png':'image/png'})[ext]});
   });
   await page.goto('http://ffn.test/');
-  assert.equal(await page.locator('link[rel=icon]').getAttribute('href'),'/static/favicon.svg');
+  assert.equal(await page.locator('link[rel=icon]').getAttribute('href'),'/static/ffn-icon.png');
   await page.locator('.login-theme select').selectOption('dark');
   assert.equal(await page.locator('html').getAttribute('data-theme'),'dark');
   await page.reload();assert.equal(await page.locator('html').getAttribute('data-theme'),'dark');

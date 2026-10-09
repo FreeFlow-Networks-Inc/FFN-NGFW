@@ -8,6 +8,7 @@ Management INPUT/OUTPUT and platform LACP owners are not changed.
 """
 import argparse
 import contextlib
+import subprocess
 import fcntl
 import hashlib
 import json
@@ -64,6 +65,13 @@ def atomic(path, value):
 def boot():return Path('/proc/sys/kernel/random/boot_id').read_text().strip()
 
 
+def kernel_lifetime_changed(old,boot_id):
+    """True when the saved Security state was written under another dataplane
+    kernel lifetime: this kernel never had its tables, so what validation sees
+    is a restore, not a drift. Only an absent table is excused by the callers."""
+    return bool(old) and old.get('boot_id')!=boot_id
+
+
 def saved():
     return json.loads(STATE.read_text()) if STATE.exists() else None
 
@@ -88,6 +96,20 @@ def close_gate():
     if any(x.get('table',{}).get('name')==GATE and x['table']['family']=='inet' for x in data['nftables']):
         nat.nft(['flush','set','inet',GATE,'live'])
     else:nat.nft(['-f','-'],gate())
+
+
+def gate_close_problem():
+    """Close the transit gate; return None, or why it could not be closed now.
+
+    A stalled or failed nft (at dataplane boot the first exec can take longer
+    than its budget on a cold NFS root) is transient: the gate's lease expires
+    on its own and the next tick retries. It must never be journaled as a
+    fault, which no later collector start could recover from."""
+    try:
+        with lock():close_gate()
+    except (subprocess.TimeoutExpired,subprocess.CalledProcessError,OSError,NatError) as error:
+        return 'Policy gate close failed: '+str(error)
+    return None
 
 
 def renew():
@@ -189,6 +211,11 @@ def prepare(request, replay=False, *, candidate=False):
         raise NatError('Security request requires revision and policy XML')
     old=saved();revision=old['revision'] if old else 0
     if type(request['revision']) is not int or request['revision']!=revision:raise NatError('Security revision changed; refresh before retrying')
+    # After a dataplane boot nothing else can bring the policy back: the
+    # committed-configuration replay validates through here before its apply
+    # restarts the packet owners, and the owners are what the runtime's own
+    # replay waits for. A record from another kernel lifetime is restorable.
+    restoring=kernel_lifetime_changed(old,boot())
     health()
     current,links=bindings();data=inventory();guards=guard_scripts(links);ownership(data,guards)
     addresses={r['ifname']:r for r in json.loads(nat.run(['ip','-n',nat.NS,'-j','address']))}
@@ -200,7 +227,7 @@ def prepare(request, replay=False, *, candidate=False):
     compiled=compile_policy(request['xml'])
     if not compiled['valid']:raise NatError(str(compiled['blockers']))
     validation_network=({k:v['device'] for k,v in current.items()},addresses) if candidate else None
-    old_nat,_,_=nat.prepare(dict(revision=nat.saved()['revision'],plan=compiled['plan']),allow_restore=replay,
+    old_nat,_,_=nat.prepare(dict(revision=nat.saved()['revision'],plan=compiled['plan']),allow_restore=replay or restoring,
                            validation_network=validation_network)
     same=bool(old and old['xml']==request['xml'])
     generation=revision if same else revision+1
@@ -217,7 +244,8 @@ def prepare(request, replay=False, *, candidate=False):
     scripts.update({('inet',name):script for name,script in guards.items()})
     names=table_names(data)
     if not old and ('inet','ffn_security') in names:raise NatError('Unmanaged Security table requires reconciliation')
-    if old and not replay and fingerprint(data,{tuple(k) for k in old['tables']})!=old['kernel_digest']:
+    if (old and not replay and not (restoring and ('inet','ffn_security') not in names)
+            and fingerprint(data,{tuple(k) for k in old['tables']})!=old['kernel_digest']):
         raise NatError('Security table drift; transit is held closed')
     batch=''.join(('delete table '+family+' '+name+'\n' if (family,name) in names else '')+script
                   for (family,name),script in scripts.items())
@@ -327,7 +355,10 @@ def serve():
             code_generation=generation))
     next_check=0;last_forwarding=None;last_error=None
     try:
-        with lock():close_gate()
+        while running:
+            problem=gate_close_problem()
+            if problem is None:break
+            publish(False,error=problem);time.sleep(2)
         for key in ('nf_conntrack_acct','nf_conntrack_events'):
             nat.run(['sysctl','-qw','net.netfilter.'+key+'=1'])
         collector.start()
@@ -340,9 +371,9 @@ def serve():
             fault=j.fault_reason() or (events.get('error') or 'Session collector is not current'
                 if not events['ready'] or time.monotonic()-events['monotonic']>3 else None)
             if fault:
-                with lock():close_gate()
+                problem=gate_close_problem()
                 last_forwarding=None
-                publish(False,error=fault);continue
+                publish(False,error=problem or fault);continue
             publish(True,last_forwarding,last_error)
             try:
                 with lock():
@@ -361,8 +392,8 @@ def serve():
                         raise NatError(events.get('error') or 'Session collector is not current')
                     renew();last_forwarding=state['revision'];last_error=None;publish(True,last_forwarding)
             except (NatError,OSError,ValueError) as error:
-                with lock():close_gate()
-                last_forwarding=None;last_error=str(error);publish(True,error=last_error)
+                problem=gate_close_problem()
+                last_forwarding=None;last_error=problem or str(error);publish(True,error=last_error)
     except RuntimeUpdated:
         # systemd Restart=on-failure reloads the complete process. The finally
         # block closes transit and stops the event reader, preserving conntrack
