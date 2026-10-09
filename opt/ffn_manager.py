@@ -9178,12 +9178,16 @@ async def _config_commit_serial(req, user):
         if (await _prepare_commit_review(req.partial_xpath))['revision'] != prepared['revision']:
             raise HTTPException(409, 'Configuration changed during validation. Preview again.')
         # Validate the projected scope BEFORE any hardware invalidation. The
-        # barrier reads a temporary copy of exactly the proposed running config.
+        # barrier reads a temporary copy rendered exactly as commit() will save
+        # running-config.xml, so a platform that fences on the digest of those
+        # bytes (the PA-5200 session feed hashes the saved file) sees the same
+        # digest before and after the write. A compact ET.tostring() rendering
+        # never matched the pretty-printed file and left that feed restarting.
         from ffn_policy_barrier import before_commit as _before_policy_commit
         import tempfile
         with tempfile.TemporaryDirectory(prefix='ffn-commit-') as directory:
             proposal = Path(directory) / 'running-config.xml'
-            proposal.write_bytes(ET.tostring(prepared['effective']))
+            config_mgr._save(prepared['effective'], proposal)
             try:
                 policy_barrier = await _before_policy_commit(app, proposal)
             except Exception as exc:
