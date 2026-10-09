@@ -19,11 +19,11 @@ def describe():
 
 
 class Backend:
-    def __init__(self): self.revision=0; self.applies=0; self.fail=False; self.budgets=[]
+    def __init__(self): self.revision=0; self.applies=0; self.fail=False; self.budgets=[]; self.flat=False
     async def __call__(self, argv, raw, timeout):
         data=decode(raw); action=argv[-1]
         self.budgets.append((action,timeout))
-        if action=='status': return {'config':{'revision':self.revision}}
+        if action=='status': return {'revision':self.revision} if self.flat else {'config':{'revision':self.revision}}
         if data['revision']!=self.revision: raise ValueError('revision conflict')
         if action=='validate': return {'validated':True}
         self.applies+=1
@@ -123,6 +123,16 @@ class PlaneTests(unittest.IsolatedAsyncioTestCase):
         good=request('resolve',{'request_id':req['id'],'observed_revision':1})
         self.assertEqual((await self.dp.dispatch(good))['state'],'reconciled')
         self.assertEqual((await self.dp.dispatch(new))['state'],'applied')
+
+    async def test_reconciliation_reads_a_top_level_revision_when_status_has_no_config(self):
+        # The faceplate and PHY controllers report their revision at the top level; the
+        # 2026-10-09 faceplate row could never be reconciled through the API before this.
+        self.backend.fail=True;self.backend.flat=True;req=request()
+        self.assertEqual((await self.dp.dispatch(req))['state'],'unknown')
+        self.backend.fail=False
+        self.assertEqual((await self.dp.dispatch(request('resolve',{'request_id':req['id'],'observed_revision':0})))['state'],'rejected')
+        good=await self.dp.dispatch(request('resolve',{'request_id':req['id'],'observed_revision':1}))
+        self.assertEqual((good['state'],good['result']['result']['observed_revision']),('reconciled',1))
 
     async def test_validation_and_protocol_reject_without_apply(self):
         invalid=[dict(request(),v=True),dict(request(),id='not-uuid'),dict(request(),action=['apply']),
