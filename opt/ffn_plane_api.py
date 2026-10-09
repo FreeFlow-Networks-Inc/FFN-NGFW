@@ -38,6 +38,56 @@ def install(app, current_user, require_admin, audit):
         except (OSError, asyncio.TimeoutError, ValueError, ConnectionError):
             raise HTTPException(503, 'Control events unavailable')
 
+    @app.get('/api/system/convergence')
+    async def convergence(user=Depends(current_user)):
+        """Did the committed configuration reach every subsystem after boot?
+
+        Computed from the lifecycle replay receipt, the running configuration
+        and live observations (front ports and aggregates through the selected
+        daemon, the dataplane's interface-management enforcement through the
+        relay). Admin-only: it names interfaces and their committed state. An
+        unreachable daemon or relay makes a subsystem unobservable, never a
+        failure of the request.
+        """
+        require_admin(user)
+        import json as _json
+        import ffn_convergence as conv
+        resources = {}
+        try:
+            path = selected()
+        except HTTPException as error:
+            path = None
+        for key in (('faceplate', 'status'), ('aggregates', 'status')):
+            if path is None:
+                resources[key] = {'error': 'No MP control daemon selected'}
+                continue
+            request = {'v': 1, 'id': str(uuid.uuid4()), 'resource': key[0], 'action': key[1], 'payload': {}}
+            try:
+                result = await rpc(path, request)
+                resources[key] = result.get('result') if result.get('ok') else {'error': str(result.get('error'))[:200]}
+            except (OSError, asyncio.TimeoutError, ValueError, ConnectionError) as error:
+                resources[key] = {'error': str(error)[:200]}
+        views = status = None
+        try:
+            import ffn_ifmgmt_audit as audit
+            if os.path.exists('/etc/ffn-ngfw/ssh-cp.conf'):
+                views = lambda: audit.collect(audit.run_dp)
+                status = lambda: _json.loads(audit.run_dp('cat ' + conv.DP_SERVICES_STATUS))
+        except ImportError:
+            views = None
+        return await asyncio.to_thread(conv.assess, resources=resources, dp_views=views,
+                                       tunnel=conv.unit_active, dp_status=status)
+
+    @app.post('/api/system/convergence/reapply')
+    async def convergence_reapply(user=Depends(current_user)):
+        """Start the lifecycle's committed-configuration replay for the current boots."""
+        require_admin(user)
+        import json as _json
+        import ffn_convergence as conv
+        result = await asyncio.to_thread(conv.reapply)
+        await audit(user['username'], 'convergence_reapply', _json.dumps(result, sort_keys=True)[:300])
+        return result
+
     @app.get('/api/system/planes')
     async def inventory(user=Depends(current_user)):
         """Which resources the selected daemons offer, and what is blocking them.

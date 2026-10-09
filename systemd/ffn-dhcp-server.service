@@ -1,0 +1,17 @@
+[Unit]
+Description=FFN DHCPv4 server on the dataplane's routed interfaces
+After=network.target ffn-network.service
+Wants=ffn-network.service
+
+[Service]
+Type=simple
+User=root
+UMask=0077
+ExecStart=/usr/sbin/ip netns exec ffn-data /usr/bin/python3 /usr/local/lib/ffn/ffn_dhcp_server.py serve
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

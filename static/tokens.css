@@ -41,6 +41,9 @@
   --font-mono:"Cascadia Code","Fira Code",Consolas,"DejaVu Sans Mono",monospace;
   --fs-xs:10px; --fs-sm:11px; --fs-md:12px; --fs-lg:13px; --fs-xl:14px; --fs-2xl:17px; --fs-3xl:22px; --fs-num:24px;
   /* names the page templates were written against; keep them pointing at the semantic set */
+  --accent-alt:#6f42c1;
+  --chart-1:#176da0; --chart-2:#287b35; --chart-3:#946000; --chart-4:#bf302b;
+  --chart-5:#6f42c1; --chart-6:#b35c00; --chart-7:#0e7c86; --chart-8:#a8327f;
   --green:var(--ok); --red:var(--err); --orange:var(--warn); --yellow:var(--warn);
   --blue:var(--info); --amber:var(--warn); --danger:var(--err);
 }
@@ -55,6 +58,9 @@
   --border:#3a485b; --border-soft:#2a3747; --border-cell:#263345; --border-strong:#55667c;
   --text:#e5edf7; --text-dim:#b1c0d1; --text-muted:#95a8bd; --heading:#e5edf7; --control-text:#e5edf7;
   --accent:#70baff; --accent-dim:#3588d1; --accent-strong:#1f6394; --accent-strong-hover:#2a7ab5; --accent-line:#3588d1; --on-accent:#fff; --link:#70baff; --ospf:#a371f7;
+  --accent-alt:#a371f7;
+  --chart-1:#70baff; --chart-2:#61d695; --chart-3:#ecc16c; --chart-4:#ff8b88;
+  --chart-5:#a371f7; --chart-6:#f0883e; --chart-7:#56d4dd; --chart-8:#db61a2;
   --ok:#61d695;   --ok-ink:#8fe3b3;   --ok-soft:#163a2a;
   --warn:#ecc16c; --warn-ink:#f0cf8a; --warn-soft:#3d2e00;
   --err:#ff8b88;  --err-ink:#ffa3a0;  --err-soft:#4a1a1a;

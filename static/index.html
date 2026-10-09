@@ -18,6 +18,8 @@
      its source and the hashes to re-verify it with. -->
 <script src="/static/vendor/chart.umd.js"></script>
 <script src="/static/plane-control.js"></script>
+<script src="/static/convergence.js"></script>
+<script src="/static/dhcp.js"></script>
 <script src="/static/mp-interfaces.js"></script>
 <link rel="stylesheet" href="/static/tokens.css">
 <link rel="stylesheet" href="/static/console.css">
@@ -97,7 +99,7 @@
       <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--text-muted);margin-right:4px" id="commit-dot"></span>
       Commit
     </button>
-    <button id="lock-btn" class="btn btn-sm btn-xs" onclick="openLockInfo()" style="font-size:10px">
+    <button id="lock-btn" class="btn btn-sm btn-xs" onclick="openLockInfo()" style="font-size:var(--fs-xs)">
       <span id="lock-icon">🔓</span> <span id="lock-status-label">Unlocked</span>
     </button>
     <span class="status-dot"></span>
@@ -176,13 +178,13 @@
 <!-- Static Route Modal (per virtual router) -->
 <div class="modal-overlay" id="modal-route">
   <div class="modal">
-    <h3><span id="route-modal-title">Add Static Route</span> <span id="route-vr-label" class="text-dim" style="font-size:12px"></span></h3>
+    <h3><span id="route-modal-title">Add Static Route</span> <span id="route-vr-label" class="text-dim" style="font-size:var(--fs-md)"></span></h3>
     <input type="hidden" id="route-vr"><input type="hidden" id="route-id">
     <div class="form-group"><label>Destination (CIDR)</label><input type="text" id="route-dest" placeholder="10.0.0.0/24"></div>
     <div class="form-group"><label>Next Hop</label><input type="text" id="route-nh" placeholder="10.0.0.1"></div>
     <div class="form-group"><label>Outgoing Interface</label><select id="route-iface"></select></div>
     <div class="form-group"><label>Metric</label><input type="number" id="route-metric" value="100"></div>
-    <div id="route-msg" style="font-size:11px;min-height:14px"></div>
+    <div id="route-msg" style="font-size:var(--fs-sm);min-height:14px"></div>
     <div class="form-actions">
       <button class="btn" onclick="closeModal('modal-route')">Cancel</button>
       <button class="btn btn-primary" onclick="saveVRoute()">OK</button>
@@ -206,8 +208,8 @@
     <div class="form-group"><label>Router ID</label><input type="text" id="vr-router-id" placeholder="10.0.0.1"></div>
     <div class="form-group" id="vr-asn-group" style="display:none"><label>ASN (BGP)</label><input type="number" id="vr-asn" placeholder="65000"></div>
     <div class="form-group"><label style="cursor:pointer"><input type="checkbox" id="vr-admin-up" checked style="vertical-align:middle"> Admin up</label></div>
-    <p class="text-dim" style="font-size:10px">table_id is auto-allocated (VRF_TABLE_BASE 1000 + index). Each VR is an FRR <code>vrf</code> instance (zebra owns the table). The management interface is never enslaved.</p>
-    <div id="vr-msg" style="font-size:11px;min-height:14px"></div>
+    <p class="text-dim" style="font-size:var(--fs-xs)">table_id is auto-allocated (VRF_TABLE_BASE 1000 + index). Each VR is an FRR <code>vrf</code> instance (zebra owns the table). The management interface is never enslaved.</p>
+    <div id="vr-msg" style="font-size:var(--fs-sm);min-height:14px"></div>
     <div class="form-actions">
       <button class="btn" onclick="closeModal('modal-vr')">Cancel</button>
       <button class="btn btn-primary" onclick="saveVR()">OK</button>
@@ -255,7 +257,7 @@
 <div class="modal-overlay" id="modal-session">
   <div class="modal" style="width:600px">
     <h3>Session Detail</h3>
-    <div id="session-detail-content" style="font-size:12px;line-height:2"></div>
+    <div id="session-detail-content" style="font-size:var(--fs-md);line-height:2"></div>
     <div class="form-actions"><button class="btn" onclick="closeModal('modal-session')">Close</button></div>
   </div>
 </div>
@@ -281,7 +283,7 @@
 <div class="modal-overlay" id="modal-info">
   <div class="modal">
     <h3 id="info-modal-title">Details</h3>
-    <div id="info-modal-body" style="font-size:12px;line-height:2"></div>
+    <div id="info-modal-body" style="font-size:var(--fs-md);line-height:2"></div>
     <div class="form-actions"><button class="btn" onclick="closeModal('modal-info')">Close</button></div>
   </div>
 </div>
@@ -310,9 +312,9 @@
     <div class="form-group" id="commit-custom-xpath-group" style="display:none">
       <label>Custom xpath (dot-notation)</label><input type="text" id="commit-custom-xpath" oninput="invalidateCommitReview()" placeholder="config.device.setup.management.hostname">
     </div>
-    <div id="commit-validation" role="status" aria-live="polite" style="font-size:12px;margin:12px 0"></div>
-    <div class="section"><h4 style="font-size:12px;margin-bottom:8px">Preview of Selected Scope</h4>
-      <p class="text-dim" style="font-size:11px">Includes settings staged through XML and legacy resource editors. Credential values are redacted.</p>
+    <div id="commit-validation" role="status" aria-live="polite" style="font-size:var(--fs-md);margin:12px 0"></div>
+    <div class="section"><h4 style="font-size:var(--fs-md);margin-bottom:8px">Preview of Selected Scope</h4>
+      <p class="text-dim" style="font-size:var(--fs-sm)">Includes settings staged through XML and legacy resource editors. Credential values are redacted.</p>
       <div id="commit-diff" class="commit-modal-body"><p class="text-dim">Loading...</p></div>
     </div>
     <div class="form-actions" style="margin-top:16px;display:flex;flex-wrap:wrap;gap:8px">
@@ -322,7 +324,7 @@
       <button class="btn btn-danger" id="btn-revert-commit" onclick="if(confirm('Discard XML candidate changes? Changes in legacy resource editors are kept.'))doRevert()">Revert Candidate</button>
       <button class="btn" onclick="closeModal('modal-commit')">Close</button>
       <button class="btn" onclick="openTasksModal()">Tasks</button>
-      <div id="commit-msg" role="status" aria-live="polite" style="flex-basis:100%;font-size:12px;overflow-wrap:anywhere"></div>
+      <div id="commit-msg" role="status" aria-live="polite" style="flex-basis:100%;font-size:var(--fs-md);overflow-wrap:anywhere"></div>
     </div>
   </div>
 </div>
@@ -330,12 +332,12 @@
 <!-- Commit history modal -->
 <div class="modal-overlay" id="modal-history">
   <div class="modal" style="max-width:1100px;width:92vw">
-    <h3>Commit History <span id="history-count-label" class="text-dim" style="font-size:11px;font-weight:normal"></span></h3>
-    <p class="text-dim" style="font-size:11px;margin-bottom:10px">
+    <h3>Commit History <span id="history-count-label" class="text-dim" style="font-size:var(--fs-sm);font-weight:normal"></span></h3>
+    <p class="text-dim" style="font-size:var(--fs-sm);margin-bottom:10px">
       Every commit appends a versioned snapshot. Rollback loads a version into the candidate — you must then commit to activate it.
     </p>
     <div style="max-height:60vh;overflow:auto;border:1px solid var(--border);border-radius:4px">
-      <table class="data-table" style="width:100%;font-size:11px">
+      <table class="data-table" style="width:100%;font-size:var(--fs-sm)">
         <thead>
           <tr>
             <th style="width:60px">Ver</th>
@@ -372,7 +374,7 @@
 <div class="modal-overlay" id="modal-lock">
   <div class="modal" style="max-width:500px">
     <h3>Configuration Lock</h3>
-    <div id="lock-info-body" style="font-size:12px;line-height:2">Loading...</div>
+    <div id="lock-info-body" style="font-size:var(--fs-md);line-height:2">Loading...</div>
     <div class="form-actions" style="margin-top:16px;display:flex;gap:8px">
       <button class="btn btn-primary" id="btn-acquire-lock" onclick="acquireLock()">Acquire Lock</button>
       <button class="btn" id="btn-release-lock" onclick="releaseLock()">Release Lock</button>
@@ -519,6 +521,7 @@ const TAB_MENUS = {
     {section:'Hardware & Runtime'},
     {id:'dash-hardware',label:'Hardware Inventory'},
     {id:'dash-system',label:'System Health'},
+    {id:'device-convergence',label:'Boot & Convergence'},
     {id:'dash-offload',label:'Dataplane Offload',needs:'offload_complex'},
     {id:'dataplane-engines',label:'Dataplane & Engines'},
     {id:'device-control-planes',label:'Control Planes',needs:'plane_control'},
@@ -1011,7 +1014,7 @@ async function doRevert() {
 function _typeBadge(t) {
   const colors = { full:'var(--blue)', partial:'var(--orange)', rollback:'var(--red)', initial:'var(--text-muted)' };
   const bg = colors[t] || 'var(--text-muted)';
-  return `<span class="badge" style="background:${bg};color:#000">${t||'?'}</span>`;
+  return `<span class="badge" style="background:${bg};color:var(--on-status)">${t||'?'}</span>`;
 }
 
 function _fmtTs(ts) {
@@ -1042,13 +1045,13 @@ async function loadHistory() {
       + `<span style="color:var(--orange)">~${c.modified||0}</span> `
       + `<span style="color:var(--red)">-${c.removed||0}</span>`;
     const desc = (e.description || '').replace(/</g,'&lt;').replace(/>/g,'&gt;') || '<span class="text-dim">(no description)</span>';
-    const xpath = e.xpath ? `<br><span class="text-dim" style="font-size:10px">xpath: ${e.xpath}</span>` : '';
+    const xpath = e.xpath ? `<br><span class="text-dim" style="font-size:var(--fs-xs)">xpath: ${e.xpath}</span>` : '';
     return `<tr>
       <td><b>v${e.version}</b></td>
-      <td style="font-family:monospace;font-size:10px">${_fmtTs(e.timestamp)}</td>
+      <td style="font-family:monospace;font-size:var(--fs-xs)">${_fmtTs(e.timestamp)}</td>
       <td>${e.user||'?'}</td>
       <td>${_typeBadge(e.type)}</td>
-      <td style="font-size:10px">${changeText}</td>
+      <td style="font-size:var(--fs-xs)">${changeText}</td>
       <td>${desc}${xpath}</td>
       <td style="text-align:right">
         <button class="btn btn-xs" onclick="viewHistoryDiff(${e.version})">Diff</button>
@@ -1068,7 +1071,7 @@ async function viewHistoryDiff(version) {
   const diff = await api(`/api/config/history/${version}/diff`);
   if (!diff) { el.innerHTML = '<p class="text-dim">No response</p>'; return; }
   if (diff.message && !diff.has_changes) { el.innerHTML = `<p class="text-dim">${diff.message}</p>`; return; }
-  let html = `<p class="text-dim" style="font-size:11px;margin-bottom:8px">`
+  let html = `<p class="text-dim" style="font-size:var(--fs-sm);margin-bottom:8px">`
     + `v${diff.old} → v${diff.new} — `
     + `${diff.total_changes} change(s) `
     + `(<span style="color:var(--green)">+${diff.added.length}</span> `
@@ -1102,7 +1105,7 @@ async function viewHistoryXml(version) {
   if (!res.ok) { alert('Could not load XML for v'+version); return; }
   const xml = await res.text();
   const w = window.open('', '_blank');
-  w.document.write('<pre style="font-family:monospace;font-size:11px;white-space:pre-wrap;padding:14px">'
+  w.document.write('<pre style="font-family:monospace;font-size:var(--fs-sm);white-space:pre-wrap;padding:14px">'
     + xml.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     + '</pre>');
   w.document.title = `running-config v${version}`;
@@ -1343,12 +1346,12 @@ function platformNotApplicable(c, label, feature) {
   c.innerHTML = `
     <div class="page-header"><h2>${_escSP(label)}</h2></div>
     <div class="card">
-      <div style="font-size:13px;line-height:1.9">
+      <div style="font-size:var(--fs-lg);line-height:1.9">
         <strong>Not applicable on this hardware.</strong>
         <div class="text-dim" style="margin-top:6px">
           ${_escSP(hw)} does not have this subsystem${why ? ' &mdash; ' + _escSP(why) : ''}.
         </div>
-        <div class="text-dim" style="margin-top:10px;font-size:11px">
+        <div class="text-dim" style="margin-top:10px;font-size:var(--fs-sm)">
           This is not a fault and there is nothing to configure. See
           <strong>Device &rsaquo; Setup</strong> for what this chassis does have.
         </div>
@@ -1440,6 +1443,7 @@ function renderPage(pageId) {
     'dash-ddos': renderDashDDoS,
     'dash-system': renderDashSystemHealth,
     'dash-hardware': renderDashHardware,
+    'device-convergence': renderDeviceConvergence,
     'dash-offload': renderDPOffload,
     'device-updates': renderPatchManagement,
     'vendor-fw': renderVendorFW,
@@ -1595,7 +1599,8 @@ function renderPage(pageId) {
 /* ---- Dashboard > Overview ---- */
 function renderDashOverview(c) {
   c.innerHTML = `
-    <div class="page-header"><h2>Dashboard</h2><span id="dash-time" class="text-dim" style="font-size:11px"></span></div>
+    <div class="page-header"><h2>Dashboard</h2><span id="dash-time" class="text-dim" style="font-size:var(--fs-sm)"></span></div>
+    <div class="section"><div class="card conv-card" id="dash-convergence" aria-live="polite"><span class="conv-lead text-dim">Configuration convergence: checking…</span></div></div>
     <div class="section"><div class="grid grid-4" id="port-cards"></div></div>
     <div class="section"><div class="grid grid-2">
       <div class="card"><h3 id="data-port-history">Data Port Traffic</h3><div class="chart-container"><canvas id="chart-throughput"></canvas></div></div>
@@ -1605,45 +1610,46 @@ function renderDashOverview(c) {
       <div class="card">
         <h3>Active Sessions</h3>
         <div class="big-num" id="dash-sessions">--</div>
-        <div class="sub" id="dash-session-cap" style="font-size:10px">--</div>
+        <div class="sub" id="dash-session-cap" style="font-size:var(--fs-xs)">--</div>
         <div class="bar-track" style="margin-top:6px;height:6px"><div id="dash-session-bar" class="bar-fill" style="width:0%;background:var(--green);height:6px"></div></div>
         <div class="sub" id="dash-hit-ratio" style="margin-top:6px">Hit ratio: --</div>
       </div>
       <div class="card">
         <h3>Control Plane</h3>
         <div class="big-num" id="dash-cp-cpu">--%</div>
-        <div class="sub" id="dash-cp-cores" style="font-size:10px">cores: --</div>
-        <div class="sub" id="dash-cp-source" style="font-size:10px" aria-live="polite">Awaiting statistics</div>
-        <details style="margin-top:6px;font-size:10px"><summary>Per-core utilization</summary><div id="dash-cp-per-core" style="max-height:140px;overflow:auto;white-space:pre-wrap">--</div></details>
+        <div class="sub" id="dash-cp-cores" style="font-size:var(--fs-xs)">cores: --</div>
+        <div class="sub" id="dash-cp-source" style="font-size:var(--fs-xs)" aria-live="polite">Awaiting statistics</div>
+        <details style="margin-top:6px;font-size:var(--fs-xs)"><summary>Per-core utilization</summary><div id="dash-cp-per-core" style="max-height:140px;overflow:auto;white-space:pre-wrap">--</div></details>
         <div class="bar-track" style="margin-top:6px;height:6px"><div id="dash-cp-bar" class="bar-fill" style="width:0%;background:var(--accent);height:6px"></div></div>
-        <div class="sub" style="margin-top:6px;font-size:10px">Memory: <span id="dash-cp-mem">--</span></div>
+        <div class="sub" style="margin-top:6px;font-size:var(--fs-xs)">Memory: <span id="dash-cp-mem">--</span></div>
       </div>
       <div class="card">
         <h3>Management Plane</h3>
         <div class="big-num" id="dash-mp-cpu">--%</div>
-        <div class="sub" id="dash-mp-cores" style="font-size:10px">cores: --</div>
-        <div class="sub" id="dash-mp-source" style="font-size:10px" aria-live="polite">Awaiting statistics</div>
-        <details style="margin-top:6px;font-size:10px"><summary>Per-core utilization</summary><div id="dash-mp-per-core" style="max-height:140px;overflow:auto;white-space:pre-wrap">--</div></details>
+        <div class="sub" id="dash-mp-cores" style="font-size:var(--fs-xs)">cores: --</div>
+        <div class="sub" id="dash-mp-source" style="font-size:var(--fs-xs)" aria-live="polite">Awaiting statistics</div>
+        <details style="margin-top:6px;font-size:var(--fs-xs)"><summary>Per-core utilization</summary><div id="dash-mp-per-core" style="max-height:140px;overflow:auto;white-space:pre-wrap">--</div></details>
         <div class="bar-track" style="margin-top:6px;height:6px"><div id="dash-mp-bar" class="bar-fill" style="width:0%;background:var(--orange);height:6px"></div></div>
-        <div class="sub" style="margin-top:6px;font-size:10px">Memory: <span id="dash-mp-mem">--</span></div>
+        <div class="sub" style="margin-top:6px;font-size:var(--fs-xs)">Memory: <span id="dash-mp-mem">--</span></div>
       </div>
     </div></div>
     <div class="section"><div class="grid grid-3">
       <div class="card">
         <h3>Data Plane</h3>
         <div class="big-num" id="dash-dp-cpu">--%</div>
-        <div class="sub" id="dash-dp-cores" style="font-size:10px">cores: --</div>
-        <div class="sub" id="dash-dp-source" style="font-size:10px" aria-live="polite">Awaiting statistics</div>
-        <details style="margin-top:6px;font-size:10px"><summary>Per-core utilization</summary><div id="dash-dp-per-core" style="max-height:140px;overflow:auto;white-space:pre-wrap">--</div></details>
+        <div class="sub" id="dash-dp-cores" style="font-size:var(--fs-xs)">cores: --</div>
+        <div class="sub" id="dash-dp-source" style="font-size:var(--fs-xs)" aria-live="polite">Awaiting statistics</div>
+        <details style="margin-top:6px;font-size:var(--fs-xs)"><summary>Per-core utilization</summary><div id="dash-dp-per-core" style="max-height:140px;overflow:auto;white-space:pre-wrap">--</div></details>
         <div class="bar-track" style="margin-top:6px;height:6px"><div id="dash-dp-bar" class="bar-fill" style="width:0%;background:var(--red);height:6px"></div></div>
-        <div class="sub" style="margin-top:6px;font-size:10px"><span id="dash-dp-isolcpus">CPU allocation: --</span></div>
+        <div class="sub" style="margin-top:6px;font-size:var(--fs-xs)"><span id="dash-dp-isolcpus">CPU allocation: --</span></div>
       </div>
       <div class="card"><h3 id="resource-title">System Resources</h3><div id="fpga-resources"></div></div>
-      <div class="card"><h3>System</h3><div id="system-info" style="font-size:12px;line-height:2"></div></div>
+      <div class="card"><h3>System</h3><div id="system-info" style="font-size:var(--fs-md);line-height:2"></div></div>
     </div></div>
     <div class="workflow-actions"><button class="btn" onclick="switchSubPage('dash-ddos')">DDoS Detail</button>
       <button class="btn" onclick="switchSubPage('dash-hardware')">Hardware Inventory</button>
       <button class="btn" onclick="switchSubPage('interfaces')">Interface Ports</button></div>`;
+  if (window.ffnConvergence) window.ffnConvergence.card(document.getElementById('dash-convergence'));
   initDashboardCharts();
   refreshDashboard();
   startRefresh(refreshDashboard, 3000);
@@ -1674,7 +1680,7 @@ function initDashboardCharts() {
   const pCtx = pEl.getContext('2d');
   charts.threats = new Chart(pCtx,{
     type:'doughnut',
-    data:{labels:['DPI','DLP','DNS','ML'],datasets:[{data:[0,0,0,0],backgroundColor:['#2f81f7','#f85149','#d29922','#3fb950'],borderWidth:0}]},
+    data:{labels:['DPI','DLP','DNS','ML'],datasets:[{data:[0,0,0,0],backgroundColor:statusPalette(['info','err','warn','ok']),borderWidth:0}]},
     options:{responsive:true,maintainAspectRatio:false,cutout:'65%',plugins:{legend:{position:'right',labels:{color:getComputedStyle(document.documentElement).getPropertyValue('--text-dim').trim(),padding:14,font:{size:11}}}}}
   });
 }
@@ -1710,7 +1716,7 @@ function renderDataPortTraffic(tp) {
     if (chart.options.scales.y.title.text !== unit) { chart.data.labels=[]; old.clear(); }
     chart.options.scales.y.title.text=unit;
     chart.data.datasets=ports.flatMap((p,i)=>['rx','tx'].map(direction=>{
-      const label=p.name+' '+direction.toUpperCase(), color=_chartColors[i%_chartColors.length];
+      const label=p.name+' '+direction.toUpperCase(), color=chartPalette()[i%_chartColors.length];
       const ds=old.get(label) || {label,borderColor:color,borderDash:direction==='tx'?[4,3]:[],
         data:Array(chart.data.labels.length).fill(null),pointRadius:0,borderWidth:1.5,tension:.2,fill:false};
       ds.data.push(Number.isFinite(p[direction+'_'+field])?p[direction+'_'+field]:null);return ds;
@@ -1723,6 +1729,25 @@ function renderDataPortTraffic(tp) {
 }
 
 const _chartColors = ['#2f81f7','#3fb950','#d29922','#f85149','#a371f7','#f0883e','#56d4dd','#db61a2'];
+/* Theme palette for canvas charts, which cannot use CSS variables: read the
+   chart tokens at draw time so a theme switch repaints with its own colours;
+   the literal list above is the fallback outside a styled document. */
+function chartPalette(count) {
+  let values = _chartColors;
+  try {
+    const style = getComputedStyle(document.documentElement);
+    const read = [1,2,3,4,5,6,7,8].map(i => style.getPropertyValue('--chart-' + i).trim());
+    if (read.every(Boolean)) values = read;
+  } catch (e) { /* no styled document: fallback palette */ }
+  return count ? values.slice(0, count) : values.slice();
+}
+function statusPalette(names) {
+  const fallback = {ok:'#3fb950', warn:'#d29922', err:'#f85149', crit:'#ff6b6b', info:'#2f81f7', muted:'#484f58'};
+  let style = null;
+  try { style = getComputedStyle(document.documentElement); } catch (e) { style = null; }
+  const tokens = {muted: '--text-muted'};
+  return names.map(name => (style && style.getPropertyValue(tokens[name] || ('--' + name)).trim()) || fallback[name]);
+}
 
 function _setPlaneWidget(prefix, info) {
   info = info || {state:'unavailable'};
@@ -1792,7 +1817,7 @@ async function refreshDashboard() {
 
   // Threat chart
   if (charts.threats && threats) {
-    charts.threats.data.datasets[0].data = threats.summary.map(t=>t.count);
+    charts.threats.data.datasets[0].data = ((threats && threats.summary) || []).map(t=>t.count);
     charts.threats.update('none');
   }
 
@@ -1820,13 +1845,13 @@ async function refreshDashboard() {
     if (resEl) {
       if (resources.fpga && resources.fpga.detected) {
         const f = resources.fpga;
-        resEl.innerHTML = '<div style="font-size:10px;color:var(--text-dim);margin-bottom:4px">FPGA</div>'+
-          resBar('LUT',f.lut_percent,'#2f81f7')+resBar('BRAM',f.bram_percent,'#3fb950')+resBar('URAM',f.uram_percent,'#d29922');
+        resEl.innerHTML = '<div style="font-size:var(--fs-xs);color:var(--text-dim);margin-bottom:4px">FPGA</div>'+
+          resBar('LUT',f.lut_percent,'var(--accent)')+resBar('BRAM',f.bram_percent,'var(--ok)')+resBar('URAM',f.uram_percent,'var(--warn)');
       } else {
-        resEl.innerHTML = '<div style="font-size:10px;color:var(--text-dim);margin-bottom:4px">System</div>'+
-          resBar('CPU',resources.cpu?resources.cpu.usage_percent:0,'#2f81f7')+
-          resBar('Memory',resources.memory?resources.memory.percent:0,'#3fb950')+
-          resBar('Disk',resources.disk?resources.disk.percent:0,'#d29922');
+        resEl.innerHTML = '<div style="font-size:var(--fs-xs);color:var(--text-dim);margin-bottom:4px">System</div>'+
+          resBar('CPU',resources.cpu?resources.cpu.usage_percent:0,'var(--accent)')+
+          resBar('Memory',resources.memory?resources.memory.percent:0,'var(--ok)')+
+          resBar('Disk',resources.disk?resources.disk.percent:0,'var(--warn)');
       }
     }
   }
@@ -1849,7 +1874,7 @@ async function refreshDashboard() {
 /* ---- Dashboard > Throughput (dedicated) ---- */
 function renderDashThroughput(c) {
   c.innerHTML = `
-    <div class="page-header"><h2>Throughput</h2><span id="dash-time" class="text-dim" style="font-size:11px"></span></div>
+    <div class="page-header"><h2>Throughput</h2><span id="dash-time" class="text-dim" style="font-size:var(--fs-sm)"></span></div>
     <div class="section"><div class="grid grid-4" id="port-cards"></div></div>
     <div class="section"><div class="card"><h3 id="data-port-history">Data Port Traffic</h3><div class="chart-container" style="height:300px"><canvas id="chart-throughput"></canvas></div></div></div>`;
   _dashChartInitialized = false;
@@ -1868,7 +1893,7 @@ function renderDashSessions(c) {
       <div class="card"><h3>LISTEN</h3><div class="big-num" id="dash-listen">--</div></div>
       <div class="card"><h3>TIME_WAIT</h3><div class="big-num" id="dash-timewait">--</div></div>
     </div>
-    <div class="card"><div id="dash-hit-ratio" class="text-dim" style="font-size:12px"></div></div>`;
+    <div class="card"><div id="dash-hit-ratio" class="text-dim" style="font-size:var(--fs-md)"></div></div>`;
   loadSessionDetail();
   startRefresh(loadSessionDetail, 3000);
 }
@@ -1890,13 +1915,13 @@ function renderDashDDoS(c) {
     <div class="page-header"><h2>DDoS Zone Heatmap</h2></div>
     <div class="card">
       <div class="heatmap" id="ddos-heatmap"></div>
-      <div style="display:flex;gap:14px;margin-top:6px;font-size:10px;color:var(--text-dim)">
+      <div style="display:flex;gap:14px;margin-top:6px;font-size:var(--fs-xs);color:var(--text-dim)">
         <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:var(--heat-0);vertical-align:middle"></span> Clear</span>
         <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:var(--heat-1);vertical-align:middle"></span> Low</span>
         <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:var(--heat-2);vertical-align:middle"></span> Medium</span>
         <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:var(--heat-3);vertical-align:middle"></span> High</span>
       </div>
-      <p id="ddos-fpga-note" class="text-dim" style="font-size:11px;margin-top:8px"></p>
+      <p id="ddos-fpga-note" class="text-dim" style="font-size:var(--fs-sm);margin-top:8px"></p>
     </div>`;
   loadDDoSMap();
   startRefresh(loadDDoSMap, 5000);
@@ -1997,7 +2022,7 @@ async function patchAction(action) {
 
 async function renderUpdates(c){
   c.innerHTML=`<div class="page-header"><h2>Software Updates</h2></div>
-  <p class="text-dim" style="font-size:11px;margin-bottom:10px">FFN pulls updates from an FFN update server using its own signed-payload updater &mdash; no vendor infrastructure and no vendor content. Every payload must carry a valid manifest signature <em>and</em> match its SHA-256 before anything is written; verification failures apply nothing.</p>
+  <p class="text-dim" style="font-size:var(--fs-sm);margin-bottom:10px">FFN pulls updates from an FFN update server using its own signed-payload updater &mdash; no vendor infrastructure and no vendor content. Every payload must carry a valid manifest signature <em>and</em> match its SHA-256 before anything is written; verification failures apply nothing.</p>
   <div id="upd-body"><div class="text-dim">Loading&hellip;</div></div>`;
   loadUpdates();
 }
@@ -2007,7 +2032,7 @@ async function loadUpdates(){
   const row=k=>{const i=inst[k]||{};
     return `<tr><td><strong>${_escSP(k)}</strong></td>
       <td>${i.version?_escSP(i.version):'<span class="text-dim">not installed</span>'}</td>
-      <td class="mono" style="font-size:10px">${i.sha256?_escSP(i.sha256.slice(0,16)):''}</td>
+      <td class="mono" style="font-size:var(--fs-xs)">${i.sha256?_escSP(i.sha256.slice(0,16)):''}</td>
       <td><button class="btn btn-sm" onclick="updInstall('${k}',false)">Check &amp; verify</button>
           <button class="btn btn-sm btn-primary" onclick="updInstall('${k}',true)">Install</button></td></tr>`;};
   el.innerHTML=`<div class="card" style="margin-bottom:12px">
@@ -2017,7 +2042,7 @@ async function loadUpdates(){
       <button class="btn btn-sm" onclick="updSaveServer()">Save</button>
       <button class="btn btn-sm" onclick="updCheck()">Check for updates</button>
     </div>
-    <div style="font-size:11px;margin-top:8px" class="text-dim">
+    <div style="font-size:var(--fs-sm);margin-top:8px" class="text-dim">
       Verification: ${d.key_present?('<span class="badge badge-up">'+_escSP(d.key_type||'present')+'</span>'+(d.ed25519?'':' <span class="badge" style="background:var(--warn-soft);color:var(--warn-ink)" title="A shared secret must ship in every image, so anyone with an image could forge updates. Use ed25519 for distributed images.">shared secret</span>')):'<span class="badge badge-down">no key &mdash; all updates will be refused</span>'}
       &nbsp;&middot;&nbsp; Running root: <span class="mono">${_escSP(d.running_root||'unknown')}</span>
       &nbsp;&middot;&nbsp; Updater: ${d.updater?'installed':'<span class="badge badge-down">missing</span>'}
@@ -2026,14 +2051,14 @@ async function loadUpdates(){
     <div class="section-title">Payloads</div>
     <table class="data-table"><thead><tr><th>Kind</th><th>Installed version</th><th>SHA-256</th><th>Actions</th></tr></thead>
     <tbody>${(d.kinds||[]).map(row).join('')}</tbody></table>
-    <p class="text-dim" style="font-size:11px;margin-top:8px">
+    <p class="text-dim" style="font-size:var(--fs-sm);margin-top:8px">
       <strong>content</strong> signature/threat data &mdash; applied live.
       <strong>software</strong> FFN code &mdash; services restart, a rollback copy is kept in /root.
       <strong>image</strong> a full root filesystem &mdash; written to the <em>inactive</em> A/B partition, never the one you are running.
       Reboot and pick the other GRUB entry to switch; pick the original to roll back.</p>
   </div>
   <div class="card" style="margin-top:12px"><div class="section-title">Output</div>
-    <pre id="upd-out" class="mono" style="font-size:11px;white-space:pre-wrap;max-height:280px;overflow:auto;margin:0">&mdash;</pre></div>`;
+    <pre id="upd-out" class="mono" style="font-size:var(--fs-sm);white-space:pre-wrap;max-height:280px;overflow:auto;margin:0">&mdash;</pre></div>`;
 }
 function _updOut(t){const o=document.getElementById('upd-out'); if(o) o.textContent=t;}
 async function updSaveServer(){
@@ -2061,7 +2086,7 @@ async function updInstall(kind,apply){
 /* ---- Device > Vendor Firmware (owner-supplied, used in place) ---- */
 async function renderVendorFW(c){
   c.innerHTML=`<div class="page-header"><h2>Vendor Firmware</h2></div>
-  <p class="text-dim" style="font-size:11px;margin-bottom:10px">If you own this appliance you own the firmware that shipped on it. FFN can use <em>your</em> copy, from your own drive or a USB stick, and never ships or fetches any of it. Plug media in and FFN picks up firmware matching this chassis automatically.</p>
+  <p class="text-dim" style="font-size:var(--fs-sm);margin-bottom:10px">If you own this appliance you own the firmware that shipped on it. FFN can use <em>your</em> copy, from your own drive or a USB stick, and never ships or fetches any of it. Plug media in and FFN picks up firmware matching this chassis automatically.</p>
   <div id="vfw-body"><div class="text-dim">Detecting&hellip;</div></div>`;
   loadVendorFW();
 }
@@ -2079,15 +2104,15 @@ async function loadVendorFW(){
   const pr=ch.port_roles||{};
   const roleKeys=Object.keys(pr);
   const roleHTML = roleKeys.length ? ('<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">'
-    + '<div class="text-dim" style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">Front-panel RJ-45</div>'
+    + '<div class="text-dim" style="font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">Front-panel RJ-45</div>'
     + ['mgmt','ha1-a','ha1-b'].filter(function(k){return pr[k];}).map(function(k){
         const r=pr[k];
         const up = r.carrier==='1';
-        return '<div style="font-size:11px;line-height:1.8"><span class="mono">'+_escSP(r.iface||'(absent)')
+        return '<div style="font-size:var(--fs-sm);line-height:1.8"><span class="mono">'+_escSP(r.iface||'(absent)')
           + '</span> &mdash; '+_escSP(ROLE_LABEL[k]||k)
-          + ' <span class="badge" style="font-size:8px;background:'+(up?'var(--ok)':'var(--text-muted)')+';color:var(--surface)">'
+          + ' <span class="badge" style="font-size:var(--fs-xs);background:'+(up?'var(--ok)':'var(--text-muted)')+';color:var(--surface)">'
           + (up?'link up':'link down')+'</span>'
-          + '<span class="text-dim mono" style="font-size:9px"> '+_escSP(r.pci)+'</span></div>';
+          + '<span class="text-dim mono" style="font-size:var(--fs-xs)"> '+_escSP(r.pci)+'</span></div>';
       }).join('') + '</div>') : '';
 
   const artRows = arts.length ? arts.map(function(a){
@@ -2097,38 +2122,38 @@ async function loadVendorFW(){
       : '<span class="badge" title="No vendor manifest covers this file type. u-boot and the DP kernel have no fpga-images entry, so there is nothing to check them against.">no manifest</span>';
     const base=(a.file||'').split('/').pop();
     return '<tr><td><strong>'+_escSP(a.kind)+'</strong></td>'
-      + '<td class="mono" style="font-size:10px">'+_escSP(base)+'</td>'
+      + '<td class="mono" style="font-size:var(--fs-xs)">'+_escSP(base)+'</td>'
       + '<td>'+_escSP(a.platform||'?')+(mm?' <span class="badge badge-down">MISMATCH</span>':'')+'</td>'
       + '<td>'+integ+'</td>'
-      + '<td class="mono" style="font-size:10px">'+(a.size/1024).toFixed(0)+' KB</td></tr>';
+      + '<td class="mono" style="font-size:var(--fs-xs)">'+(a.size/1024).toFixed(0)+' KB</td></tr>';
   }).join('') : '<tr><td colspan="5" class="text-dim">Nothing imported yet &mdash; insert media holding your firmware, or import a mounted path below.</td></tr>';
 
   const stepRows=((b&&b.steps)||[]).map(function(s){
     return '<tr><td class="mono">'+s.n+'</td><td>'
       + (s.ready?'<span class="badge badge-up">ready</span>':'<span class="badge">waiting</span>')
       + '</td><td>'+_escSP(s.title)
-      + '<div class="text-dim" style="font-size:10px">'+_escSP(s.detail||'')+'</div></td></tr>';
+      + '<div class="text-dim" style="font-size:var(--fs-xs)">'+_escSP(s.detail||'')+'</div></td></tr>';
   }).join('');
 
   const mediaHTML = media.length ? media.map(function(m){
-    return '<div style="font-size:12px;line-height:1.9"><span class="mono">/dev/'+_escSP(m.device)+'</span> &mdash; '
+    return '<div style="font-size:var(--fs-md);line-height:1.9"><span class="mono">/dev/'+_escSP(m.device)+'</span> &mdash; '
       + m.size_mb+' MB'+(m.usb?' <span class="badge">USB</span>':'')
-      + '<div class="text-dim" style="font-size:10px">partitions: '+((m.partitions||[]).map(_escSP).join(', ')||'none')+'</div></div>';
-  }).join('') : '<div class="text-dim" style="font-size:12px">None detected. Insert a stick holding your firmware and it is picked up automatically.</div>';
+      + '<div class="text-dim" style="font-size:var(--fs-xs)">partitions: '+((m.partitions||[]).map(_escSP).join(', ')||'none')+'</div></div>';
+  }).join('') : '<div class="text-dim" style="font-size:var(--fs-md)">None detected. Insert a stick holding your firmware and it is picked up automatically.</div>';
 
   el.innerHTML=`<div class="grid grid-2" style="margin-bottom:12px">
-    <div class="card"><div class="section-title">This Chassis</div><div style="font-size:12px;line-height:2">
+    <div class="card"><div class="section-title">This Chassis</div><div style="font-size:var(--fs-md);line-height:2">
       <div><strong>Platform:</strong> ${_escSP(ch.platform||ch.chassis_platform||'unrecognised')} <span class="text-dim">(PCI match ${_escSP(ch.match!==undefined?Math.round(ch.match*100)+'%':(ch.PCI_match||'?'))})</span></div>
       <div><strong>DMI:</strong> ${_escSP(ch.dmi||ch.DMI_product||'?')}</div>
       <div><strong>Models:</strong> ${_escSP(Array.isArray(ch.models)?ch.models.join(', '):(ch.models||'-'))}</div>
       <div><strong>Expects:</strong> ${_escSP(ch.octeon||ch.expects||'-')}</div>
       ${roleHTML}
-      <div class="text-dim" style="font-size:10px;line-height:1.5;margin-top:6px">Firmware for a different platform is refused, not loaded &mdash; a PA-3200 bitstream on a PA-5200 could brick the box.</div>
+      <div class="text-dim" style="font-size:var(--fs-xs);line-height:1.5;margin-top:6px">Firmware for a different platform is refused, not loaded &mdash; a PA-3200 bitstream on a PA-5200 could brick the box.</div>
     </div></div>
     <div class="card"><div class="section-title">Removable Media</div>
       ${mediaHTML}
-      <div style="font-size:11px;margin-top:8px" class="text-dim">Auto-import: <strong>${_escSP(pol.autoimport||'?')}</strong> &middot; Auto-load: <strong>${_escSP(pol.autoload||'?')}</strong>
-      <div style="font-size:10px;margin-top:4px">Media mounts read-only, <span class="mono">nodev,nosuid,noexec</span>. The vendor manifest proves the files are intact, not that Palo Alto signed them &mdash; set <span class="mono">autoload=no</span> in <span class="mono">/etc/ffn-ngfw/vendor.conf</span> to confirm by hand.</div></div>
+      <div style="font-size:var(--fs-sm);margin-top:8px" class="text-dim">Auto-import: <strong>${_escSP(pol.autoimport||'?')}</strong> &middot; Auto-load: <strong>${_escSP(pol.autoload||'?')}</strong>
+      <div style="font-size:var(--fs-xs);margin-top:4px">Media mounts read-only, <span class="mono">nodev,nosuid,noexec</span>. The vendor manifest proves the files are intact, not that Palo Alto signed them &mdash; set <span class="mono">autoload=no</span> in <span class="mono">/etc/ffn-ngfw/vendor.conf</span> to confirm by hand.</div></div>
     </div></div>
 
   <div class="card" style="margin-bottom:12px"><div class="section-title">Imported Firmware</div>
@@ -2140,7 +2165,7 @@ async function loadVendorFW(){
       <button class="btn btn-sm btn-primary" onclick="vfwImport()">Import</button>
       <button class="btn btn-sm" onclick="vfwForget()">Remove all</button>
     </div>
-    <div class="text-dim" style="font-size:10px;margin-top:6px">${_escSP(d.note||'')} Stored in <span class="mono">${_escSP(d.vendor_dir||'')}</span>, which the build pipeline excludes and refuses to package.</div>
+    <div class="text-dim" style="font-size:var(--fs-xs);margin-top:6px">${_escSP(d.note||'')} Stored in <span class="mono">${_escSP(d.vendor_dir||'')}</span>, which the build pipeline excludes and refuses to package.</div>
   </div>
 
   <div class="card"><div class="section-title">Octeon Bring-up &mdash; ${b?b.ready:0}/${b?b.total:9} steps ready</div>
@@ -2150,7 +2175,7 @@ async function loadVendorFW(){
   </div>
 
   <div class="card" style="margin-top:12px"><div class="section-title">Output</div>
-    <pre id="vfw-out" class="mono" style="font-size:11px;white-space:pre-wrap;max-height:260px;overflow:auto;margin:0">&mdash;</pre></div>`;
+    <pre id="vfw-out" class="mono" style="font-size:var(--fs-sm);white-space:pre-wrap;max-height:260px;overflow:auto;margin:0">&mdash;</pre></div>`;
 }
 function _vfwOut(t){const o=document.getElementById('vfw-out'); if(o) o.textContent=t;}
 function _vfwPath(){return (document.getElementById('vfw-path')||{}).value||'';}
@@ -2178,7 +2203,7 @@ async function vfwForget(){
 /* ---- Dashboard > System Health (dedicated) ---- */
 async function renderDPOffload(c){
   c.innerHTML=`<div class="page-header"><h2>Dataplane Offload</h2></div>
-  <p class="text-dim" style="font-size:11px;margin-bottom:10px">FFN gives end-of-life appliances a second life: this x86 control plane runs FFN, while the box's on-board NPU does line rate. The FPGA/FE100 sits behind the NPU, not on the host bus.</p>
+  <p class="text-dim" style="font-size:var(--fs-sm);margin-bottom:10px">FFN gives end-of-life appliances a second life: this x86 control plane runs FFN, while the box's on-board NPU does line rate. The FPGA/FE100 sits behind the NPU, not on the host bus.</p>
   <div id="dpo-body"><div class="text-dim">Detecting&hellip;</div></div>`;
   loadDPOffload();
 }
@@ -2187,19 +2212,19 @@ async function loadDPOffload(){
   const fw=d.forwarder||{};
   const bars=(d.bars||[]).map(b=>`BAR${b.bar}=${b.size_mb}MB`).join(', ')||'none';
   el.innerHTML=`<div class="grid grid-2">
-    <div class="card"><div class="section-title">Offload NPU</div><div style="font-size:12px;line-height:2">
+    <div class="card"><div class="section-title">Offload NPU</div><div style="font-size:var(--fs-md);line-height:2">
       <div>Status: ${d.present?'<span class="badge badge-up">present</span>':'<span class="badge">none</span>'}</div>
       <div><strong>Generation:</strong> ${_escSP(d.generation||'n/a')}</div>
       <div><strong>Boot state:</strong> ${_escSP(d.boot_state||'')}</div>
       <div><strong>Driver:</strong> ${_escSP(d.driver||'unbound')}</div>
       <div><strong>BARs:</strong> ${_escSP(bars)}</div>
       <div><strong>Chips:</strong> ${(d.cp&&d.cp.chips)||0}
-        <span class="text-dim" style="font-size:10px">(${(d.pci||[]).length} PCI function(s) of them)</span></div>
-      ${(d.pci||[]).map(p=>`<div class="mono" style="font-size:10px">${_escSP(p)}</div>`).join('')}
-      ${d.note?`<div class="text-dim" style="font-size:11px">${_escSP(d.note)}</div>`:''}
+        <span class="text-dim" style="font-size:var(--fs-xs)">(${(d.pci||[]).length} PCI function(s) of them)</span></div>
+      ${(d.pci||[]).map(p=>`<div class="mono" style="font-size:var(--fs-xs)">${_escSP(p)}</div>`).join('')}
+      ${d.note?`<div class="text-dim" style="font-size:var(--fs-sm)">${_escSP(d.note)}</div>`:''}
     </div></div>
-    <div class="card"><div class="section-title">Behind the control plane</div><div style="font-size:12px;line-height:2">
-      <div class="text-dim" style="font-size:11px;margin-bottom:4px">Not on this host's PCI bus -- reported by the control plane itself.</div>
+    <div class="card"><div class="section-title">Behind the control plane</div><div style="font-size:var(--fs-md);line-height:2">
+      <div class="text-dim" style="font-size:var(--fs-sm);margin-bottom:4px">Not on this host's PCI bus -- reported by the control plane itself.</div>
       ${[['Data plane', d.dp], ['Switch', d.switch], ['Front end', d.fe100]].map(([label, x]) => {
         x = x || {};
         if (!x.present) return `<div><strong>${label}:</strong> <span class="text-dim">not found</span></div>`;
@@ -2209,21 +2234,21 @@ async function loadDPOffload(){
         // switch or the front end.
         const st = (x.liveness)
           ? '<span class="badge badge-up">present</span>'
-            + ' <span class="text-dim" style="font-size:10px">running state '
+            + ' <span class="text-dim" style="font-size:var(--fs-xs)">running state '
             + _escSP(x.liveness) + '</span>'
           : (x.driver ? '<span class="badge badge-up">driver bound</span>'
                       : '<span class="badge">no driver</span>');
         return `<div><strong>${label}:</strong> ${st}
-                <div class="text-dim" style="font-size:10px">${_escSP(x.model||'')}
+                <div class="text-dim" style="font-size:var(--fs-xs)">${_escSP(x.model||'')}
                 <span class="mono">${_escSP(x.pci||'')}</span>${x.driver?` &middot; ${_escSP(x.driver)}`:''}</div></div>`;
       }).join('')}
-      ${(d.cp&&d.cp.kernel)?`<div class="text-dim" style="font-size:10px;margin-top:6px">CP kernel ${_escSP(d.cp.arch||'')} ${_escSP(d.cp.kernel)}</div>`:''}
+      ${(d.cp&&d.cp.kernel)?`<div class="text-dim" style="font-size:var(--fs-xs);margin-top:6px">CP kernel ${_escSP(d.cp.arch||'')} ${_escSP(d.cp.kernel)}</div>`:''}
     </div></div>
-    <div class="card"><div class="section-title">FFN Forwarder (active path)</div><div style="font-size:12px;line-height:2">
+    <div class="card"><div class="section-title">FFN Forwarder (active path)</div><div style="font-size:var(--fs-md);line-height:2">
       <div>Unit: <span class="mono">${_escSP(fw.unit||'n/a')}</span> ${fw.active?'<span class="badge badge-up">running</span>':'<span class="badge badge-down">stopped</span>'}</div>
       <div><strong>Kind:</strong> ${_escSP(fw.kind||'')}</div>
-      <div><strong>Ports:</strong> ${(fw.ports||[]).map(p=>`<span class="badge badge-info" style="font-size:9px">${_escSP(p)}</span>`).join(' ')||'<span class="text-dim">none</span>'}</div>
-      <div class="text-dim" style="font-size:10px;margin-top:6px">The software path, for a host with no offload complex. On this chassis the faceplate is on the switch ASIC and forwarding is the data plane's job.</div>
+      <div><strong>Ports:</strong> ${(fw.ports||[]).map(p=>`<span class="badge badge-info" style="font-size:var(--fs-xs)">${_escSP(p)}</span>`).join(' ')||'<span class="text-dim">none</span>'}</div>
+      <div class="text-dim" style="font-size:var(--fs-xs);margin-top:6px">The software path, for a host with no offload complex. On this chassis the faceplate is on the switch ASIC and forwarding is the data plane's job.</div>
     </div></div>
   </div>`;
 }
@@ -2254,15 +2279,15 @@ async function loadHardware(refresh) {
   const nicKind = k => /dpu|smartnic/.test(k) ? 'badge-up' : (/dpdk/.test(k) ? 'badge-warning' : (/overlay|virtual|control/.test(k) ? 'badge' : 'badge-info'));
   const nicRows = (d.nics || []).map(n => `<tr>
       <td class="mono">${_escSP(n.name)}</td>
-      <td><span class="badge ${nicKind(n.kind)}" style="font-size:9px">${_escSP(n.kind)}</span></td>
+      <td><span class="badge ${nicKind(n.kind)}" style="font-size:var(--fs-xs)">${_escSP(n.kind)}</span></td>
       <td>${n.state === 'up' ? '<span class="text-green">up</span>' : (n.state === 'down' ? '<span class="text-dim">down</span>' : _escSP(n.state))}</td>
       <td>${spd(n.speed_mbps)}</td>
-      <td class="mono" style="font-size:10px">${_escSP(n.driver || '')}</td>
-      <td class="mono" style="font-size:10px">${_escSP(n.pci || '')}</td>
+      <td class="mono" style="font-size:var(--fs-xs)">${_escSP(n.driver || '')}</td>
+      <td class="mono" style="font-size:var(--fs-xs)">${_escSP(n.pci || '')}</td>
       <td>${Number.isInteger(n.numa_node) && n.numa_node >= 0 ? n.numa_node : '&mdash;'}</td>
       <td>${Number.isInteger(n.iommu_group) ? n.iommu_group : '&mdash;'}</td>
       <td>${_escSP(n.binding || 'Unknown')}${n.physical_function ? `<div class="text-dim">VF of ${_escSP(n.physical_function)}</div>` : ''}${n.sriov_totalvfs ? `<div class="text-dim">VFs: ${hwNumber(n.sriov_numvfs)} / ${hwNumber(n.sriov_totalvfs)}</div>` : ''}</td>
-      <td class="mono" style="font-size:10px">${_escSP(n.mac || '')}</td>
+      <td class="mono" style="font-size:var(--fs-xs)">${_escSP(n.mac || '')}</td>
     </tr>`).join('');
   const dimmRows = (mem.dimms || []).map(x => `<tr><td>${_escSP(x.locator || '')}</td><td>${_escSP(x.size || '')}</td><td>${_escSP(x.speed || '')}</td><td>${_escSP(x.manufacturer || '')}</td></tr>`).join('');
   const diskRows = (d.storage || []).map(x => `<tr><td class="mono">${_escSP(x.name)}</td><td>${hwNumber(x.size_gb, ' GB')}</td><td>${_escSP(x.model || 'Unknown')}</td><td>${x.rotational === true ? 'HDD' : x.rotational === false ? 'Non-rotational' : 'Unknown'}</td></tr>`).join('');
@@ -2285,7 +2310,7 @@ async function loadHardware(refresh) {
   const pciRows = ((d.pci || {}).devices || []).map(p => `<tr><td class="mono">${_escSP(p.address)}</td><td class="mono">${_escSP(p.vendor_id || '????')}:${_escSP(p.device_id || '????')}</td><td>${_escSP(p.class_id || 'Unknown')}</td><td>${_escSP(p.driver || 'Unbound / unknown')}</td><td>${p.identity_complete === false ? 'Incomplete identity' : _escSP(p.source || 'Unknown')}</td></tr>`).join('');
   const dpuCard = dpu.present ? (dpu.devices || []).map(dv => `
       <div>${badge(true, 'present')} ${_escSP(dv.type || '')}</div>
-      ${(dv.pci_devices || []).map(p => `<div class="mono" style="font-size:10px">${_escSP(p)}</div>`).join('')}
+      ${(dv.pci_devices || []).map(p => `<div class="mono" style="font-size:var(--fs-xs)">${_escSP(p)}</div>`).join('')}
       ${!dpu.control_channels && dv.control_channels ? `<div style="margin-top:4px">control: rshim ${badge(dv.control_channels.rshim, 'rshim')} mst ${badge(dv.control_channels.mst, 'mst')} tmfifo ${badge(dv.control_channels.tmfifo, 'tmfifo')}</div>` : ''}
       ${(dv.firmware && dv.firmware.psid) ? ('<div>PSID: ' + _escSP(dv.firmware.psid) + '</div>') : ''}
     `).join('') : '<div class="text-dim">No DPU / SmartNIC detected</div>';
@@ -2298,7 +2323,7 @@ async function loadHardware(refresh) {
       <div class="text-dim">Hardware presence does not establish firmware or forwarding readiness.</div></div>` : '';
   el.innerHTML = `<div class="text-dim" style="margin-bottom:12px">Last collected: ${_escSP(updated)} &middot; PCI source: ${_escSP((d.pci || {}).source || 'Unknown')}</div>${app.family && app.family !== 'unknown' ? '<div class="text-dim">Hardware family: '+_escSP(app.family)+'</div>' : ''}${d.platform_status === 'unavailable' ? '<div role="status">Hardware family information unavailable; showing detected components.</div>' : ''}${probeNotice}${roleSummary}${d.fe100_driver ? hardwareDriverHTML(d.fe100_driver) : ''}${octeonCard}
   <div class="grid grid-3">
-    <div class="card"><div class="section-title">System</div><div style="font-size:12px;line-height:1.9">
+    <div class="card"><div class="section-title">System</div><div style="font-size:var(--fs-md);line-height:1.9">
       <div><strong>${_escSP(sys.vendor)}</strong> ${_escSP(sys.product)}</div>
       <div>BIOS ${_escSP(sys.bios_version)} <span class="text-dim">${_escSP(sys.bios_date)}</span></div>
       <div>Board: ${_escSP(sys.board)}</div>
@@ -2306,17 +2331,17 @@ async function loadHardware(refresh) {
       <div>Kernel: <span class="mono">${_escSP(sys.kernel)}</span> ${_escSP(sys.arch)}</div>
       <div>Uptime: ${Math.floor((sys.uptime_s || 0) / 3600)} h</div>
     </div></div>
-    <div class="card"><div class="section-title">CPU</div><div style="font-size:12px;line-height:1.9">
+    <div class="card"><div class="section-title">CPU</div><div style="font-size:var(--fs-md);line-height:1.9">
       <div>${_escSP(cpu.model)}</div>
       <div>${hwNumber(cpu.sockets)} sockets &middot; ${hwNumber(cpu.cores_physical)} cores &middot; ${hwNumber(cpu.cores_logical)} threads</div>
       ${cpu.topology_complete === false ? '<div class="text-dim">Physical core topology is incomplete; core count is estimated.</div>' : ''}
       <div>NUMA nodes: ${hwNumber(cpu.numa_nodes)} ${cpu.max_freq ? ('&middot; ' + _escSP(cpu.max_freq)) : ''}</div>
       ${showAES ? `<div>AES-NI ${typeof cpu.aes_ni === 'boolean' ? badge(cpu.aes_ni, cpu.aes_ni ? 'yes' : 'no') : 'Unknown'}</div>` : ''}
       ${cpu.virtualization ? '<div>'+_escSP(cpu.virtualization)+'</div>' : ''}
-      <div class="text-dim" style="font-size:10px">crypto: ${_escSP((cpu.crypto_ext || []).join(', ')) || '&mdash;'}</div>
-      ${cpu.isolated_cpus ? ('<div style="font-size:10px">isolated cpus: <span class="mono">' + _escSP(cpu.isolated_cpus) + '</span></div>') : ''}
+      <div class="text-dim" style="font-size:var(--fs-xs)">crypto: ${_escSP((cpu.crypto_ext || []).join(', ')) || '&mdash;'}</div>
+      ${cpu.isolated_cpus ? ('<div style="font-size:var(--fs-xs)">isolated cpus: <span class="mono">' + _escSP(cpu.isolated_cpus) + '</span></div>') : ''}
     </div></div>
-    <div class="card"><div class="section-title">Memory</div><div style="font-size:12px;line-height:1.9">
+    <div class="card"><div class="section-title">Memory</div><div style="font-size:var(--fs-md);line-height:1.9">
       <div><strong>${hwNumber(mem.total_gb, ' GB')}</strong> &middot; ${hwNumber(mem.dimm_count)} DIMM(s) reported</div>
       ${dimmRows ? ('<div class="table-wrap"><table><thead><tr><th>Slot</th><th>Size</th><th>Speed</th><th>Mfr</th></tr></thead><tbody>' + dimmRows + '</tbody></table></div>') : ''}
     </div></div>
@@ -2324,16 +2349,16 @@ async function loadHardware(refresh) {
   <div class="card"><div class="section-title">Network Interfaces (${(d.nics || []).length})</div>
     <div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>State</th><th>Speed</th><th>Driver</th><th>PCI</th><th>NUMA</th><th>IOMMU</th><th>Binding / SR-IOV</th><th>MAC</th></tr></thead><tbody>${nicRows || '<tr><td colspan="10" class="text-dim">No network interfaces reported</td></tr>'}</tbody></table></div></div>
   ${showDpu || showAccel || showHugepages || feMissing ? `<div class="grid grid-${[showDpu, showAccel || feMissing, showHugepages].filter(Boolean).length === 1 ? 1 : 2}">
-    ${showDpu ? `<div class="card"><div class="section-title">DPU / SmartNIC</div><div style="font-size:12px;line-height:1.9">${dpu.present ? dpuCard : 'Expected on this hardware family; detection unavailable'}</div>
+    ${showDpu ? `<div class="card"><div class="section-title">DPU / SmartNIC</div><div style="font-size:var(--fs-md);line-height:1.9">${dpu.present ? dpuCard : 'Expected on this hardware family; detection unavailable'}</div>
       ${hostChannels.length ? `<div class="text-dim">Host control interfaces (not mapped to individual cards): ${hostChannels.map(_escSP).join(', ')}</div>` : ''}</div>` : ''}
     ${showAccel || feMissing ? `<div class="card">
       <div class="section-title">Detected accelerators / co-processors (FPGA / ASIC / NPU)</div>
       <div class="table-wrap"><table><thead><tr><th>Hardware</th><th>Location</th><th>Driver</th><th>NUMA</th><th>Detection</th>${showManager ? '<th>FPGA Manager state</th>' : ''}</tr></thead><tbody>${accelRows || `<tr><td colspan="${showManager ? 6 : 5}" class="text-dim">Expected on this hardware family; detection unavailable</td></tr>`}</tbody></table></div>
       ${feMissing ? '<div role="status">FE1xx front-end FPGA / ASIC: expected on this hardware family; detection unavailable. Check control-plane inventory.</div>' : ''}
-      <div class="text-dim" style="font-size:11px;margin-top:8px">Device presence and driver binding do not confirm forwarding readiness.</div>
+      <div class="text-dim" style="font-size:var(--fs-sm);margin-top:8px">Device presence and driver binding do not confirm forwarding readiness.</div>
     </div>` : ''}
     ${showHugepages ? `<div class="card"><div class="section-title">Hugepages</div>
-      <div style="font-size:12px;line-height:1.9">${(hp.pools || []).length ? (hp.pools.map(p => `<div>${hwNumber(p.nr)} &times; ${hwNumber(p.size_mb)} MB = ${hwNumber(p.total_gb)} GB <span class="text-dim">(free ${hwNumber(p.free)})</span></div>`).join('') + (hp.mounted ? '<div class="text-dim" style="font-size:10px">hugetlbfs mounted</div>' : '')) : '<div class="text-dim">No allocated pools reported</div>'}</div></div>` : ''}
+      <div style="font-size:var(--fs-md);line-height:1.9">${(hp.pools || []).length ? (hp.pools.map(p => `<div>${hwNumber(p.nr)} &times; ${hwNumber(p.size_mb)} MB = ${hwNumber(p.total_gb)} GB <span class="text-dim">(free ${hwNumber(p.free)})</span></div>`).join('') + (hp.mounted ? '<div class="text-dim" style="font-size:var(--fs-xs)">hugetlbfs mounted</div>' : '')) : '<div class="text-dim">No allocated pools reported</div>'}</div></div>` : ''}
   </div>` : ''}
   <div class="card"><div class="section-title">Storage</div>
     <div class="table-wrap"><table><thead><tr><th>Device</th><th>Size</th><th>Model</th><th>Type</th></tr></thead><tbody>${diskRows || '<tr><td colspan="4" class="text-dim">No storage devices reported</td></tr>'}</tbody></table></div></div>
@@ -2431,8 +2456,8 @@ async function renderDashSystemHealth(c) {
       <div class="card"><h3>Disk</h3><div id="health-disk"></div></div>
     </div>
     <div class="grid grid-2 section">
-      <div class="card"><h3>System Info</h3><div id="health-sys" style="font-size:12px;line-height:2.2"></div></div>
-      <div class="card"><h3>Network Devices (PCI)</h3><div id="health-pci" style="font-size:11px;line-height:2"></div></div>
+      <div class="card"><h3>System Info</h3><div id="health-sys" style="font-size:var(--fs-md);line-height:2.2"></div></div>
+      <div class="card"><h3>Network Devices (PCI)</h3><div id="health-pci" style="font-size:var(--fs-sm);line-height:2"></div></div>
     </div>`;
   loadHealthDetail();
   startRefresh(loadHealthDetail, 5000);
@@ -2443,14 +2468,14 @@ async function loadHealthDetail() {
   if (resources) {
     const cpu = resources.cpu||{}, mem = resources.memory||{}, disk = resources.disk||{};
     const cpuEl = document.getElementById('health-cpu');
-    if (cpuEl) cpuEl.innerHTML = resBar('Usage',cpu.usage_percent||0,'#2f81f7')+
-      `<div style="font-size:11px;color:var(--text-dim);margin-top:8px">${cpu.model||'--'}<br>${cpu.cores_physical||'--'} cores, ${cpu.frequency_mhz||'--'} MHz</div>`;
+    if (cpuEl) cpuEl.innerHTML = resBar('Usage',cpu.usage_percent||0,'var(--accent)')+
+      `<div style="font-size:var(--fs-sm);color:var(--text-dim);margin-top:8px">${cpu.model||'--'}<br>${cpu.cores_physical||'--'} cores, ${cpu.frequency_mhz||'--'} MHz</div>`;
     const memEl = document.getElementById('health-mem');
-    if (memEl) memEl.innerHTML = resBar('Used',mem.percent||0,'#3fb950')+
-      `<div style="font-size:11px;color:var(--text-dim);margin-top:8px">${mem.used_gb||0} / ${mem.total_gb||0} GB</div>`;
+    if (memEl) memEl.innerHTML = resBar('Used',mem.percent||0,'var(--ok)')+
+      `<div style="font-size:var(--fs-sm);color:var(--text-dim);margin-top:8px">${mem.used_gb||0} / ${mem.total_gb||0} GB</div>`;
     const diskEl = document.getElementById('health-disk');
-    if (diskEl) diskEl.innerHTML = resBar('Used',disk.percent||0,'#d29922')+
-      `<div style="font-size:11px;color:var(--text-dim);margin-top:8px">${disk.used_gb||0} / ${disk.total_gb||0} GB</div>`;
+    if (diskEl) diskEl.innerHTML = resBar('Used',disk.percent||0,'var(--warn)')+
+      `<div style="font-size:var(--fs-sm);color:var(--text-dim);margin-top:8px">${disk.used_gb||0} / ${disk.total_gb||0} GB</div>`;
   }
   if (status) {
     const sysEl = document.getElementById('health-sys');
@@ -2503,7 +2528,7 @@ async function loadTrafficLogs() {
   if (wrap && !wrap.querySelector('.log-source-note')) {
     const note = document.createElement('div');
     note.className = 'log-source-note text-dim';
-    note.style.cssText = 'font-size:11px;padding:6px 8px;border-bottom:1px solid var(--border)';
+    note.style.cssText = 'font-size:var(--fs-sm);padding:6px 8px;border-bottom:1px solid var(--border)';
     note.textContent = `Source: ${data.source||'unknown'}  •  FPGA dataplane ${data.fpga_active?'active':'not detected'}`;
     wrap.parentNode.insertBefore(note, wrap);
   }
@@ -2579,7 +2604,7 @@ function toggleTrafficWS() {
 function renderMonitorThreat(c) {
   c.innerHTML = `
     <div class="page-header"><h2>Threat Log</h2>
-      <span id="threat-source" class="text-dim" style="font-size:11px"></span>
+      <span id="threat-source" class="text-dim" style="font-size:var(--fs-sm)"></span>
     </div>
     <div class="filters-bar">
       <select id="threat-filter-sev" onchange="loadThreatLogs()">
@@ -2619,7 +2644,7 @@ async function loadThreatLogs() {
     return `<tr>
       <td class="mono">${(r.timestamp||'').replace('T',' ').substring(0,19)}</td>
       <td>${sevBadge((r.severity||'INFO').toLowerCase())}</td>
-      <td class="mono" style="font-size:10px">${m[1]}</td>
+      <td class="mono" style="font-size:var(--fs-xs)">${m[1]}</td>
       <td>${m[2]}</td>
     </tr>`;
   }).join('');
@@ -2668,7 +2693,7 @@ async function loadURLFilterLogs() {
     if (canvas && !charts.urlCats) {
       charts.urlCats = new Chart(canvas.getContext('2d'),{
         type:'pie',
-        data:{labels:['No Data'],datasets:[{data:[1],backgroundColor:['#30363d'],borderWidth:0}]},
+        data:{labels:['No Data'],datasets:[{data:[1],backgroundColor:statusPalette(['muted']),borderWidth:0}]},
         options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right',labels:{color:getComputedStyle(document.documentElement).getPropertyValue('--text-dim').trim(),font:{size:10},boxWidth:8}}}}
       });
     }
@@ -2757,7 +2782,7 @@ function toggleSysLogWS() {
 function renderSessionBrowser(c) {
   c.innerHTML = `
     <div class="page-header"><h2>Session Browser</h2>
-      <span id="sess-source" class="text-dim" style="font-size:11px"></span>
+      <span id="sess-source" class="text-dim" style="font-size:var(--fs-sm)"></span>
     </div>
     <div class="filters-bar">
       <input type="text" id="sess-filter" placeholder="Filter by IP, port, process..." oninput="filterSessions()">
@@ -2985,20 +3010,20 @@ function renderPolicyDDoS(c) {
       <div class="card" id="ddos-status"><div class="text-dim">Loading&hellip;</div></div></div>
     <div class="section"><div class="section-title">Flood-Protection Thresholds</div>
       <div class="card">
-        <p class="text-dim" style="font-size:11px">Software anti-DDoS engine (nftables, applied in the <strong>forward</strong> hook — transit traffic only; the firewall's own management plane is never rate-limited). New connections exceeding these per-protocol rates are dropped and counted. Applying regenerates and reloads the dataplane ruleset.</p>
+        <p class="text-dim" style="font-size:var(--fs-sm)">Software anti-DDoS engine (nftables, applied in the <strong>forward</strong> hook — transit traffic only; the firewall's own management plane is never rate-limited). New connections exceeding these per-protocol rates are dropped and counted. Applying regenerates and reloads the dataplane ruleset.</p>
         <div class="form-group"><label style="font-weight:normal"><input type="checkbox" id="dos-enable"> Enable anti-DDoS engine</label></div>
         <div class="grid grid-3">
           <div class="form-group"><label>TCP SYN rate (new/s)</label><input id="dos-syn" type="number" style="width:100%"></div>
           <div class="form-group"><label>SYN burst</label><input id="dos-synb" type="number" style="width:100%"></div>
-          <div class="form-group"><label>&nbsp;</label><div class="text-dim" style="font-size:10px;padding-top:8px">SYN-flood protection</div></div>
+          <div class="form-group"><label>&nbsp;</label><div class="text-dim" style="font-size:var(--fs-xs);padding-top:8px">SYN-flood protection</div></div>
           <div class="form-group"><label>UDP rate (new/s)</label><input id="dos-udp" type="number" style="width:100%"></div>
           <div class="form-group"><label>UDP burst</label><input id="dos-udpb" type="number" style="width:100%"></div>
-          <div class="form-group"><label>&nbsp;</label><div class="text-dim" style="font-size:10px;padding-top:8px">UDP-flood protection</div></div>
+          <div class="form-group"><label>&nbsp;</label><div class="text-dim" style="font-size:var(--fs-xs);padding-top:8px">UDP-flood protection</div></div>
           <div class="form-group"><label>ICMP rate (/s)</label><input id="dos-icmp" type="number" style="width:100%"></div>
           <div class="form-group"><label>ICMP burst</label><input id="dos-icmpb" type="number" style="width:100%"></div>
           <div class="form-group"><label>Per-source conn cap</label><input id="dos-conn" type="number" style="width:100%" placeholder="0 = off"></div>
         </div>
-        <div style="display:flex;gap:8px;align-items:center;margin-top:6px"><button class="btn btn-primary" onclick="saveDoS()">Apply</button><span id="dos-msg" style="font-size:11px"></span></div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:6px"><button class="btn btn-primary" onclick="saveDoS()">Apply</button><span id="dos-msg" style="font-size:var(--fs-sm)"></span></div>
       </div></div>`;
   loadDDoSPolicy();
   if (refreshTimer) clearInterval(refreshTimer);
@@ -3023,7 +3048,7 @@ async function loadDDoSPolicy() {
       <div>Engine: ${cfg.enable ? '<span class="badge badge-up">enabled</span>' : '<span class="badge badge-down">disabled</span>'}</div>
       <div>Threat level: <span class="badge ${badge}">${_escSP(lvl)}</span></div>
       <div>Drop rate: <strong>${_escSP(live.drop_rate_pps != null ? live.drop_rate_pps : 0)}</strong> pps</div>
-      <div class="text-dim" style="font-size:11px">backend: ${_escSP(r.backend || 'nftables')}</div>
+      <div class="text-dim" style="font-size:var(--fs-sm)">backend: ${_escSP(r.backend || 'nftables')}</div>
     </div>
     <div class="table-wrap" style="margin-top:10px"><table>
       <thead><tr><th>Protocol</th><th>Dropped (flood)</th></tr></thead>
@@ -3170,7 +3195,7 @@ function renderObjectsURLCategories(c) {
         <tbody id="url-cat-body"></tbody></table>
       </div></div></div>
       <div class="section"><div class="section-title">Custom URL Lists</div><div class="card">
-        <div class="form-group"><label>Block List (one URL per line)</label><textarea id="url-blocklist" rows="8" style="font-family:monospace;font-size:11px" placeholder="evil-site.com&#10;phishing-page.net"></textarea></div>
+        <div class="form-group"><label>Block List (one URL per line)</label><textarea id="url-blocklist" rows="8" style="font-family:monospace;font-size:var(--fs-sm)" placeholder="evil-site.com&#10;phishing-page.net"></textarea></div>
         <p class="text-dim">Adds entries to the stored custom blocklist. Existing entries are retained; runtime enforcement is not confirmed by this action.</p>
         <button id="url-save" class="btn btn-primary btn-sm" onclick="saveURLLists()">Add Blocklist Entries</button><p id="url-save-msg" role="status"></p>
       </div></div>
@@ -3216,7 +3241,7 @@ async function saveURLLists() {
 function renderObjectsSecurityProfiles(c) {
   c.innerHTML = `
     <div class="page-header"><h2>Security Profiles &amp; Threat Prevention</h2></div>
-    <div style="color:var(--text-muted);font-size:11px;margin:-6px 0 10px">
+    <div style="color:var(--text-muted);font-size:var(--fs-sm);margin:-6px 0 10px">
       Detection runs in the <strong>host data plane</strong> (bare-metal nftables/NFQUEUE, or the DPDK
       fast path on the smart-NIC), with the FPGA fabric as line-rate offload. Each profile below is
       backed by a live software engine &mdash; the stats shown are read from the running engine.</div>
@@ -3228,15 +3253,15 @@ function renderObjectsSecurityProfiles(c) {
     </div>
     <div class="section"><div class="section-title">Test Scan &mdash; Inline IPS &amp; Anti-Malware</div>
       <div class="card">
-        <div style="color:var(--text-muted);font-size:11px;margin-bottom:6px">
+        <div style="color:var(--text-muted);font-size:var(--fs-sm);margin-bottom:6px">
           Run content through the same detectors the data plane uses. Try the EICAR test string, a
           Log4Shell JNDI probe, or paste hex. Read-only.</div>
-        <textarea id="scan-text" rows="3" style="width:100%;font-family:monospace;font-size:12px;box-sizing:border-box"
+        <textarea id="scan-text" rows="3" style="width:100%;font-family:monospace;font-size:var(--fs-md);box-sizing:border-box"
           placeholder="X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"></textarea>
         <div style="margin-top:6px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-          <label style="font-size:11px"><input type="checkbox" id="scan-hex"> input is hex</label>
+          <label style="font-size:var(--fs-sm)"><input type="checkbox" id="scan-hex"> input is hex</label>
           <button class="btn btn-primary btn-sm" onclick="runScan()">Scan</button>
-          <span id="scan-msg" style="color:var(--text-muted);font-size:11px"></span>
+          <span id="scan-msg" style="color:var(--text-muted);font-size:var(--fs-sm)"></span>
         </div>
         <div id="scan-result" style="margin-top:8px"></div>
       </div>
@@ -3260,7 +3285,7 @@ function renderObjectsSecurityProfiles(c) {
             </select></div>
           <div class="form-group"><label>Direction</label>
             <select id="dlp-direction"><option value="egress" selected>Egress (leaving)</option><option value="ingress">Ingress</option><option value="both">Both</option></select></div>
-          <div class="form-group" style="grid-column:1 / span 2"><label>Pattern <span id="dlp-pat-hint" style="color:var(--text-muted);font-size:10px"></span></label>
+          <div class="form-group" style="grid-column:1 / span 2"><label>Pattern <span id="dlp-pat-hint" style="color:var(--text-muted);font-size:var(--fs-xs)"></span></label>
             <input type="text" id="dlp-pattern" style="font-family:monospace" placeholder="literal text to match"></div>
           <div class="form-group"><label>Threshold (min hits)</label><input type="number" id="dlp-threshold" value="1" min="1" max="255"></div>
           <div class="form-group"><label>Action</label>
@@ -3269,7 +3294,7 @@ function renderObjectsSecurityProfiles(c) {
             <select id="dlp-severity"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select></div>
         </div>
         <button class="btn btn-primary btn-sm" onclick="addDLPRule()">Add Data Pattern</button>
-        <span id="dlp-msg" style="color:var(--text-muted);font-size:11px;margin-left:8px"></span>
+        <span id="dlp-msg" style="color:var(--text-muted);font-size:var(--fs-sm);margin-left:8px"></span>
       </div>
       <div class="card" style="margin-top:8px"><div class="table-wrap">
         <table><thead><tr><th>ID</th><th>Name</th><th>Identifier</th><th>Pattern</th><th>Dir</th><th>Thr</th><th>Action</th><th>Severity</th><th></th></tr></thead>
@@ -3315,9 +3340,9 @@ async function loadPlugins() {
     return `<div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
         <strong>${_escSP(p.display)}</strong>${badge}</div>
-      <div style="color:var(--text-muted);font-size:11px;margin:4px 0;min-height:30px">${_escSP(p.desc||'')}</div>
-      <div style="font-size:11px;min-height:16px">${_pluginStats(p)}</div>
-      <div style="color:var(--text-muted);font-size:10px;margin-top:2px">${_escSP(p.category)}${p.backend?` &middot; <code style="font-size:10px">${_escSP(p.backend)}</code>`:''}</div>
+      <div style="color:var(--text-muted);font-size:var(--fs-sm);margin:4px 0;min-height:30px">${_escSP(p.desc||'')}</div>
+      <div style="font-size:var(--fs-sm);min-height:16px">${_pluginStats(p)}</div>
+      <div style="color:var(--text-muted);font-size:var(--fs-xs);margin-top:2px">${_escSP(p.category)}${p.backend?` &middot; <code style="font-size:var(--fs-xs)">${_escSP(p.backend)}</code>`:''}</div>
       ${btns?`<div style="margin-top:6px">${btns}</div>`:''}
     </div>`;
   }).join('');
@@ -3343,11 +3368,11 @@ async function loadSigdb() {
   box.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
       <div><strong style="font-size:15px">${_escSP(d.version_string||'ffn-av-0')}</strong>
-        <span style="color:var(--text-muted);font-size:11px"> &middot; ${Number(d.total||0).toLocaleString()} signatures &middot; ${Number(d.families||0)} families</span></div>
+        <span style="color:var(--text-muted);font-size:var(--fs-sm)"> &middot; ${Number(d.total||0).toLocaleString()} signatures &middot; ${Number(d.families||0)} families</span></div>
       <button class="btn btn-primary btn-sm" onclick="updateSigdb()">Update Content</button>
     </div>
     <div style="margin-top:8px">${chips||'<span style="color:var(--text-muted)">empty &mdash; click Update to seed the baseline set</span>'}</div>
-    <div style="color:var(--text-muted);font-size:10px;margin-top:6px">
+    <div style="color:var(--text-muted);font-size:var(--fs-xs);margin-top:6px">
       Last update: ${_escSP(d.last_update||'never')}${upd?` &middot; content v${upd.version} (+${upd.added}, ${_escSP(upd.source||'')})`:''}</div>`;
 }
 
@@ -3373,15 +3398,15 @@ async function runScan() {
   out.innerHTML = `
     <div class="grid grid-2">
       <div class="card"><strong>Inline IPS</strong> ${pill(il.matched?il.action:'clean')}
-        <div style="font-size:11px;color:var(--text-muted);margin-top:4px">${il.error?('error: '+_escSP(il.error)):_escSP(il.summary||'clean')}</div>
-        ${(il.signatures&&il.signatures.length)?`<div style="font-size:10px;margin-top:4px">sigs: ${il.signatures.map(_escSP).join(', ')}</div>`:''}
-        ${il.file_type?`<div style="font-size:10px;color:var(--text-muted)">type: ${_escSP(il.file_type)} &middot; entropy ${il.entropy}</div>`:''}</div>
+        <div style="font-size:var(--fs-sm);color:var(--text-muted);margin-top:4px">${il.error?('error: '+_escSP(il.error)):_escSP(il.summary||'clean')}</div>
+        ${(il.signatures&&il.signatures.length)?`<div style="font-size:var(--fs-xs);margin-top:4px">sigs: ${il.signatures.map(_escSP).join(', ')}</div>`:''}
+        ${il.file_type?`<div style="font-size:var(--fs-xs);color:var(--text-muted)">type: ${_escSP(il.file_type)} &middot; entropy ${il.entropy}</div>`:''}</div>
       <div class="card"><strong>Anti-Malware</strong> ${pill(am.verdict)}
-        <div style="font-size:11px;color:var(--text-muted);margin-top:4px">${am.error?('error: '+_escSP(am.error)):_escSP(am.summary||'')}</div>
-        ${(am.methods&&am.methods.length)?`<div style="font-size:10px;margin-top:4px">via: ${am.methods.map(_escSP).join(', ')}</div>`:''}
-        ${(am.indicators&&am.indicators.length)?`<div style="font-size:10px;color:var(--text-muted)">${am.indicators.map(_escSP).join(' &middot; ')}</div>`:''}</div>
+        <div style="font-size:var(--fs-sm);color:var(--text-muted);margin-top:4px">${am.error?('error: '+_escSP(am.error)):_escSP(am.summary||'')}</div>
+        ${(am.methods&&am.methods.length)?`<div style="font-size:var(--fs-xs);margin-top:4px">via: ${am.methods.map(_escSP).join(', ')}</div>`:''}
+        ${(am.indicators&&am.indicators.length)?`<div style="font-size:var(--fs-xs);color:var(--text-muted)">${am.indicators.map(_escSP).join(' &middot; ')}</div>`:''}</div>
     </div>
-    <div style="font-size:10px;color:var(--text-muted);margin-top:4px">scanned ${r.len} bytes</div>`;
+    <div style="font-size:var(--fs-xs);color:var(--text-muted);margin-top:4px">scanned ${r.len} bytes</div>`;
 }
 
 async function loadDLPRules() {
@@ -3392,7 +3417,7 @@ async function loadDLPRules() {
   if (!rules.length) { tb.innerHTML = '<tr><td colspan="9" style="color:var(--text-muted)">No DLP patterns defined.</td></tr>'; return; }
   tb.innerHTML = rules.map(r=>{
     const act = (r.action==='block'||r.action==='quarantine') ? 'badge-block' : 'badge-info';
-    const pat = r.pattern ? `<span style="font-family:monospace;font-size:11px">${_escSP(r.pattern)}</span>`
+    const pat = r.pattern ? `<span style="font-family:monospace;font-size:var(--fs-sm)">${_escSP(r.pattern)}</span>`
                           : '<span style="color:var(--text-muted)">(built-in detector)</span>';
     return `<tr>
       <td>${r.id}</td><td>${_escSP(r.name)}</td>
@@ -3638,7 +3663,7 @@ function renderNetworkInterfaces(c) {
     </div>
 
     <p id="iface-notice" role="status" class="mb-8"></p>
-    <div id="iface-source" class="text-dim" style="font-size:11px;margin-bottom:8px"></div>
+    <div id="iface-source" class="text-dim" style="font-size:var(--fs-sm);margin-bottom:8px"></div>
 
     <div class="card"><div class="table-wrap">
       <table id="iface-grid">
@@ -3847,17 +3872,17 @@ function _linkStateDot(state) {
    keeps showing the Linux NIC, which is the equivalent fact there. */
 function _ifaceSubtitle(r) {
   const aggregate=(_ifaceState.aeStatus||[]).find(a=>a.ae_name===r.name&&a.backend==='pa5200-bcm');
-  if (aggregate) return '<div class="text-dim" style="font-size:10px;margin-top:2px">BCM / OCTEON aggregate</div>';
+  if (aggregate) return '<div class="text-dim" style="font-size:var(--fs-xs);margin-top:2px">BCM / OCTEON aggregate</div>';
   const f = (_ifaceState.faceplate||{})[r.name];
   if (f) {
     const position = String(f.faceplate || '');
     const pos = /^\d+$/.test(position) ? `port ${position}` : position.toUpperCase();
-    return `<div class="text-dim" style="font-size:10px;margin-top:2px">`
+    return `<div class="text-dim" style="font-size:var(--fs-xs);margin-top:2px">`
          + `${_escSP(pos)} &middot; ${_escSP(f.media || '')} ${hwNumber(f.speed_gbps, 'G')} &middot; `
          + `<span class="mono">${_escSP(f.diag_name)}</span></div>`;
   }
   return r.linux_name
-    ? `<div class="text-dim" style="font-size:10px;margin-top:2px">&harr; <span class="mono">${_escSP(r.linux_name)}</span></div>`
+    ? `<div class="text-dim" style="font-size:var(--fs-xs);margin-top:2px">&harr; <span class="mono">${_escSP(r.linux_name)}</span></div>`
     : '';
 }
 
@@ -3875,9 +3900,9 @@ function _ifaceRowHTML(r, isSub) {
             : `<strong class="mono" style="color:var(--accent);cursor:pointer" onclick="openIfaceModal('${r.name}')">${r.name}</strong>`}
          ${_ifaceSubtitle(r)}
        </td>`;
-  const typeBadge = r.type ? `<span class="badge" style="background:var(--accent-dim);color:var(--on-accent);font-size:10px">${r.type}</span>` : '';
+  const typeBadge = r.type ? `<span class="badge" style="background:var(--accent-dim);color:var(--on-accent);font-size:var(--fs-xs)">${r.type}</span>` : '';
   const ipCell = (r.ip_address && r.ip_address.length)
-    ? r.ip_address.map(ip=>`<div class="mono" style="font-size:10px">${ip}</div>`).join('')
+    ? r.ip_address.map(ip=>`<div class="mono" style="font-size:var(--fs-xs)">${ip}</div>`).join('')
     : '<span class="text-dim">none</span>';
   const vr = r.virtual_router || '<span class="text-dim">none</span>';
   const tag = r.vlan_tag ? `<span class="mono">${r.vlan_tag}</span>` : '<span class="text-dim">Untagged</span>';
@@ -3887,7 +3912,7 @@ function _ifaceRowHTML(r, isSub) {
   const sdwan = r.sdwan_interface_profile || '<span class="text-dim">none</span>';
   const unat = r.upstream_nat ? '<span class="badge badge-up">Enabled</span>' : '<span class="text-dim">Disabled</span>';
   const feats = (r.features && r.features.length)
-    ? r.features.map(f=>`<span class="badge" style="background:var(--panel);color:var(--text);font-size:9px;margin-right:2px">${f}</span>`).join('')
+    ? r.features.map(f=>`<span class="badge" style="background:var(--panel);color:var(--text);font-size:var(--fs-xs);margin-right:2px">${f}</span>`).join('')
     : '';
   // A faceplate port the chassis does not let you use as a data interface --
   // hsci, the cluster interconnect -- is shown but not offered for editing.
@@ -3899,7 +3924,7 @@ function _ifaceRowHTML(r, isSub) {
     ? `<button class="btn btn-xs" data-parent="${_escSP(r.parent)}" data-name="${_escSP(r.name)}" onclick="openSubinterfaceModal(this.dataset.parent,this.dataset.name)">Edit</button>
        <button class="btn btn-xs btn-danger" data-parent="${_escSP(r.parent)}" data-name="${_escSP(r.name)}" onclick="deleteSubif(this.dataset.parent,this.dataset.name)">Del</button>`
     : locked
-    ? `<span class="text-dim" style="font-size:10px">not user-configurable</span>`
+    ? `<span class="text-dim" style="font-size:var(--fs-xs)">not user-configurable</span>`
     : `<button class="btn btn-xs" onclick="openIfaceModal('${r.name}')">Edit</button>
        <button class="btn btn-xs" onclick="openSubinterfaceModal('${r.name}')">+Sub</button>
        <button class="btn btn-xs btn-danger" onclick="deleteIface('${r.name}')">Del</button>`;
@@ -3907,7 +3932,7 @@ function _ifaceRowHTML(r, isSub) {
     ${nameCell}
     <td>${typeBadge}</td>
     <td>${r.management_profile || '<span class="text-dim">none</span>'}</td>
-    <td>${_linkStateDot(r.link_state)}${aggregateChild?'<div class="text-dim" style="font-size:10px">'+_escSP(aggregateChild.reason)+'</div>':''}</td>
+    <td>${_linkStateDot(r.link_state)}${aggregateChild?'<div class="text-dim" style="font-size:var(--fs-xs)">'+_escSP(aggregateChild.reason)+'</div>':''}</td>
     <td>${ipCell}</td>
     <td>${vr}</td>
     <td>${tag}</td>
@@ -3917,7 +3942,7 @@ function _ifaceRowHTML(r, isSub) {
     <td>${sdwan}</td>
     <td>${unat}</td>
     <td>${feats}</td>
-    <td class="text-dim" style="font-size:11px;max-width:160px;overflow:hidden;text-overflow:ellipsis" title="${(r.comment||'').replace(/"/g,'&quot;')}">${r.comment||''}</td>
+    <td class="text-dim" style="font-size:var(--fs-sm);max-width:160px;overflow:hidden;text-overflow:ellipsis" title="${(r.comment||'').replace(/"/g,'&quot;')}">${r.comment||''}</td>
     <td>${actions}</td>
   </tr>`;
 }
@@ -4001,15 +4026,15 @@ function _renderConfiguredAE() {
 
     return `<tr>
       <td><strong>${ae.name}</strong></td>
-      <td class="mono" style="font-size:11px">${bondName}${hardware||live&&live.kernel_exists?'':' <span class="text-red" style="font-size:9px">(not created)</span>'}</td>
+      <td class="mono" style="font-size:var(--fs-sm)">${bondName}${hardware||live&&live.kernel_exists?'':' <span class="text-red" style="font-size:var(--fs-xs)">(not created)</span>'}</td>
       <td><span class="badge" style="background:var(--accent-dim);color:var(--on-accent)">${ae.mode}</span></td>
-      <td class="mono" style="font-size:10px;white-space:normal;min-width:170px">${cfgMemStr}</td>
-      <td class="mono" style="font-size:10px;white-space:normal;min-width:230px">${liveMemStr}</td>
+      <td class="mono" style="font-size:var(--fs-xs);white-space:normal;min-width:170px">${cfgMemStr}</td>
+      <td class="mono" style="font-size:var(--fs-xs);white-space:normal;min-width:230px">${liveMemStr}</td>
       <td class="mono">${(ae.ip_addresses||[]).join(', ')||'--'}</td>
       <td>${hardware?(live.activation?.dataplane?.network?.mtu||ae.mtu||1500):(ae.mtu||_ifaceState.jumbo.mtu)}</td>
       <td>
         ${statusBadge}
-        <div class="text-dim" style="font-size:10px;margin-top:2px;white-space:normal;min-width:230px;max-width:360px">${statusDetail}</div>
+        <div class="text-dim" style="font-size:var(--fs-xs);margin-top:2px;white-space:normal;min-width:230px;max-width:360px">${statusDetail}</div>
       </td>
       <td style="white-space:normal;min-width:180px">
         ${hardware&&live.activation_supported?`<button class="btn btn-xs" ${live.committed?'':'disabled'} onclick="aggregateOperation('${ae.name}','activate')">Activate</button>
@@ -4199,7 +4224,7 @@ function openAliasModal(panName) {
   }).join('');
   document.getElementById('info-modal-title').textContent = `Remap ${panName} to a Linux NIC`;
   document.getElementById('info-modal-body').innerHTML = `
-    <p class="text-dim" style="font-size:11px;margin-bottom:10px">
+    <p class="text-dim" style="font-size:var(--fs-sm);margin-bottom:10px">
       Every PAN-OS slot maps to exactly one Linux NIC. If you pick a NIC that is already bound
       to another slot, that old mapping is removed (1:1 guarantee).
     </p>
@@ -4208,7 +4233,7 @@ function openAliasModal(panName) {
     <div style="margin-top:12px;display:flex;gap:8px">
       <button class="btn btn-primary btn-sm" onclick="saveAlias('${panName}')">OK</button>
       <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
-      <span id="alias-msg" style="font-size:11px;align-self:center"></span>
+      <span id="alias-msg" style="font-size:var(--fs-sm);align-self:center"></span>
     </div>`;
   document.getElementById('modal-info').classList.add('show');
 }
@@ -4377,7 +4402,7 @@ function openAggregateModal() {
 function openJumboModal() {
   document.getElementById('info-modal-title').textContent='Global Jumbo Frame MTU';
   document.getElementById('info-modal-body').innerHTML = `
-    <p class="text-dim" style="font-size:11px;margin-bottom:10px">
+    <p class="text-dim" style="font-size:var(--fs-sm);margin-bottom:10px">
       Sets the device-wide MTU ceiling. Interfaces without an explicit MTU inherit this value.
       Changes apply after commit and may require a dataplane restart.
     </p>
@@ -4386,7 +4411,7 @@ function openJumboModal() {
     <div style="margin-top:12px;display:flex;gap:8px">
       <button class="btn btn-primary btn-sm" onclick="saveJumbo()">OK</button>
       <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
-      <span id="jumbo-msg" style="font-size:11px;align-self:center"></span>
+      <span id="jumbo-msg" style="font-size:var(--fs-sm);align-self:center"></span>
     </div>`;
   document.getElementById('modal-info').classList.add('show');
 }
@@ -4521,7 +4546,7 @@ function renderNetworkVLAN(c) {
     <div class="page-header"><h2>VLAN Interfaces</h2>
       <div class="actions"><button class="btn btn-primary btn-sm" onclick="netOpenAddModal('vlan-interfaces')">+ Add VLAN</button></div>
     </div>
-    <div class="card"><p class="text-dim" style="padding:16px;font-size:12px">No VLAN sub-interfaces configured. Use the Interfaces page to create VLAN sub-interfaces on physical ports.</p></div>`;
+    <div class="card"><p class="text-dim" style="padding:16px;font-size:var(--fs-md)">No VLAN sub-interfaces configured. Use the Interfaces page to create VLAN sub-interfaces on physical ports.</p></div>`;
 }
 
 /* ---- Network > Virtual Routers (Routing) ---- */
@@ -4532,7 +4557,7 @@ function renderNetworkRouting(c) {
     <div class="page-header"><h2>Virtual Routers</h2>
       <div class="actions"><button class="btn btn-primary" onclick="openVRModal()">+ Add Virtual Router</button></div>
     </div>
-    <p class="text-dim" style="font-size:11px;margin-bottom:12px">
+    <p class="text-dim" style="font-size:var(--fs-sm);margin-bottom:12px">
       Each virtual router is a real l3mdev VRF device with its own routing table
       (<code>table_id = VRF_TABLE_BASE(1000) + index</code>), member interfaces, and FIB.
       An interface belongs to exactly one VRF; the management interface is never enslaved.
@@ -4540,8 +4565,8 @@ function renderNetworkRouting(c) {
     <div id="vr-list"><div class="text-dim">Loading virtual routers&hellip;</div></div>
     <div class="section"><div class="section-title">Dynamic Routing (FRRouting)</div><div class="card">
       <div class="grid grid-2">
-        <div><h3>BGP</h3><div id="bgp-status" style="font-size:12px;line-height:2;color:var(--text-dim)">Checking...</div></div>
-        <div><h3>OSPF</h3><div id="ospf-status" style="font-size:12px;line-height:2;color:var(--text-dim)">Checking...</div></div>
+        <div><h3>BGP</h3><div id="bgp-status" style="font-size:var(--fs-md);line-height:2;color:var(--text-dim)">Checking...</div></div>
+        <div><h3>OSPF</h3><div id="ospf-status" style="font-size:var(--fs-md);line-height:2;color:var(--text-dim)">Checking...</div></div>
       </div>
     </div></div>`;
   loadVirtualRouters();
@@ -4575,12 +4600,12 @@ function vrGridRow(vr, i) {
   const nameAttr = _escSP(vr.name || '');
   const ifaces = (vr.effective_interfaces || vr.interfaces || vr.members || []);
   const ifHtml = ifaces.length ? _escSP(ifaces.join(', ')) : '<span class="text-dim">none</span>';
-  const down = (vr.admin_up === false) ? ' <span class="badge badge-down" style="font-size:9px">admin down</span>' : '';
+  const down = (vr.admin_up === false) ? ' <span class="badge badge-down" style="font-size:var(--fs-xs)">admin down</span>' : '';
   return `<tr>
     <td style="vertical-align:top"><strong class="mono" style="cursor:pointer;color:var(--accent)" title="Configure routing" data-vr="${nameAttr}" onclick="openVrRouting(this.dataset.vr)">${name}</strong>${down}
-      <div class="text-dim" style="font-size:10px">table ${_escSP(vr.table_id != null ? vr.table_id : '?')}</div></td>
-    <td style="font-size:11px;vertical-align:top">${ifHtml}</td>
-    <td id="vr-cfg-${i}" style="font-size:11px;vertical-align:top" class="text-dim">&hellip;</td>
+      <div class="text-dim" style="font-size:var(--fs-xs)">table ${_escSP(vr.table_id != null ? vr.table_id : '?')}</div></td>
+    <td style="font-size:var(--fs-sm);vertical-align:top">${ifHtml}</td>
+    <td id="vr-cfg-${i}" style="font-size:var(--fs-sm);vertical-align:top" class="text-dim">&hellip;</td>
     <td style="white-space:nowrap;vertical-align:top">
       <button class="btn btn-xs btn-primary" data-vr="${nameAttr}" onclick="openVrRouting(this.dataset.vr)">Routing</button>
       <button class="btn btn-xs" data-vr="${nameAttr}" onclick="openVrFibModal(this.dataset.vr)">Runtime</button>
@@ -4633,7 +4658,7 @@ const _VRR_AD = ['static','ebgp','ibgp','ospf_int','ospf_ext','ospfv3_int','ospf
 
 const _VRR_SECS = ['general','static','redist','rip','ospf','ospfv3','bgp','multicast'];
 function _vrrNav(sec,label,active){
-  return `<div id="vrr-nav-${sec}" onclick="vrrTab('${sec}')" style="padding:7px 9px;font-size:12px;cursor:pointer;border-left:3px solid ${active?'var(--accent)':'transparent'};background:${active?'rgba(127,127,127,.14)':'transparent'};font-weight:${active?'600':'normal'}">${label}</div>`;
+  return `<div id="vrr-nav-${sec}" onclick="vrrTab('${sec}')" style="padding:7px 9px;font-size:var(--fs-md);cursor:pointer;border-left:3px solid ${active?'var(--accent)':'transparent'};background:${active?'rgba(127,127,127,.14)':'transparent'};font-weight:${active?'600':'normal'}">${label}</div>`;
 }
 function vrrTab(sec){
   _VRR_SECS.forEach(function(x){
@@ -4674,13 +4699,13 @@ function openVrRouting(name) {
       <div style="flex:1;padding-left:16px;max-height:56vh;overflow:auto">
         <div class="vrr-pane" id="vrr-p-general">
           <div style="display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:10px">
-            <div id="vrr-sub-general" onclick="vrrSubTab('general')" style="padding:5px 14px;cursor:pointer;font-size:12px;border-bottom:2px solid var(--accent);font-weight:600">General</div>
-            <div id="vrr-sub-ecmp" onclick="vrrSubTab('ecmp')" style="padding:5px 14px;cursor:pointer;font-size:12px;border-bottom:2px solid transparent">ECMP</div>
+            <div id="vrr-sub-general" onclick="vrrSubTab('general')" style="padding:5px 14px;cursor:pointer;font-size:var(--fs-md);border-bottom:2px solid var(--accent);font-weight:600">General</div>
+            <div id="vrr-sub-ecmp" onclick="vrrSubTab('ecmp')" style="padding:5px 14px;cursor:pointer;font-size:var(--fs-md);border-bottom:2px solid transparent">ECMP</div>
           </div>
           <div id="vrr-subp-general">
-            <p class="text-dim" style="font-size:11px">Virtual router <strong>${_escSP(name)}</strong> (its own VRF + routing table). Member interfaces are set in the VR's <em>Edit</em> dialog.</p>
+            <p class="text-dim" style="font-size:var(--fs-sm)">Virtual router <strong>${_escSP(name)}</strong> (its own VRF + routing table). Member interfaces are set in the VR's <em>Edit</em> dialog.</p>
             <div class="section-title">Administrative Distances</div>
-            <div class="grid grid-4">${_VRR_AD.map(function(k){return `<div class="form-group"><label style="font-size:10px">${k}</label><input id="vrr-ad-${k}" type="number" style="width:100%"></div>`;}).join('')}</div>
+            <div class="grid grid-4">${_VRR_AD.map(function(k){return `<div class="form-group"><label style="font-size:var(--fs-xs)">${k}</label><input id="vrr-ad-${k}" type="number" style="width:100%"></div>`;}).join('')}</div>
           </div>
           <div id="vrr-subp-ecmp" style="display:none">
             <div class="form-group"><label style="font-weight:normal"><input type="checkbox" id="vrr-ecmp-en"> Enable</label> &nbsp; <label style="font-weight:normal"><input type="checkbox" id="vrr-ecmp-sym"> Symmetric Return</label> &nbsp; <label style="font-weight:normal"><input type="checkbox" id="vrr-ecmp-ssp"> Strict Source Path</label></div>
@@ -4697,7 +4722,7 @@ function openVrRouting(name) {
         </div>
         <div class="vrr-pane" id="vrr-p-redist" style="display:none">
           <div class="section-title">Redistribution Profile</div>
-          <p class="text-dim" style="font-size:11px">Named profiles for filtered route redistribution. One per line: <code>name priority</code>. Protocol Redistribute lists below reference these.</p>
+          <p class="text-dim" style="font-size:var(--fs-sm)">Named profiles for filtered route redistribution. One per line: <code>name priority</code>. Protocol Redistribute lists below reference these.</p>
           <textarea id="vrr-redist" rows="4" style="width:100%" placeholder="to-bgp 1"></textarea>
         </div>
         <div class="vrr-pane" id="vrr-p-rip" style="display:none">
@@ -4732,14 +4757,14 @@ function openVrRouting(name) {
           <div class="section-title">Multicast</div>
           <div class="form-group"><label style="font-weight:normal"><input type="checkbox" id="vrr-mc-en"> Enable Multicast (PIM)</label></div>
           <div class="form-group"><label>PIM Mode</label><select id="vrr-mc-mode" style="width:100%"><option value="sparse">sparse</option><option value="ssm">ssm</option><option value="dense">dense</option></select></div>
-          <p class="text-dim" style="font-size:11px">Stored in the VR config. Enforcement requires the FRR <code>pimd</code> daemon (not enabled on this build).</p>
+          <p class="text-dim" style="font-size:var(--fs-sm)">Stored in the VR config. Enforcement requires the FRR <code>pimd</code> daemon (not enabled on this build).</p>
         </div>
       </div>
     </div>
     <div style="display:flex;gap:8px;margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
       <button class="btn btn-primary btn-sm" id="vrr-save" disabled onclick="saveVrRouting()">OK</button>
       <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
-      <span id="vrr-msg" style="font-size:11px;align-self:center"></span></div>`;
+      <span id="vrr-msg" style="font-size:var(--fs-sm);align-self:center"></span></div>`;
   document.getElementById('modal-info').classList.add('show');
   loadVrRouting(name);
 }
@@ -4811,22 +4836,22 @@ function vrCardHtml(vr) {
   const nameAttr = _escSP(vr.name || '');
   const ifaces = (vr.effective_interfaces || vr.interfaces || vr.members || []);
   const ifHtml = ifaces.length
-    ? ifaces.map(i => `<span class="badge badge-info" style="font-size:10px">${_escSP(i)}</span>`).join(' ')
+    ? ifaces.map(i => `<span class="badge badge-info" style="font-size:var(--fs-xs)">${_escSP(i)}</span>`).join(' ')
     : '<span class="text-dim">(no member interfaces)</span>';
   const up = (vr.admin_up === false)
     ? '<span class="badge badge-down">admin down</span>'
     : '<span class="badge badge-up">admin up</span>';
-  const vsys = vr.vsys ? `<span class="badge" style="background:var(--accent-dim);color:var(--on-accent);font-size:10px">vsys ${_escSP(vr.vsys)}</span>` : '';
+  const vsys = vr.vsys ? `<span class="badge" style="background:var(--accent-dim);color:var(--on-accent);font-size:var(--fs-xs)">vsys ${_escSP(vr.vsys)}</span>` : '';
   const proto = (vr.protocol || 'static');
   const protoColor = proto === 'bgp' ? 'var(--accent)' : (proto === 'ospf' ? 'var(--ospf)' : 'var(--text-muted)');
-  const protoBadge = `<span class="badge" style="font-size:10px;background:${protoColor};color:var(--on-accent)">${_escSP(proto.toUpperCase())}</span>`;
-  const rid = vr.router_id ? `<span class="text-dim" style="font-size:11px">rid ${_escSP(vr.router_id)}</span>` : '';
-  const asn = (vr.asn != null && vr.asn !== '') ? `<span class="text-dim" style="font-size:11px">AS ${_escSP(vr.asn)}</span>` : '';
+  const protoBadge = `<span class="badge" style="font-size:var(--fs-xs);background:${protoColor};color:var(--on-accent)">${_escSP(proto.toUpperCase())}</span>`;
+  const rid = vr.router_id ? `<span class="text-dim" style="font-size:var(--fs-sm)">rid ${_escSP(vr.router_id)}</span>` : '';
+  const asn = (vr.asn != null && vr.asn !== '') ? `<span class="text-dim" style="font-size:var(--fs-sm)">AS ${_escSP(vr.asn)}</span>` : '';
   return `<div class="card" style="margin-bottom:14px" id="vr-card-${name}">
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
       <div style="display:flex;align-items:center;gap:10px">
         <h3 style="margin:0">${name}</h3>
-        <span class="badge" style="font-size:10px">table ${_escSP(vr.table_id != null ? vr.table_id : '?')}</span>
+        <span class="badge" style="font-size:var(--fs-xs)">table ${_escSP(vr.table_id != null ? vr.table_id : '?')}</span>
         ${protoBadge} ${up} ${vsys} ${rid} ${asn}
       </div>
       <div style="display:flex;gap:6px">
@@ -4837,7 +4862,7 @@ function vrCardHtml(vr) {
         <button class="btn btn-xs btn-danger" data-vr="${nameAttr}" onclick="deleteVR(this.dataset.vr)">Del</button>
       </div>
     </div>
-    <div style="margin:8px 0;font-size:11px"><span class="text-dim">Members:</span> ${ifHtml}</div>
+    <div style="margin:8px 0;font-size:var(--fs-sm)"><span class="text-dim">Members:</span> ${ifHtml}</div>
     <div class="section-title" style="margin-top:8px">Static Routes</div>
     <div class="table-wrap">
       <table><thead><tr><th>Destination</th><th>Next Hop</th><th>Device</th><th>Metric</th><th></th></tr></thead>
@@ -4880,13 +4905,13 @@ async function loadVRFib(vrName) {
   if (!box) return;
   if (box.style.display !== 'none') { box.style.display = 'none'; return; }
   box.style.display = 'block';
-  box.innerHTML = '<div class="text-dim" style="font-size:11px">Reading FIB&hellip;</div>';
+  box.innerHTML = '<div class="text-dim" style="font-size:var(--fs-sm)">Reading FIB&hellip;</div>';
   const data = await api(`/api/network/virtual-routers/${encodeURIComponent(vrName)}/fib`);
-  if (!data) { box.innerHTML = '<div class="text-dim" style="font-size:11px">FIB unavailable.</div>'; return; }
+  if (!data) { box.innerHTML = '<div class="text-dim" style="font-size:var(--fs-sm)">FIB unavailable.</div>'; return; }
   let rows = Array.isArray(data) ? data : (data.routes || data.fib || data.entries || null);
   if (rows == null && typeof (data.raw || data.output) === 'string') {
     box.innerHTML = `<div class="section-title">FIB (table ${_escSP(data.table_id != null ? data.table_id : '')})</div>
-      <pre class="mono" style="font-size:11px;background:var(--surface);padding:8px;border-radius:4px;overflow:auto;max-height:200px;white-space:pre-wrap">${_escSP(data.raw || data.output)}</pre>`;
+      <pre class="mono" style="font-size:var(--fs-sm);background:var(--surface);padding:8px;border-radius:4px;overflow:auto;max-height:200px;white-space:pre-wrap">${_escSP(data.raw || data.output)}</pre>`;
     return;
   }
   rows = rows || [];
@@ -5118,7 +5143,7 @@ function renderNetworkZeroTier(c) {
         <tbody id="zt-peers-body"></tbody></table>
       </div></div>
     </div>
-    <div class="section"><p id="zt-status" class="text-dim" style="font-size:11px;margin-top:4px"></p></div>`;
+    <div class="section"><p id="zt-status" class="text-dim" style="font-size:var(--fs-sm);margin-top:4px"></p></div>`;
   loadZeroTier();
   startRefresh(loadZeroTier,10000);
 }
@@ -5158,44 +5183,9 @@ async function loadZeroTier() {
 
 /* ---- Network > DHCP ---- */
 const NET_PAGES = {};
-const _CTX_DHCP = netRegister({
-  kind: 'dhcp-scopes',
-  title: 'DHCP Server',
-  desc: 'DHCP server address pools (scopes). Each scope leases addresses on an interface subnet.',
-  fields: [
-    {key:'interface',   label:'Interface',   type:'text',   required:true, placeholder:'eno2np1'},
-    {key:'range_start', label:'Range Start', type:'text',   required:true, placeholder:'10.0.0.100'},
-    {key:'range_end',   label:'Range End',   type:'text',   required:true, placeholder:'10.0.0.200'},
-    {key:'gateway',     label:'Gateway',     type:'text',   placeholder:'10.0.0.1'},
-    {key:'dns',         label:'DNS',         type:'text',   placeholder:'8.8.8.8, 1.1.1.1'},
-    {key:'lease_time',  label:'Lease (sec)', type:'number', placeholder:'86400'},
-  ],
-});
 function renderNetworkDHCP(c) {
-  c.innerHTML = netPageHTML(_CTX_DHCP) +
-    `<div class="section"><div class="section-title">Active Leases</div>
-      <div class="card"><div class="table-wrap"><table>
-        <thead><tr><th>IP Address</th><th>MAC</th><th>Hostname</th><th>State</th><th>Expires</th></tr></thead>
-        <tbody id="dhcp-leases-body"><tr><td colspan="5" class="text-dim">Loading&hellip;</td></tr></tbody>
-      </table></div><div id="dhcp-leases-note" class="text-dim" style="font-size:10px;margin-top:6px"></div></div></div>`;
-  netRenderList(_CTX_DHCP);
-  loadDhcpLeases();
-}
-async function loadDhcpLeases() {
-  const r = await api('/api/dhcp/leases');
-  const tb = document.getElementById('dhcp-leases-body');
-  const note = document.getElementById('dhcp-leases-note');
-  if (!tb) return;
-  const leases = (r && r.leases) || [];
-  if (!r || !r.available) {
-    tb.innerHTML = '<tr><td colspan="5" class="text-dim">No active leases</td></tr>';
-    if (note) note.textContent = (r && r.message) || '';
-    return;
-  }
-  tb.innerHTML = leases.length
-    ? leases.map(l => `<tr><td class="mono">${_escSP(l.ip)}</td><td class="mono">${_escSP(l.mac || '')}</td><td>${_escSP(l.hostname || '')}</td><td><span class="badge ${l.state === 'active' ? 'badge-up' : 'badge'}">${_escSP(l.state || '')}</span></td><td class="text-dim" style="font-size:11px">${_escSP(l.expires || '')}</td></tr>`).join('')
-    : '<tr><td colspan="5" class="text-dim">No active leases</td></tr>';
-  if (note) note.textContent = 'Source: ' + _escSP(r.source || '') + ' — ' + leases.length + ' lease(s)';
+  if (window.ffnDhcp) { window.ffnDhcp.page(c); return; }
+  c.innerHTML = '<div class="page-header"><h2>DHCP Servers</h2></div><p class="text-dim">The DHCP console script did not load.</p>';
 }
 
 /* ---- Network > DNS Proxy ---- */
@@ -5214,11 +5204,11 @@ function renderNetworkDNSProxy(c) {
           <option value="google">Google (8.8.8.8)</option>
           <option value="custom">Custom</option></select></div>
         <div class="form-group"><label>Domain Overrides (comma-separated)</label><input type="text" id="dnsp-overrides" placeholder="internal.example.com=10.0.0.53"></div>
-        <div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary btn-sm" onclick="saveDnsProxy()">Save</button><span id="dnsp-msg" style="font-size:11px"></span></div>
+        <div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary btn-sm" onclick="saveDnsProxy()">Save</button><span id="dnsp-msg" style="font-size:var(--fs-sm)"></span></div>
       </div>
       <div class="card">
         <h3>DNS Cache Statistics</h3>
-        <div id="dnsp-stats" style="font-size:12px;line-height:2.2">Loading&hellip;</div>
+        <div id="dnsp-stats" style="font-size:var(--fs-md);line-height:2.2">Loading&hellip;</div>
       </div>
     </div>`;
   loadDnsProxy();
@@ -5262,7 +5252,7 @@ async function saveDnsProxy() {
 
 function _netTable(headers, rows, emptyMsg) {
   if (!rows.length) {
-    return `<div class="card"><p class="text-dim" style="padding:20px;font-size:13px">${emptyMsg}</p></div>`;
+    return `<div class="card"><p class="text-dim" style="padding:20px;font-size:var(--fs-lg)">${emptyMsg}</p></div>`;
   }
   const thead = headers.map(h=>`<th>${h}</th>`).join('');
   const tbody = rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('');
@@ -5293,7 +5283,7 @@ function netPageHTML(ctx) {
       <div class="actions"><button class="btn btn-primary btn-sm" onclick="netOpenAddModal('${ctx.kind}')">+ Add</button></div>
     </div>
     <p class="text-dim">Saved resource definitions. Saving a definition does not confirm that a runtime service has applied it.</p>
-    ${ctx.desc ? `<p class="text-dim" style="font-size:11px;margin-bottom:10px">${ctx.desc}</p>` : ''}
+    ${ctx.desc ? `<p class="text-dim" style="font-size:var(--fs-sm);margin-bottom:10px">${ctx.desc}</p>` : ''}
     <div class="card"><div class="table-wrap">
       <table>
         <thead><tr><th>Name</th><th>Enabled</th>${cols}<th></th></tr></thead>
@@ -5382,7 +5372,7 @@ function netOpenAddModal(kind, existing) {
   rows.push(`<div style="display:flex;gap:8px;margin-top:12px">
     <button class="btn btn-primary btn-sm" onclick="netSaveEntry(${existing?existing.id:'null'})">Save</button>
     <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
-    <span id="net-save-msg" style="font-size:11px;align-self:center"></span>
+    <span id="net-save-msg" style="font-size:var(--fs-sm);align-self:center"></span>
   </div>`);
   document.getElementById('info-modal-body').innerHTML = rows.join('');
   document.getElementById('modal-info').classList.add('show');
@@ -5761,7 +5751,7 @@ async function checkDynamicUpdates(btn) {
 function renderDeviceRecommendations(c) {
   const kind = currentSubPage === 'rec-saas' ? 'SaaS' : 'IoT';
   c.innerHTML = `<div class="page-header"><h2>${kind} Policy Recommendations</h2></div>
-    <p class="text-dim" style="font-size:11px;margin-bottom:10px">Suggested security-policy rules generated from observed ${kind} traffic and device/application inventory. Review and import into the rulebase.</p>
+    <p class="text-dim" style="font-size:var(--fs-sm);margin-bottom:10px">Suggested security-policy rules generated from observed ${kind} traffic and device/application inventory. Review and import into the rulebase.</p>
     <div class="card"><div class="table-wrap"><table><thead><tr><th>Recommendation</th><th>Source</th><th>Confidence</th><th></th></tr></thead>
     <tbody><tr><td colspan="4" class="text-dim" style="padding:20px">No recommendations available yet — they populate once ${kind} traffic has been profiled.</td></tr></tbody></table></div></div>`;
 }
@@ -5852,7 +5842,7 @@ function renderNetworkLLDP(c) {
     <div class="page-header"><h2>LLDP (Link Layer Discovery Protocol)</h2>
       <div class="actions"><button class="btn btn-sm" onclick="loadLldp()">Refresh</button></div>
     </div>
-    <p class="text-dim" style="font-size:11px;margin-bottom:10px" id="lldp-status">Loading...</p>
+    <p class="text-dim" style="font-size:var(--fs-sm);margin-bottom:10px" id="lldp-status">Loading...</p>
     <div class="section"><div class="section-title">Discovered Neighbors</div>
     <div class="card"><div class="table-wrap">
       <table><thead><tr>
@@ -6020,7 +6010,7 @@ function renderZTWireguard(c) {
         <button class="btn btn-primary btn-sm" onclick="netOpenAddModal('wireguard-peers')">+ Add Peer</button>
       </div>
     </div>
-    <p class="text-dim" style="font-size:11px;margin-bottom:10px">
+    <p class="text-dim" style="font-size:var(--fs-sm);margin-bottom:10px">
       WireGuard VPN (Curve25519 + ChaCha20-Poly1305). Configuration below is persisted in the candidate config and applied by ffn-configd on commit; live state is read from <code>wg show</code>.
     </p>
     <div class="section"><div class="section-title">Configured Interfaces</div>
@@ -6028,7 +6018,7 @@ function renderZTWireguard(c) {
     <div class="section"><div class="section-title">Configured Peers</div>
     ${netPageHTML(_CTX_WG_PEER).replace(/page-header[\s\S]*?<\/div>/, '')}</div>
     <div class="section"><div class="section-title">Live State (wg show)</div>
-    <div class="card"><pre id="wg-live" class="mono" style="font-size:11px;max-height:400px;overflow:auto;padding:10px;background:var(--log-bg);color:var(--text)">Loading...</pre></div></div>`;
+    <div class="card"><pre id="wg-live" class="mono" style="font-size:var(--fs-sm);max-height:400px;overflow:auto;padding:10px;background:var(--log-bg);color:var(--text)">Loading...</pre></div></div>`;
   netRenderList(_CTX_WG_IFACE);
   netRenderList(_CTX_WG_PEER);
   loadWireguardLive();
@@ -6073,12 +6063,12 @@ function renderZTTailscale(c) {
         <button class="btn btn-sm btn-danger" onclick="if(confirm('Disconnect Tailscale?'))tailscaleDown()">tailscale down</button>
       </div>
     </div>
-    <p class="text-dim" style="font-size:11px;margin-bottom:10px">
+    <p class="text-dim" style="font-size:var(--fs-sm);margin-bottom:10px">
       Tailscale mesh VPN (WireGuard + coordination server). Live status read directly from <code>tailscale status --json</code>.
     </p>
     <div class="grid grid-2 section">
       <div class="card"><h3>Node Status</h3>
-        <div id="ts-node" style="font-size:12px;line-height:2.2">Loading...</div>
+        <div id="ts-node" style="font-size:var(--fs-md);line-height:2.2">Loading...</div>
       </div>
       <div class="card"><h3>Configuration</h3>
         <div class="form-group"><label>Login Server</label><input type="text" id="ts-login-server" placeholder="https://login.tailscale.com or https://headscale.example.com"></div>
@@ -6169,7 +6159,7 @@ const _CTX_ZS = netRegister({
 function renderZTZScaler(c) {
   c.innerHTML = netPageHTML(_CTX_ZS) + `
     <div class="section"><div class="section-title">Tunnel Status</div>
-    <div class="card" style="font-size:12px;line-height:2.2;color:var(--text-dim)">
+    <div class="card" style="font-size:var(--fs-md);line-height:2.2;color:var(--text-dim)">
       <div><strong>Primary tunnel:</strong> <span id="zs-p-status">-</span></div>
       <div><strong>Secondary tunnel:</strong> <span id="zs-s-status">-</span></div>
       <div><strong>Packets forwarded:</strong> 0</div>
@@ -6364,18 +6354,18 @@ function renderDeviceCerts(c) {
       <div class="card"><div class="table-wrap"><table>
         <thead><tr><th>Name</th><th>Subject</th><th>Issuer</th><th>Type</th><th>Valid Until</th><th>SHA256 Fingerprint</th><th>In Use</th></tr></thead>
         <tbody id="certs-body"><tr><td colspan="7" class="text-dim">Loading&hellip;</td></tr></tbody>
-      </table></div><div id="certs-note" class="text-dim" style="font-size:10px;margin-top:6px"></div></div>
+      </table></div><div id="certs-note" class="text-dim" style="font-size:var(--fs-xs);margin-top:6px"></div></div>
     </div>
     <div class="section"><div class="section-title">Generate Certificate Signing Request (CSR)</div>
       <div class="card">
-        <p class="text-dim" style="font-size:11px">Creates a CSR from the device's existing private key (non-disruptive — the serving certificate is unchanged). Send it to your CA, then install the issued certificate.</p>
+        <p class="text-dim" style="font-size:var(--fs-sm)">Creates a CSR from the device's existing private key (non-disruptive — the serving certificate is unchanged). Send it to your CA, then install the issued certificate.</p>
         <div class="grid grid-3" style="align-items:end">
           <div class="form-group"><label>Common Name</label><input id="csr-cn" type="text" placeholder="ffn-ngfw.example.com"></div>
           <div class="form-group"><label>Organization</label><input id="csr-org" type="text" placeholder="FFN Corp"></div>
           <div class="form-group"><label>Country</label><input id="csr-c" type="text" maxlength="2" placeholder="US"></div>
         </div>
-        <div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary btn-sm" onclick="genCsr()">Generate CSR</button><span id="csr-msg" style="font-size:11px"></span></div>
-        <textarea id="csr-out" rows="8" readonly style="width:100%;font-family:monospace;font-size:11px;margin-top:8px;display:none;box-sizing:border-box"></textarea>
+        <div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary btn-sm" onclick="genCsr()">Generate CSR</button><span id="csr-msg" style="font-size:var(--fs-sm)"></span></div>
+        <textarea id="csr-out" rows="8" readonly style="width:100%;font-family:monospace;font-size:var(--fs-sm);margin-top:8px;display:none;box-sizing:border-box"></textarea>
       </div>
     </div>`;
   loadCerts();
@@ -6389,8 +6379,8 @@ async function loadCerts() {
       <td>${_escSP(c.subject || '')}</td>
       <td>${_escSP(c.issuer || '')}</td>
       <td>${c.self_signed ? '<span class="badge">self-signed</span>' : '<span class="badge badge-info">CA-signed</span>'}</td>
-      <td class="text-dim" style="font-size:11px">${_escSP(c.valid_to || '')}</td>
-      <td class="mono" style="font-size:9px">${_escSP((c.fingerprint || '').replace(/^sha256 Fingerprint=/i, ''))}</td>
+      <td class="text-dim" style="font-size:var(--fs-sm)">${_escSP(c.valid_to || '')}</td>
+      <td class="mono" style="font-size:var(--fs-xs)">${_escSP((c.fingerprint || '').replace(/^sha256 Fingerprint=/i, ''))}</td>
       <td>${c.in_use ? '<span class="badge badge-up">serving</span>' : ''}</td>
     </tr>`).join('') : '<tr><td colspan="7" class="text-dim">No certificates installed</td></tr>';
   const note = document.getElementById('certs-note'); if (note) note.textContent = 'Store: ' + _escSP((r && r.tls_dir) || '');
@@ -6438,13 +6428,13 @@ function renderDeviceHA(c) {
           <div style="display:flex;gap:6px;align-items:center"><input type="text" id="ha2-if" placeholder="enp179s0f0np0" style="flex:1"><label style="font-weight:normal;white-space:nowrap"><input type="checkbox" id="ha2-en"> enable</label></div></div>
         <div class="form-group"><label>HA3 Packet-Forwarding &mdash; Interface / Peer MAC</label>
           <div style="display:flex;gap:6px"><input type="text" id="ha3-if" placeholder="enp179s0f0np0 (DPU 200G)" style="flex:1"><input type="text" id="ha3-mac" placeholder="aa:bb:cc:dd:ee:ff" style="flex:1"></div>
-          <div class="text-dim" style="font-size:10px;margin-top:3px">HA3 carries raw frames to the session owner (the &quot;dump pure L1&quot; path). A dedicated high-speed NIC (e.g. a DPU port) is recommended.</div></div>
+          <div class="text-dim" style="font-size:var(--fs-xs);margin-top:3px">HA3 carries raw frames to the session owner (the &quot;dump pure L1&quot; path). A dedicated high-speed NIC (e.g. a DPU port) is recommended.</div></div>
         <div class="grid grid-3">
           <div class="form-group"><label>Heartbeat (ms)</label><input type="number" id="ha-hb" style="width:100%"></div>
           <div class="form-group"><label>Peer Timeout (ms)</label><input type="number" id="ha-to" style="width:100%"></div>
           <div class="form-group"><label>Failback Hold (ms)</label><input type="number" id="ha-hold" style="width:100%"></div>
         </div>
-        <div style="display:flex;gap:8px;align-items:center;margin-top:6px"><button class="btn btn-primary" onclick="saveHaConfig()">Save HA Config</button><span id="ha-msg" style="font-size:11px"></span></div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:6px"><button class="btn btn-primary" onclick="saveHaConfig()">Save HA Config</button><span id="ha-msg" style="font-size:var(--fs-sm)"></span></div>
       </div>
       <div class="card">
         <div class="section-title">Status</div>
@@ -6504,13 +6494,13 @@ async function loadHaState() {
   const co = s.counters || {};
   const stateBadge = s.enabled ? (s.local_state === 'active' ? 'badge-up' : (s.local_state === 'passive' ? 'badge' : 'badge-warning')) : 'badge-down';
   el.innerHTML = `
-    <div style="font-size:12px;line-height:2.1">
+    <div style="font-size:var(--fs-md);line-height:2.1">
       <div><strong>HA:</strong> ${s.enabled ? '<span class="badge badge-up">enabled</span>' : '<span class="badge badge-down">disabled</span>'} &nbsp; <strong>Mode:</strong> ${_escSP(s.mode)}</div>
       <div><strong>This device:</strong> id ${s.device_id} (${_escSP(s.role)}) &mdash; local state <span class="badge ${stateBadge}">${_escSP(s.local_state)}</span></div>
       <div><strong>Peer:</strong> ${b(s.peer_up, s.peer_up ? 'up' : 'down')} ${s.peer_reachable != null ? ('(HA1 ping ' + (s.peer_reachable ? 'ok' : 'fail') + ')') : ''}</div>
       <div><strong>Session setup:</strong> ${_escSP(s.session_setup)}</div>
       <div><strong>Links:</strong> HA1 ${b((s.links || {}).ha1, 'ctl')} HA2 ${b((s.links || {}).ha2, 'sync')} HA3 ${b((s.links || {}).ha3, 'fwd')}</div>
-      ${s.dataplane_reported ? '' : '<div class="text-dim" style="font-size:10px">(data-plane HA not reporting yet &mdash; counters are placeholders until the DPDK HA build is deployed)</div>'}
+      ${s.dataplane_reported ? '' : '<div class="text-dim" style="font-size:var(--fs-xs)">(data-plane HA not reporting yet &mdash; counters are placeholders until the DPDK HA build is deployed)</div>'}
     </div>
     <div class="section-title" style="margin-top:10px">Load-Balance Counters</div>
     <div class="table-wrap"><table><tbody>
@@ -6566,7 +6556,7 @@ async function loadFips() {
       + `<td class="text-dim">${_escSP(t.detail || '')}</td></tr>`;
   }).join('');
   b.innerHTML = `
-    <div style="font-size:13px;line-height:2.1">
+    <div style="font-size:var(--fs-lg);line-height:2.1">
       <div><strong>Operational mode:</strong> ${_escSP(r.operational_mode)} &nbsp; ${badge}</div>
       <div><strong>Cryptographic module health:</strong> ${r.healthy ? '<span class="text-green">healthy</span>' : '<span class="text-red">FAILED &mdash; not operational</span>'}</div>
     </div>
@@ -6575,7 +6565,7 @@ async function loadFips() {
       <tbody>${rows || '<tr><td colspan="4" class="text-dim">No self-test result recorded (FIPS-CC not enabled).</td></tr>'}</tbody></table></div>
     </div>
     <div class="card" style="margin-top:10px;border-left:3px solid var(--orange)">
-      <p style="font-size:11px;line-height:1.7;margin:0">FIPS-CC mode is enabled or disabled <strong>only from Recovery / Maintenance mode</strong>
+      <p style="font-size:var(--fs-sm);line-height:1.7;margin:0">FIPS-CC mode is enabled or disabled <strong>only from Recovery / Maintenance mode</strong>
       (boot the recovery partition and use the maintenance menu), because switching modes
       <strong>zeroizes the entire configuration</strong>. When enabled, the appliance runs the cryptographic
       Known-Answer Tests and a software-integrity check on every boot; a failed self-test blocks the dataplane.</p>
@@ -6606,7 +6596,7 @@ function renderDeviceAdmins(c) {
         <div class="form-group"><label>Auth Profile</label><select><option>Local Database</option><option>RADIUS</option><option>TACACS+</option><option>LDAP</option></select></div>
         <div class="form-group"><label>Session Timeout (min)</label><input type="number" value="480"></div>
       </div>
-      <p class="text-dim" style="font-size:10px;margin-top:6px">These accounts are shared by the WebUI and the SSH CLI (<span class="mono">ssh admin@${location.hostname}</span>) &mdash; the same username/password authenticates both. These are firewall <strong>administrators</strong>; non-admin AAA accounts (VPN / captive-portal) live under Device &#9656; Local User Database.</p>
+      <p class="text-dim" style="font-size:var(--fs-xs);margin-top:6px">These accounts are shared by the WebUI and the SSH CLI (<span class="mono">ssh admin@${location.hostname}</span>) &mdash; the same username/password authenticates both. These are firewall <strong>administrators</strong>; non-admin AAA accounts (VPN / captive-portal) live under Device &#9656; Local User Database.</p>
     </div></div>`;
   loadAdmins();
 }
@@ -6650,7 +6640,7 @@ function openAdminModal(id) {
     <div style="margin-top:12px;display:flex;gap:8px">
       <button class="btn btn-primary btn-sm" onclick="saveAdmin()">Save</button>
       <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
-      <span id="adm-msg" style="font-size:11px;align-self:center"></span>
+      <span id="adm-msg" style="font-size:var(--fs-sm);align-self:center"></span>
     </div>`;
   if (u) { document.getElementById('adm-user').value = u.username; document.getElementById('adm-role').value = u.role; document.getElementById('adm-mcp').checked = !!u.must_change_pw; }
   else { document.getElementById('adm-mcp').checked = true; }
@@ -6702,10 +6692,10 @@ async function loadSsh() {
   const r = await api('/api/system/ssh'); const el = document.getElementById('ssh-body'); if (!el) return;
   if (!r) { el.innerHTML = '<div class="card text-dim">SSH status unavailable</div>'; return; }
   const sd = r.sshd || {}, mg = r.mgmt || {}, cli = r.cli_shell || {};
-  const keyRows = (r.host_keys || []).map(k => `<tr><td>${_escSP(k.type)}</td><td>${k.bits || ''}</td><td class="mono" style="font-size:10px">${_escSP(k.fingerprint)}</td></tr>`).join('') || '<tr><td colspan="3" class="text-dim">none</td></tr>';
+  const keyRows = (r.host_keys || []).map(k => `<tr><td>${_escSP(k.type)}</td><td>${k.bits || ''}</td><td class="mono" style="font-size:var(--fs-xs)">${_escSP(k.fingerprint)}</td></tr>`).join('') || '<tr><td colspan="3" class="text-dim">none</td></tr>';
   el.innerHTML = `
   <div class="grid grid-2">
-    <div class="card"><div class="section-title">SSH Server</div><div style="font-size:12px;line-height:2">
+    <div class="card"><div class="section-title">SSH Server</div><div style="font-size:var(--fs-md);line-height:2">
       <div><strong>Status:</strong> <span class="text-green">running</span> &middot; <strong>Port:</strong> ${_escSP(sd.port || '22')}</div>
       <div><strong>PermitRootLogin:</strong> ${_escSP(sd.permit_root_login || '')}</div>
       <div><strong>Login shell:</strong> ${cli.present ? ('FFN NGFW CLI (<span class="mono">' + _escSP(cli.gateway_user) + '</span> gateway)') : 'system shell'}</div>
@@ -6713,20 +6703,20 @@ async function loadSsh() {
       <div class="section-title" style="margin-top:8px">Host Keys</div>
       <div class="table-wrap"><table><thead><tr><th>Type</th><th>Bits</th><th>SHA256 Fingerprint</th></tr></thead><tbody>${keyRows}</tbody></table></div>
     </div>
-    <div class="card"><div class="section-title">Permitted Management</div><div style="font-size:12px;line-height:2">
-      <div><strong>Interfaces:</strong> ${(mg.interfaces || []).map(x => '<span class="badge badge-info" style="font-size:9px">' + _escSP(x) + '</span>').join(' ') || '<span class="text-dim">none</span>'}</div>
+    <div class="card"><div class="section-title">Permitted Management</div><div style="font-size:var(--fs-md);line-height:2">
+      <div><strong>Interfaces:</strong> ${(mg.interfaces || []).map(x => '<span class="badge badge-info" style="font-size:var(--fs-xs)">' + _escSP(x) + '</span>').join(' ') || '<span class="text-dim">none</span>'}</div>
       <div><strong>TCP ports:</strong> <span class="mono">${(mg.tcp_ports || []).join(', ') || '—'}</span></div>
-      <div class="text-dim" style="font-size:10px;margin-top:6px">Enforced by the firewall management-allow (input chain). Change which interfaces/ports reach the box via Network &#9656; Network Profiles &#9656; Interface Mgmt, not here.</div>
+      <div class="text-dim" style="font-size:var(--fs-xs);margin-top:6px">Enforced by the firewall management-allow (input chain). Change which interfaces/ports reach the box via Network &#9656; Network Profiles &#9656; Interface Mgmt, not here.</div>
     </div>
       <div class="section-title" style="margin-top:8px">Crypto (effective sshd)</div>
-      <div class="text-dim" style="font-size:10px;line-height:1.7">
+      <div class="text-dim" style="font-size:var(--fs-xs);line-height:1.7">
         <div><strong>Ciphers:</strong> ${(sd.ciphers || []).slice(0, 4).join(', ')}${(sd.ciphers || []).length > 4 ? ' …' : ''}</div>
         <div><strong>KEX:</strong> ${(sd.kex || []).slice(0, 3).join(', ')}${(sd.kex || []).length > 3 ? ' …' : ''}</div>
       </div>
     </div>
   </div>
   <div class="card"><div class="section-title">CLI Access</div>
-    <div style="background:var(--log-bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px;font-family:var(--font-mono);font-size:12px;color:var(--ok)">
+    <div style="background:var(--log-bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px;font-family:var(--font-mono);font-size:var(--fs-md);color:var(--ok)">
       <div>$ ssh ${_escSP(cli.gateway_user || 'admin')}@${location.hostname}</div>
       <div class="text-dim" style="color:var(--ok)">${_escSP(cli.note || '')}</div>
     </div></div>`;
@@ -6759,7 +6749,7 @@ async function loadSoftwareInfo() {
 function renderDeviceCoPP(c) {
   c.innerHTML = `
     <div class="page-header"><h2>Control Plane Policing (CoPP)</h2></div>
-    <div class="card"><p id="copp-agg" class="text-dim" style="margin-bottom:10px;font-size:12px"></p><div class="table-wrap">
+    <div class="card"><p id="copp-agg" class="text-dim" style="margin-bottom:10px;font-size:var(--fs-md)"></p><div class="table-wrap">
       <table><thead><tr><th>Class</th><th>Protocol(s)</th><th>Burst Size</th><th>Rate Limit (pps)</th><th>Passed</th><th>Dropped</th><th></th></tr></thead>
       <tbody id="copp-table-body"></tbody></table>
     </div></div>`;
@@ -6810,67 +6800,67 @@ function renderDeviceFPGA(c) {
   c.innerHTML = `
     <div class="page-header"><h2>${title}</h2></div>
     ${hasCard ? `<div class="section"><div class="grid grid-3">
-      <div class="card"><h3>Firmware</h3><div id="fpga-firmware" style="font-size:12px;line-height:2.2"></div></div>
+      <div class="card"><h3>Firmware</h3><div id="fpga-firmware" style="font-size:var(--fs-md);line-height:2.2"></div></div>
       <div class="card"><h3>Resource Utilization</h3><div id="fpga-res-detail"></div></div>
-      <div class="card"><h3>Thermal / Power</h3><div id="fpga-thermal" style="font-size:12px;line-height:2.2"></div></div>
+      <div class="card"><h3>Thermal / Power</h3><div id="fpga-thermal" style="font-size:var(--fs-md);line-height:2.2"></div></div>
     </div></div>` : `<div class="section"><div class="card">
-      <div id="fpga-firmware" style="font-size:12px;line-height:2.2"></div></div></div>`}
+      <div id="fpga-firmware" style="font-size:var(--fs-md);line-height:2.2"></div></div></div>`}
     <div class="section"><div class="section-title">Dataplane Control</div><div class="card">
       ${hasPlatformControls ? '<div id="platform-dataplane-controls"></div>' : ''}
       <div class="grid grid-3" style="gap:16px">
         ${!hasDpdk ? '' : `<div style="border:1px solid var(--accent);border-radius:var(--radius);padding:16px">
-          <h3 style="margin-bottom:8px">DPDK Fast-Path <span class="badge badge-info" style="font-size:9px">primary</span></h3>
-          <div id="dp-dpdk-status" style="font-size:12px;line-height:2;margin-bottom:10px">Loading...</div>
+          <h3 style="margin-bottom:8px">DPDK Fast-Path <span class="badge badge-info" style="font-size:var(--fs-xs)">primary</span></h3>
+          <div id="dp-dpdk-status" style="font-size:var(--fs-md);line-height:2;margin-bottom:10px">Loading...</div>
           <div style="display:flex;gap:8px">
             <button class="btn btn-sm btn-danger" onclick="restartDataplane('dpdk')">Restart DPDK</button>
             <button class="btn btn-sm" onclick="restartDataplane('dpdk-stop')">Stop</button>
           </div>
-          <p class="text-dim" style="font-size:10px;margin-top:6px">Restarts the live DPDK unit (ffn-dpdk-fwd) — hugepages + isolcpus binding preserved. This is the primary host fast path.</p>
+          <p class="text-dim" style="font-size:var(--fs-xs);margin-top:6px">Restarts the live DPDK unit (ffn-dpdk-fwd) — hugepages + isolcpus binding preserved. This is the primary host fast path.</p>
         </div>`}
         <div style="border:1px solid var(--border);border-radius:var(--radius);padding:16px">
-          <h3 style="margin-bottom:8px">${hasCard ? 'FPGA Dataplane <span class="badge" style="font-size:9px;background:var(--text-muted);color:var(--surface)">optional offload</span>' : 'Forwarding Complex'}</h3>
-          <div id="dp-fpga-status" style="font-size:12px;line-height:2;margin-bottom:10px">Loading...</div>
-          ${!hasCard ? `<p class="text-dim" style="font-size:10px;margin-top:6px">${hasPlatformControls ? 'Processor restart controls above report availability and acknowledgment through the management control daemon.' : 'This chassis forwards on its own silicon. Restart controls require a supported hardware module.'}</p>` : `<div style="display:flex;gap:8px">
+          <h3 style="margin-bottom:8px">${hasCard ? 'FPGA Dataplane <span class="badge" style="font-size:var(--fs-xs);background:var(--text-muted);color:var(--surface)">optional offload</span>' : 'Forwarding Complex'}</h3>
+          <div id="dp-fpga-status" style="font-size:var(--fs-md);line-height:2;margin-bottom:10px">Loading...</div>
+          ${!hasCard ? `<p class="text-dim" style="font-size:var(--fs-xs);margin-top:6px">${hasPlatformControls ? 'Processor restart controls above report availability and acknowledgment through the management control daemon.' : 'This chassis forwards on its own silicon. Restart controls require a supported hardware module.'}</p>` : `<div style="display:flex;gap:8px">
             <button class="btn btn-sm btn-danger" onclick="restartDataplane('fpga')">Restart FPGA (PCIe Reset)</button>
             <button class="btn btn-sm" onclick="restartDataplane('fpga-warm')">Warm Reset</button>
           </div>
-          <p class="text-dim" style="font-size:10px;margin-top:6px">PCIe reset via kernel driver ioctl — triggers full FPGA reconfiguration. Absent card is a normal state.</p>`}
+          <p class="text-dim" style="font-size:var(--fs-xs);margin-top:6px">PCIe reset via kernel driver ioctl — triggers full FPGA reconfiguration. Absent card is a normal state.</p>`}
         </div>
         ${!(hasDpdk && hasCard) ? '' : `<div style="border:1px solid var(--border);border-radius:var(--radius);padding:16px">
           <h3 style="margin-bottom:8px">Full Dataplane</h3>
-          <div style="font-size:12px;line-height:2;margin-bottom:10px;color:var(--text-dim)">
+          <div style="font-size:var(--fs-md);line-height:2;margin-bottom:10px;color:var(--text-dim)">
             <div>Restart both DPDK and FPGA dataplanes simultaneously</div>
             <div>Traffic will be interrupted during restart</div>
           </div>
           <button class="btn btn-sm btn-danger" onclick="if(confirm('Restart ALL dataplanes? Traffic will be interrupted.'))restartDataplane('all')">Restart All Dataplanes</button>
         </div>`}
       </div>
-      <div id="dp-restart-log" style="background:var(--log-bg);border:1px solid var(--border);border-radius:var(--radius);padding:10px;margin-top:12px;font-family:monospace;font-size:11px;color:var(--green);max-height:150px;overflow-y:auto;display:none"></div>
+      <div id="dp-restart-log" style="background:var(--log-bg);border:1px solid var(--border);border-radius:var(--radius);padding:10px;margin-top:12px;font-family:monospace;font-size:var(--fs-sm);color:var(--green);max-height:150px;overflow-y:auto;display:none"></div>
     </div></div>
     ${!hasPlanes ? '' : `<div class="section"><div class="section-title">CPU Processing Planes</div>
       <div id="cpu-planes-card" class="card">Loading&hellip;</div>
     </div>`}
     <div class="section">
-      <div class="section-title">Processing Engines <span class="text-dim" style="font-size:11px;text-transform:none;letter-spacing:0">${hasDpdk ? '— host software &amp; DPDK fast path' : '— host software and the offload complex'}</span></div>
+      <div class="section-title">Processing Engines <span class="text-dim" style="font-size:var(--fs-sm);text-transform:none;letter-spacing:0">${hasDpdk ? '— host software &amp; DPDK fast path' : '— host software and the offload complex'}</span></div>
       <div id="engine-primary"><div class="text-dim">Loading engines&hellip;</div></div>
     </div>
     ${!hasCard ? '' : `<div class="section">
       <details id="fpga-offload-panel" style="border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;background:var(--card)">
-        <summary style="cursor:pointer;font-size:12px;font-weight:600;color:var(--text)">
+        <summary style="cursor:pointer;font-size:var(--fs-md);font-weight:600;color:var(--text)">
           Optional FPGA Offload <span id="fpga-offload-summary" class="text-dim" style="font-weight:400"></span>
         </summary>
-        <p class="text-dim" style="font-size:10px;margin:8px 0">
+        <p class="text-dim" style="font-size:var(--fs-xs);margin:8px 0">
           These engines can be accelerated on the BittWare XUP-P3R card when present. With no card, every engine runs in its host backend — no degradation.
         </p>
         <div id="fpga-offload-body" style="margin-top:8px"><div class="text-dim">Loading&hellip;</div></div>
       </details>
     </div>`}
     ${!hasCard ? '' : `<div class="section">
-      <div class="section-title">FPGA Emulator <span class="text-dim" style="font-size:11px;text-transform:none;letter-spacing:0">— software AC/DFA DPI engine (dpi_l7 / dpi_regex), hardware-swappable</span></div>
+      <div class="section-title">FPGA Emulator <span class="text-dim" style="font-size:var(--fs-sm);text-transform:none;letter-spacing:0">— software AC/DFA DPI engine (dpi_l7 / dpi_regex), hardware-swappable</span></div>
       <div id="fpga-emu-body" class="card"><div class="text-dim">Loading emulator status&hellip;</div></div>
     </div>`}
     <div class="section">
-      <div class="section-title">MP&harr;DP Wire <span class="text-dim" style="font-size:11px;text-transform:none;letter-spacing:0">— FlatBuffers management&harr;dataplane channel</span></div>
+      <div class="section-title">MP&harr;DP Wire <span class="text-dim" style="font-size:var(--fs-sm);text-transform:none;letter-spacing:0">— FlatBuffers management&harr;dataplane channel</span></div>
       <div class="grid grid-2">
         <div id="mpdp-status-body" class="card"><div class="text-dim">Loading channel status&hellip;</div></div>
         <div class="card">
@@ -6882,14 +6872,14 @@ function renderDeviceFPGA(c) {
             <option value="policy">Policy update</option>
           </select></div>
           <button class="btn btn-primary btn-sm" onclick="mpdpPush()">Push to Data Plane</button>
-          <div id="mpdp-push-msg" class="text-dim" style="font-size:11px;margin-top:6px"></div>
+          <div id="mpdp-push-msg" class="text-dim" style="font-size:var(--fs-sm);margin-top:6px"></div>
           <div class="section-title" style="margin-top:12px">Last DP&rarr;MP Telemetry</div>
-          <div id="mpdp-telemetry-body" style="font-size:11px"><div class="text-dim">Loading&hellip;</div></div>
+          <div id="mpdp-telemetry-body" style="font-size:var(--fs-sm)"><div class="text-dim">Loading&hellip;</div></div>
         </div>
       </div>
     </div>
     <div class="section">
-      <div class="section-title">DPDK Workers / Zygote <span class="text-dim" style="font-size:11px;text-transform:none;letter-spacing:0">— symmetric-MP workers + shared dpmem (Pass 2 fills live data)</span></div>
+      <div class="section-title">DPDK Workers / Zygote <span class="text-dim" style="font-size:var(--fs-sm);text-transform:none;letter-spacing:0">— symmetric-MP workers + shared dpmem (Pass 2 fills live data)</span></div>
       <div id="dpdk-workers-body" class="card"><div class="text-dim">Loading&hellip;</div></div>
     </div>`;
   if (hasPlatformControls) window.ffnExtensions.renderDataplaneControls(document.getElementById('platform-dataplane-controls'));
@@ -6918,10 +6908,10 @@ async function loadFpgaEmulator() {
     const mode = s.mode || 'emulated';
     return `<tr>
       <td class="mono">${_escSP(nm)}</td>
-      <td><span class="badge" style="background:var(--ospf);color:var(--on-accent);font-size:9px">${_escSP(mode)}</span></td>
+      <td><span class="badge" style="background:var(--ospf);color:var(--on-accent);font-size:var(--fs-xs)">${_escSP(mode)}</span></td>
       <td>${s.enabled===false?'<span class="text-dim">off</span>':'<span class="text-green">on</span>'}</td>
       <td>${fmt(s.packets)}</td><td>${fmt(s.matches)}</td><td>${fmt(s.drops)}</td>
-      <td class="mono text-dim" style="font-size:10px">${_escSP(path||'--')}</td>
+      <td class="mono text-dim" style="font-size:var(--fs-xs)">${_escSP(path||'--')}</td>
     </tr>`;
   }).join('');
   box.innerHTML = `<div class="table-wrap"><table>
@@ -6940,7 +6930,7 @@ async function loadMpdpStatus() {
       const health = d.health || (d.connected ? 'up' : 'down');
       const hc = (health === 'up' || health === 'healthy' || d.connected) ? 'var(--green)' : 'var(--red)';
       sBox.innerHTML = `<h3>Channel</h3>
-        <div style="font-size:12px;line-height:2">
+        <div style="font-size:var(--fs-md);line-height:2">
           <div><strong>Transport:</strong> ${_escSP(d.transport || 'uds/file-ring')}</div>
           <div><strong>Health:</strong> <span style="color:${hc}">${_escSP(String(health))}</span></div>
           <div><strong>Version:</strong> ${_escSP(d.ver != null ? d.ver : (d.version != null ? d.version : '--'))}</div>
@@ -6993,7 +6983,7 @@ async function loadDpdkWorkers() {
   const dpmem = d.shared_dpmem_mb != null ? d.shared_dpmem_mb + ' MB' : (d.dpmem != null ? d.dpmem : '(placeholder)');
   const zygote = d.zygote || (d.dpdk_running ? 'running' : 'not started');
   const cell = (label, val) => `<div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px">
-      <div class="text-dim" style="font-size:11px">${label}</div>
+      <div class="text-dim" style="font-size:var(--fs-sm)">${label}</div>
       <div class="big-num" style="font-size:22px">${_escSP(String(val))}</div></div>`;
   box.innerHTML = `<div class="grid grid-4">
       ${cell('Workers (symmetric-MP)', workers)}
@@ -7001,7 +6991,7 @@ async function loadDpdkWorkers() {
       ${cell('Shared dpmem', dpmem)}
       ${cell('Zygote', zygote)}
     </div>
-    <p class="text-dim" style="font-size:10px;margin-top:8px">Zygote loads AC/DFA + ML tables into shared DPDK memory (hugepages), then forks workers COW with ASLR off. Live worker/queue/dpmem counts land in Pass 2.</p>`;
+    <p class="text-dim" style="font-size:var(--fs-xs);margin-top:8px">Zygote loads AC/DFA + ML tables into shared DPDK memory (hugepages), then forks workers COW with ASLR off. Live worker/queue/dpmem counts land in Pass 2.</p>`;
 }
 
 async function loadCpuPlanes() {
@@ -7027,13 +7017,13 @@ async function loadCpuPlanes() {
     return `<div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px">
       <div style="display:flex;justify-content:space-between"><strong>${name} plane</strong>
         <span class="badge badge-info">cores ${_escSP(cores)}</span></div>
-      <div class="text-dim" style="font-size:11px;margin-top:4px">${description}</div></div>`;
+      <div class="text-dim" style="font-size:var(--fs-sm);margin-top:4px">${description}</div></div>`;
   }).join('');
   const caps = d.capabilities||{};
-  const warns = (d.warnings||[]).map(w=>`<div style="color:var(--warn);font-size:11px">⚠ ${_escSP(w)}</div>`).join('');
+  const warns = (d.warnings||[]).map(w=>`<div style="color:var(--warn);font-size:var(--fs-sm)">⚠ ${_escSP(w)}</div>`).join('');
   box.innerHTML = `
     ${hardwareRoleSummary(d.cpu_role || 'unknown', d.role_reason, d.isolated, d.ncpu)}
-    <div class="text-dim" style="font-size:11px;margin-bottom:8px">
+    <div class="text-dim" style="font-size:var(--fs-sm);margin-bottom:8px">
       Running kernel &middot; isolcpus: <code>${_escSP(d.isolated||'none')}</code> &middot; nohz_full: <code>${_escSP(d.nohz_full||'none')}</code>
       &middot; affinity=${caps.sched_setaffinity?'yes':'no'}, SCHED_FIFO=${caps.sched_fifo?'yes':'no'}</div>
     <div class="grid grid-3">${cards}</div>
@@ -7054,8 +7044,8 @@ async function loadCpuPlanes() {
    apart, so the UI branches on it instead of inferring from three unrelated
    booleans. */
 function _dpDot(state) {
-  const c = {up: 'var(--green)', idle: '#d29922', down: 'var(--red)'}[state]
-            || '#30363d';
+  const c = {up: 'var(--green)', idle: 'var(--warn)', down: 'var(--red)'}[state]
+            || 'var(--border)';
   return `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;`
        + `background:${c};margin-right:6px;vertical-align:middle"></span>`;
 }
@@ -7063,7 +7053,7 @@ function _dpDot(state) {
 function _offloadHTML(o) {
   if (!o || !o.present) {
     return `<div><strong>Status:</strong> <span class="text-dim">No offload complex on this host's PCI bus</span></div>`
-         + (o && o.note ? `<div class="text-dim" style="font-size:11px">${o.note}</div>` : '');
+         + (o && o.note ? `<div class="text-dim" style="font-size:var(--fs-sm)">${o.note}</div>` : '');
   }
   const cp = o.cp || {}, dp = o.dp || {}, sw = o.switch || {}, fe = o.fe100 || {};
   const rows = [];
@@ -7073,14 +7063,14 @@ function _offloadHTML(o) {
      and "CP down" need completely different actions and a single red dot
      cannot distinguish them. */
   rows.push(`<div>${_dpDot(cp.reachable ? 'up' : 'down')}<strong>Control plane</strong> `
-    + `<span class="mono" style="font-size:11px">${_escSP(o.generation || 'OCTEON')}</span> `
+    + `<span class="mono" style="font-size:var(--fs-sm)">${_escSP(o.generation || 'OCTEON')}</span> `
     + (cp.reachable
         ? `<span class="text-green">answering</span>`
         : `<span class="text-red">not answering</span>`)
-    + (cp.kernel ? ` <span class="text-dim" style="font-size:10px">${_escSP(cp.arch||'')} ${_escSP(cp.kernel)}</span>` : '')
+    + (cp.kernel ? ` <span class="text-dim" style="font-size:var(--fs-xs)">${_escSP(cp.arch||'')} ${_escSP(cp.kernel)}</span>` : '')
     + `</div>`);
   if (cp.detail && !cp.reachable)
-    rows.push(`<div class="text-dim" style="font-size:10px;margin-left:14px">${_escSP(cp.detail)}</div>`);
+    rows.push(`<div class="text-dim" style="font-size:var(--fs-xs);margin-left:14px">${_escSP(cp.detail)}</div>`);
 
   if (dp.present) {
     /* No "booted" badge. This device is brought up by enabling it and mmap'ing
@@ -7088,16 +7078,16 @@ function _offloadHTML(o) {
        dataplane from an idle one, and a green dot claiming otherwise would be
        an invention. It is reported as present, with what is genuinely known. */
     rows.push(`<div>${_dpDot('up')}<strong>Data plane</strong> `
-      + `<span class="mono" style="font-size:11px">${_escSP(dp.pci||'')}</span> `
+      + `<span class="mono" style="font-size:var(--fs-sm)">${_escSP(dp.pci||'')}</span> `
       + `<span class="text-green">present</span>`
-      + (dp.liveness ? ` <span class="text-dim" style="font-size:10px">(running state ${_escSP(dp.liveness)})</span>` : '')
+      + (dp.liveness ? ` <span class="text-dim" style="font-size:var(--fs-xs)">(running state ${_escSP(dp.liveness)})</span>` : '')
       + `</div>`
-      + `<div class="text-dim" style="font-size:10px;margin-left:14px">${_escSP(dp.model||'')}`
+      + `<div class="text-dim" style="font-size:var(--fs-xs);margin-left:14px">${_escSP(dp.model||'')}`
       + (dp.pci_enabled === false ? ' · PCI decode off' : '') + `</div>`);
     if (dp.agent_acknowledged) {
-      rows.push(`<div style="font-size:11px;margin-left:14px">Agent ${dp.ready?'ready':'not ready'} · Boot <span class="mono">${_escSP(dp.boot_id)}</span>`
+      rows.push(`<div style="font-size:var(--fs-sm);margin-left:14px">Agent ${dp.ready?'ready':'not ready'} · Boot <span class="mono">${_escSP(dp.boot_id)}</span>`
         + (Number.isInteger(dp.cpu_count)?` · ${dp.cpu_count} cores`:'') + `</div>`
-        + `<div class="text-dim" style="font-size:11px;margin-left:14px">Forwarding ${dp.forwarding_verified?'verified':'not verified'}</div>`);
+        + `<div class="text-dim" style="font-size:var(--fs-sm);margin-left:14px">Forwarding ${dp.forwarding_verified?'verified':'not verified'}</div>`);
     }
   } else if (cp.reachable) {
     rows.push(`<div>${_dpDot('idle')}<strong>Data plane</strong> <span class="text-dim">${dp.inventory_status==='available'?'not found on the control plane’s bus':'inventory unavailable'}</span></div>`);
@@ -7105,16 +7095,16 @@ function _offloadHTML(o) {
 
   if (sw.present)
     rows.push(`<div>${_dpDot(sw.driver ? 'up' : 'idle')}<strong>Switch</strong> `
-      + `<span class="mono" style="font-size:11px">${_escSP(sw.pci)}</span> `
-      + `<span class="text-dim" style="font-size:10px">${_escSP(sw.model||'')}`
+      + `<span class="mono" style="font-size:var(--fs-sm)">${_escSP(sw.pci)}</span> `
+      + `<span class="text-dim" style="font-size:var(--fs-xs)">${_escSP(sw.model||'')}`
       + (sw.driver ? ` · driver ${_escSP(sw.driver)}` : ' · no driver bound') + `</span></div>`);
   if (fe.present)
     rows.push(`<div>${_dpDot(fe.driver ? 'up' : 'idle')}<strong>Front end</strong> `
-      + `<span class="mono" style="font-size:11px">${_escSP(fe.pci)}</span> `
-      + `<span class="text-dim" style="font-size:10px">${_escSP(fe.model||'')}`
+      + `<span class="mono" style="font-size:var(--fs-sm)">${_escSP(fe.pci)}</span> `
+      + `<span class="text-dim" style="font-size:var(--fs-xs)">${_escSP(fe.model||'')}`
       + (fe.driver ? ` · driver ${_escSP(fe.driver)}` : ' · no driver bound') + `</span></div>`);
 
-  if (o.note) rows.push(`<div class="text-dim" style="font-size:10px;margin-top:4px">${_escSP(o.note)}</div>`);
+  if (o.note) rows.push(`<div class="text-dim" style="font-size:var(--fs-xs);margin-top:4px">${_escSP(o.note)}</div>`);
   return rows.join('');
 }
 
@@ -7156,7 +7146,7 @@ async function loadDataplaneStatus() {
         `<div><strong>Status:</strong> <span class="text-green">Running</span></div>`
       + `<div><strong>Unit:</strong> ${unit} (${unitActive})</div>`
       + `<div><strong>Process:</strong> ${proc} <span class="text-dim">pid ${dp.dpdk_pid||'?'}</span></div>`
-      + (dp.dpdk_cmdline ? `<div class="text-dim" style="font-size:10px;word-break:break-all">${dp.dpdk_cmdline}</div>` : '')
+      + (dp.dpdk_cmdline ? `<div class="text-dim" style="font-size:var(--fs-xs);word-break:break-all">${dp.dpdk_cmdline}</div>` : '')
       + `<div><strong>Cores:</strong> ${dp.dpdk_cores||'--'}</div>`
       + `<div><strong>Hugepages:</strong> ${hp}</div>`
       + (dp.dpdk_vm_hwm_mb ? `<div><strong>Peak RSS:</strong> ${dp.dpdk_vm_hwm_mb} MB</div>` : '');
@@ -7168,7 +7158,7 @@ async function loadDataplaneStatus() {
         `<div><strong>Status:</strong> <span class="text-dim">Not applicable</span></div>`
       + `<div class="text-dim">This chassis forwards on its offload complex; `
       + `the DPDK path is for hosts without one.</div>`
-      + `<div class="text-dim" style="font-size:10px">Hugepages reserved: ${hp}</div>`;
+      + `<div class="text-dim" style="font-size:var(--fs-xs)">Hugepages reserved: ${hp}</div>`;
     } else {
       dpdkEl.innerHTML =
         `<div><strong>Status:</strong> <span class="text-dim">Stopped</span></div>`
@@ -7225,7 +7215,7 @@ async function loadFPGAStatus() {
         ${dp.present ? `<div><strong>Forwarding:</strong> ${dp.model||''}</div>` : ''}
         ${sw.present ? `<div><strong>Switch:</strong> ${sw.model||''}</div>` : ''}
         ${fe.present ? `<div><strong>Front end:</strong> ${fe.model||''}</div>` : ''}
-        <div class="text-dim" style="font-size:11px;margin-top:6px">This chassis has no
+        <div class="text-dim" style="font-size:var(--fs-sm);margin-top:6px">This chassis has no
         add-in accelerator card; its forwarding silicon sits behind the control plane.</div>`;
     } else {
       fwEl.innerHTML = `
@@ -7240,18 +7230,18 @@ async function loadFPGAStatus() {
     if (resources.fpga && resources.fpga.detected) {
       const f = resources.fpga;
       resEl.innerHTML =
-        resBar('LUT',f.lut_percent,'#2f81f7')+
-        resBar('BRAM',f.bram_percent,'#3fb950')+
-        resBar('URAM',f.uram_percent,'#d29922')+
-        resBar('DSP',f.dsp_percent,'#a371f7')+
-        resBar('FF',f.ff_percent,'#f0883e');
+        resBar('LUT',f.lut_percent,'var(--accent)')+
+        resBar('BRAM',f.bram_percent,'var(--ok)')+
+        resBar('URAM',f.uram_percent,'var(--warn)')+
+        resBar('DSP',f.dsp_percent,'var(--accent-alt)')+
+        resBar('FF',f.ff_percent,'var(--warn)');
     } else {
       // Show CPU/memory resources instead
       if (resources.cpu) {
         resEl.innerHTML =
-          resBar('CPU',resources.cpu.usage_percent,'#2f81f7')+
-          resBar('Memory',resources.memory.percent,'#3fb950')+
-          resBar('Disk',resources.disk.percent,'#d29922');
+          resBar('CPU',resources.cpu.usage_percent,'var(--accent)')+
+          resBar('Memory',resources.memory.percent,'var(--ok)')+
+          resBar('Disk',resources.disk.percent,'var(--warn)');
       }
     }
   }
@@ -7283,7 +7273,7 @@ function _engBackendMeta(b) {
   return ({
     dpdk:   ['DPDK fast path',              'var(--accent)'],
     kernel: ['Kernel — nftables/conntrack', 'var(--green)'],
-    python: ['Python detection plugins',    '#a371f7'],
+    python: ['Python detection plugins',    'var(--accent-alt)'],
     host:   ['Host services',               'var(--orange)'],
   })[b] || [b || 'other', 'var(--text-dim)'];
 }
@@ -7299,12 +7289,12 @@ function _fpgaPresent(engines) {
 function _offloadModeBadge(e) {
   const mode = e.offload_mode || (e.offload_active ? 'hardware' : 'host');
   const map = {
-    hardware: ['FPGA (hardware)', 'var(--green)', '#000'],
-    emulated: ['Emulated (AC/DFA)', '#a371f7', '#fff'],
-    host:     ['Host', 'var(--text-muted)', '#000'],
+    hardware: ['FPGA (hardware)', 'var(--green)', 'var(--on-status)'],
+    emulated: ['Emulated (AC/DFA)', 'var(--accent-alt)', 'var(--on-status)'],
+    host:     ['Host', 'var(--text-muted)', 'var(--on-status)'],
   };
-  const m = map[mode] || ['off: ' + mode, 'var(--text-muted)', '#000'];
-  return `<span class="badge" style="font-size:8px;background:${m[1]};color:${m[2]}" title="offload mode: ${_escSP(mode)}">${m[0]}</span>`;
+  const m = map[mode] || ['off: ' + mode, 'var(--text-muted)', 'var(--on-status)'];
+  return `<span class="badge" style="font-size:var(--fs-xs);background:${m[1]};color:${m[2]}" title="offload mode: ${_escSP(mode)}">${m[0]}</span>`;
 }
 
 function engineCardHtml(e) {
@@ -7318,7 +7308,7 @@ function engineCardHtml(e) {
   return `<div class="card engine-card">
     <div class="e-toggle"><button class="toggle ${on?'on':'off'}" onclick="toggleEngine('${e.name}',${on})"></button></div>
     <div class="e-name" style="color:${statusColor}">${name}</div>
-    <div class="text-dim" style="font-size:9px;margin:2px 0;min-height:12px">${_escSP(e.module||e.backend||'')} ${off}</div>
+    <div class="text-dim" style="font-size:var(--fs-xs);margin:2px 0;min-height:12px">${_escSP(e.module||e.backend||'')} ${off}</div>
     <div class="e-stats">Pkts: ${fmt(e.packets)}<br>Match: ${fmt(e.matches)}<br>Drop: ${fmt(e.drops)}</div>
   </div>`;
 }
@@ -7337,8 +7327,8 @@ function renderEnginePanels(engines) {
       return `<div style="margin-bottom:16px">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
           <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${meta[1]}"></span>
-          <strong style="font-size:12px">${_escSP(meta[0])}</strong>
-          <span class="text-dim" style="font-size:11px">${groups[b].length} engine(s)</span>
+          <strong style="font-size:var(--fs-md)">${_escSP(meta[0])}</strong>
+          <span class="text-dim" style="font-size:var(--fs-sm)">${groups[b].length} engine(s)</span>
         </div>
         <div class="grid grid-6">${cards}</div>
       </div>`;
@@ -7365,14 +7355,14 @@ function renderEnginePanels(engines) {
         let st, col;
         const mode = e.offload_mode;
         if (mode === 'hardware')      { st = 'FPGA (hardware)';  col = 'var(--green)'; }
-        else if (mode === 'emulated') { st = 'emulated AC/DFA';  col = '#a371f7'; }
+        else if (mode === 'emulated') { st = 'emulated AC/DFA';  col = 'var(--accent-alt)'; }
         else if (mode === 'host')     { st = 'on host';          col = 'var(--orange)'; }
         else if (!fpgaPresent)        { st = 'no card';          col = 'var(--text-muted)'; }
         else if (e.offload_active)    { st = 'offloaded';        col = 'var(--green)'; }
         else                          { st = 'on host';          col = 'var(--orange)'; }
         return `<div class="card engine-card">
           <div class="e-name" style="color:${col}">${_escSP((e.name||'').replace(/_/g,' '))}</div>
-          <div class="e-stats" style="margin-top:6px"><span class="badge" style="background:${col};color:#000;font-size:9px">${st}</span></div>
+          <div class="e-stats" style="margin-top:6px"><span class="badge" style="background:${col};color:var(--on-status);font-size:var(--fs-xs)">${st}</span></div>
         </div>`;
       }).join('') + '</div>';
     }
@@ -7400,7 +7390,7 @@ function renderDeviceTroubleshooting(c) {
         </select></div>
         <div class="form-group"><label>Target</label><input type="text" id="diag-target" placeholder="8.8.8.8 or hostname"></div>
         <button class="btn btn-primary btn-sm" onclick="runDiagnostic()">Run</button>
-        <pre id="diag-output" style="background:var(--log-bg);border:1px solid var(--border);border-radius:var(--radius);padding:10px;margin-top:10px;font-size:11px;color:var(--green);max-height:300px;overflow-y:auto;white-space:pre-wrap">Ready...</pre>
+        <pre id="diag-output" style="background:var(--log-bg);border:1px solid var(--border);border-radius:var(--radius);padding:10px;margin-top:10px;font-size:var(--fs-sm);color:var(--green);max-height:300px;overflow-y:auto;white-space:pre-wrap">Ready...</pre>
       </div>
       <div class="card">
         <h3>System Diagnostics</h3>
@@ -7411,7 +7401,7 @@ function renderDeviceTroubleshooting(c) {
           <button class="btn btn-sm" onclick="runDiagAction('pcap')">Start Packet Capture</button>
           <button class="btn btn-sm btn-danger" onclick="if(confirm('Reboot the entire system?'))runDiagAction('reboot')">Reboot System</button>
         </div>
-        <pre id="diag-action-output" style="background:var(--log-bg);border:1px solid var(--border);border-radius:var(--radius);padding:10px;margin-top:10px;font-size:11px;color:var(--text-dim);max-height:200px;overflow-y:auto">No actions run</pre>
+        <pre id="diag-action-output" style="background:var(--log-bg);border:1px solid var(--border);border-radius:var(--radius);padding:10px;margin-top:10px;font-size:var(--fs-sm);color:var(--text-dim);max-height:200px;overflow-y:auto">No actions run</pre>
       </div>
     </div>`;
 }
@@ -7452,8 +7442,8 @@ function renderDeviceLicenses(c) {
         <div style="display:flex;justify-content:space-between;align-items:center">
           <h3>Base license</h3><span id="lic-base-badge" class="badge badge-info">--</span>
         </div>
-        <p class="text-dim" style="font-size:11px;margin:4px 0 10px">Host identity (h1) — works without an FPGA card.</p>
-        <div id="lic-base-body" style="font-size:12px;line-height:1.9">Loading&hellip;</div>
+        <p class="text-dim" style="font-size:var(--fs-sm);margin:4px 0 10px">Host identity (h1) — works without an FPGA card.</p>
+        <div id="lic-base-body" style="font-size:var(--fs-md);line-height:1.9">Loading&hellip;</div>
         <div style="display:flex;gap:6px;margin-top:10px">
           <button class="btn btn-xs" id="lic-base-copy" onclick="licCopy('base')">Copy DNA</button>
           <button class="btn btn-xs" onclick="licDownloadRequest('base')">Download Request</button>
@@ -7463,8 +7453,8 @@ function renderDeviceLicenses(c) {
         <div style="display:flex;justify-content:space-between;align-items:center">
           <h3>Accelerator</h3><span id="lic-accel-badge" class="badge badge-info">--</span>
         </div>
-        <p class="text-dim" style="font-size:11px;margin:4px 0 10px">FPGA silicon DNA — required only for hardware offload (ACCEL entitlement).</p>
-        <div id="lic-accel-body" style="font-size:12px;line-height:1.9">Loading&hellip;</div>
+        <p class="text-dim" style="font-size:var(--fs-sm);margin:4px 0 10px">FPGA silicon DNA — required only for hardware offload (ACCEL entitlement).</p>
+        <div id="lic-accel-body" style="font-size:var(--fs-md);line-height:1.9">Loading&hellip;</div>
         <div style="display:flex;gap:6px;margin-top:10px">
           <button class="btn btn-xs" id="lic-accel-copy" onclick="licCopy('accel')">Copy DNA</button>
           <button class="btn btn-xs" onclick="licDownloadRequest('accel')">Download Request</button>
@@ -7488,7 +7478,7 @@ function renderDeviceLicenses(c) {
     </div></div></div>
     <div class="section"><div class="card">
       <h3>Verifier Output (last refresh)</h3>
-      <pre id="lic-verifier-log" class="mono" style="font-size:11px;max-height:200px;overflow:auto;background:var(--surface);padding:8px;border-radius:4px;white-space:pre-wrap;color:var(--text-dim);margin-top:8px">--</pre>
+      <pre id="lic-verifier-log" class="mono" style="font-size:var(--fs-sm);max-height:200px;overflow:auto;background:var(--surface);padding:8px;border-radius:4px;white-space:pre-wrap;color:var(--text-dim);margin-top:8px">--</pre>
     </div></div>`;
   loadLicenses();
 }
@@ -7524,7 +7514,7 @@ async function loadLicenses() {
   if (baseBody) {
     const dnaHex = _licDnaText(host);
     baseBody.innerHTML = `
-      <div><strong>Host DNA (h1):</strong> <span class="mono" style="font-size:11px;word-break:break-all">${dnaHex ? _escSP(dnaHex) : '<span class="text-dim">(not captured)</span>'}</span></div>
+      <div><strong>Host DNA (h1):</strong> <span class="mono" style="font-size:var(--fs-sm);word-break:break-all">${dnaHex ? _escSP(dnaHex) : '<span class="text-dim">(not captured)</span>'}</span></div>
       <div><strong>Hostname:</strong> ${_escSP((host && host.hostname) || s.hostname || '--')}</div>
       <div><strong>Tier:</strong> ${tierGbps != null ? _escSP(tierGbps) + ' Gbps' : '<span class="text-dim">unlicensed</span>'}</div>
       <div><strong>Source:</strong> ${_escSP((host && host.source) || 'host')}</div>`;
@@ -7545,7 +7535,7 @@ async function loadLicenses() {
     } else {
       const dnaHex = _licDnaText(cardDna);
       accelBody.innerHTML = `
-        <div><strong>Card DNA:</strong> <span class="mono" style="font-size:11px;word-break:break-all">${_escSP(dnaHex || '--')}</span></div>
+        <div><strong>Card DNA:</strong> <span class="mono" style="font-size:var(--fs-sm);word-break:break-all">${_escSP(dnaHex || '--')}</span></div>
         <div><strong>Source:</strong> ${_escSP(cardDna.source || 'silicon')}</div>
         <div><strong>Bitstream:</strong> ${_escSP(cardDna.bitstream_ver || '--')}</div>
         <div><strong>ACCEL entitlement:</strong> ${accelOk ? '<span class="badge badge-up">active</span>' : '<span class="badge badge-info">inactive</span>'}</div>`;
@@ -7565,7 +7555,7 @@ async function loadLicenses() {
       return `<tr>
         <td class="mono">${_escSP(f.feature_id_hex || idHex || '--')}</td>
         <td>${_escSP(f.name || '--')}</td>
-        <td><span class="badge" style="font-size:9px;background:${isAccel?'var(--accent-dim)':'var(--card-hover)'};color:${isAccel?'var(--on-accent)':'var(--text)'}">${bound}</span></td>
+        <td><span class="badge" style="font-size:var(--fs-xs);background:${isAccel?'var(--accent-dim)':'var(--card-hover)'};color:${isAccel?'var(--on-accent)':'var(--text)'}">${bound}</span></td>
         <td>${f.licensed ? '<span class="badge badge-up">Active</span>' : '<span class="badge badge-info">Inactive</span>'}</td>
       </tr>`;
     }).join('') : '<tr><td colspan="4" class="text-dim">No features reported</td></tr>';
@@ -7676,7 +7666,7 @@ function renderDeviceSupport(c) {
     <div class="grid grid-2">
       <div class="card">
         <h3>Device Information</h3>
-        <div id="support-info" style="font-size:12px;line-height:2.2">Loading...</div>
+        <div id="support-info" style="font-size:var(--fs-md);line-height:2.2">Loading...</div>
       </div>
       <div class="card">
         <h3>Support Actions</h3>
@@ -7710,7 +7700,7 @@ function renderDeviceVirtualSystems(c) {
         <button class="btn btn-primary btn-sm" onclick="openVsysModal()">+ Add Virtual System</button>
       </div>
     </div>
-    <p class="text-dim" style="font-size:11px;margin-bottom:10px">
+    <p class="text-dim" style="font-size:var(--fs-sm);margin-bottom:10px">
       Virtual Systems partition the firewall into independently-managed logical instances.
       Each vsys has its own policy rulebase, zones, addresses, services, certificates, and admin scope.
       vsys entries live at <code>devices/entry[@name=localhost.localdomain]/vsys/entry[@name=vsysN]</code>.
@@ -7741,12 +7731,12 @@ async function loadVirtualSystems() {
     <td><strong>${v.name}</strong></td>
     <td><span class="badge" style="background:var(--accent-dim);color:var(--on-accent);font-family:var(--font-mono)">${v.vsys_id!=null?v.vsys_id:'--'}</span></td>
     <td>${v.display_name||'--'}</td>
-    <td class="text-dim" style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${v.description||''}</td>
-    <td class="mono" style="font-size:10px">${(v.import_interfaces||[]).join(', ')||'(none)'}</td>
-    <td class="mono" style="font-size:10px">${(v.import_virtual_routers||[]).join(', ')||'(none)'}</td>
+    <td class="text-dim" style="font-size:var(--fs-sm);max-width:200px;overflow:hidden;text-overflow:ellipsis">${v.description||''}</td>
+    <td class="mono" style="font-size:var(--fs-xs)">${(v.import_interfaces||[]).join(', ')||'(none)'}</td>
+    <td class="mono" style="font-size:var(--fs-xs)">${(v.import_virtual_routers||[]).join(', ')||'(none)'}</td>
     <td>${v.zone_count||0}</td>
     <td>${v.rule_count||0}</td>
-    <td class="text-dim" style="font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis">${v.comment||''}</td>
+    <td class="text-dim" style="font-size:var(--fs-sm);max-width:180px;overflow:hidden;text-overflow:ellipsis">${v.comment||''}</td>
     <td>
       <button class="btn btn-xs" onclick='editVsys(${JSON.stringify(v).replace(/"/g,"&quot;")})'>Edit</button>
       ${v.name==='vsys1'?'':`<button class="btn btn-xs btn-danger" onclick="deleteVsys('${v.name}')">Del</button>`}
@@ -7767,7 +7757,7 @@ function openVsysModal(existing) {
   document.getElementById('info-modal-body').innerHTML = `
     <div class="form-group"><label>vsys Name</label>
       <input id="vm-name" type="text" style="width:100%" placeholder="vsys2" ${existing?'readonly':''}>
-      <p class="text-dim" style="font-size:10px">Must match <code>vsys&lt;N&gt;</code></p>
+      <p class="text-dim" style="font-size:var(--fs-xs)">Must match <code>vsys&lt;N&gt;</code></p>
     </div>
     <div class="form-group"><label>Display Name</label><input id="vm-display" type="text" style="width:100%" placeholder="Tenant-A"></div>
     <div class="form-group"><label>Description</label><input id="vm-desc" type="text" style="width:100%" placeholder="What this vsys is for"></div>
@@ -7783,7 +7773,7 @@ function openVsysModal(existing) {
     <div style="margin-top:12px;display:flex;gap:8px">
       <button class="btn btn-primary btn-sm" onclick="saveVsys(${existing?`'${existing.name}'`:'null'})">OK</button>
       <button class="btn btn-sm" onclick="closeModal('modal-info')">Cancel</button>
-      <span id="vm-msg" style="font-size:11px;align-self:center"></span>
+      <span id="vm-msg" style="font-size:var(--fs-sm);align-self:center"></span>
     </div>`;
 
   if (existing) {
@@ -7876,7 +7866,7 @@ async function loadACCDashboard() {
   const apps = appRows.map(a=>a.name||a.app||'-');
   const bwData = appRows.map(a=>a.mbps||a.bandwidth_mbps||0);
   const sessData = appRows.map(a=>a.sessions||0);
-  const colors = ['#2f81f7','#3fb950','#d29922','#f85149','#a371f7','#f0883e','#e3b341','#8b949e','#56d4dd','#db61a2'];
+  const colors = chartPalette().concat(statusPalette(['warn','muted']));
 
   const bwCanvas = document.getElementById('chart-app-bw');
   if (bwCanvas && !charts.appBW) {
@@ -7920,7 +7910,7 @@ async function loadACCDashboard() {
   const riskCanvas = document.getElementById('chart-risk-dist');
   if (riskCanvas && !charts.riskDist) {
     charts.riskDist = new Chart(riskCanvas.getContext('2d'),{
-      type:'pie', data:{labels:['Low','Medium','High','Critical'],datasets:[{data:riskData,backgroundColor:['#2f81f7','#d29922','#f85149','#ff6b6b'],borderWidth:0}]},
+      type:'pie', data:{labels:['Low','Medium','High','Critical'],datasets:[{data:riskData,backgroundColor:statusPalette(['info','warn','err','crit']),borderWidth:0}]},
       options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{color:getComputedStyle(document.documentElement).getPropertyValue('--text-dim').trim(),font:{size:10},boxWidth:8}}}}
     });
   } else if (charts.riskDist) { charts.riskDist.data.datasets[0].data=riskData; charts.riskDist.update('none'); }
@@ -7931,33 +7921,33 @@ function renderMLInference(c) {
   c.innerHTML = `
     <div class="page-header"><h2>ML Inference Engine</h2></div>
     <div class="section">
-      <div class="section-title">ML Engine <span class="text-dim" style="font-size:11px;text-transform:none;letter-spacing:0">— XGBoost trees + byte n-gram (ffn_ml_engine)</span></div>
+      <div class="section-title">ML Engine <span class="text-dim" style="font-size:var(--fs-sm);text-transform:none;letter-spacing:0">— XGBoost trees + byte n-gram (ffn_ml_engine)</span></div>
       <div class="grid grid-3">
-        <div class="card"><h3>Model</h3><div id="mle-model" style="font-size:12px;line-height:2"><div class="text-dim">Loading&hellip;</div></div></div>
+        <div class="card"><h3>Model</h3><div id="mle-model" style="font-size:var(--fs-md);line-height:2"><div class="text-dim">Loading&hellip;</div></div></div>
         <div class="card"><h3>Verdict Stats</h3>
-          <div id="mle-stats" style="font-size:12px;line-height:2"><div class="text-dim">Loading&hellip;</div></div>
+          <div id="mle-stats" style="font-size:var(--fs-md);line-height:2"><div class="text-dim">Loading&hellip;</div></div>
           <button class="btn btn-sm w-full" style="margin-top:8px" onclick="mleUpdateModel()">Update / Hot-Swap Model</button>
-          <div id="mle-update-msg" class="text-dim" style="font-size:11px;margin-top:6px"></div>
+          <div id="mle-update-msg" class="text-dim" style="font-size:var(--fs-sm);margin-top:6px"></div>
         </div>
         <div class="card"><h3>Score Test</h3>
-          <div class="form-group"><label>Input</label><textarea id="mle-score-input" rows="3" placeholder="paste text, or hex bytes (e.g. deadbeef)" style="width:100%;font-family:monospace;font-size:11px"></textarea></div>
-          <div class="form-group" style="font-size:11px">
+          <div class="form-group"><label>Input</label><textarea id="mle-score-input" rows="3" placeholder="paste text, or hex bytes (e.g. deadbeef)" style="width:100%;font-family:monospace;font-size:var(--fs-sm)"></textarea></div>
+          <div class="form-group" style="font-size:var(--fs-sm)">
             <label style="cursor:pointer"><input type="radio" name="mle-fmt" value="text" checked> text</label>
             <label style="cursor:pointer;margin-left:12px"><input type="radio" name="mle-fmt" value="hex"> hex</label>
           </div>
           <button class="btn btn-primary btn-sm" onclick="mleScore()">Score</button>
-          <div id="mle-score-result" style="font-size:12px;margin-top:8px"></div>
+          <div id="mle-score-result" style="font-size:var(--fs-md);margin-top:8px"></div>
         </div>
       </div>
     </div>
     <div class="grid grid-4 section">
-      <div class="card"><h3>Model Status</h3><div id="ml-model-status" style="font-size:12px;line-height:2"></div></div>
+      <div class="card"><h3>Model Status</h3><div id="ml-model-status" style="font-size:var(--fs-md);line-height:2"></div></div>
       <div class="card"><h3>Inference Rate</h3><div class="big-num" id="ml-inf-rate">--</div><div class="sub">packets/sec</div></div>
       <div class="card"><h3>Verdict Distribution</h3><div class="chart-container chart-sm"><canvas id="chart-ml-verdict"></canvas></div></div>
       <div class="card"><h3>Actions</h3>
         <p class="text-dim">Model retraining and manual weight upload are not available in this console.</p>
 
-        <div id="ml-action-status" class="text-dim" style="font-size:11px"></div>
+        <div id="ml-action-status" class="text-dim" style="font-size:var(--fs-sm)"></div>
       </div>
     </div>
     <div class="section"><div class="section-title">Recent Verdicts</div><div class="card"><div class="table-wrap" style="max-height:350px;overflow-y:auto">
@@ -7988,7 +7978,7 @@ async function loadMlEngine() {
     ${d.ngram_n != null ? `<div><strong>n-gram n:</strong> ${_escSP(d.ngram_n)}</div>` : ''}`;
   if (sBox) {
     const st = d.verdicts || d.stats || d;
-    const upBtn = '<button class="btn btn-sm w-full" style="margin-top:8px" onclick="mleUpdateModel()">Update / Hot-Swap Model</button><div id="mle-update-msg" class="text-dim" style="font-size:11px;margin-top:6px"></div>';
+    const upBtn = '<button class="btn btn-sm w-full" style="margin-top:8px" onclick="mleUpdateModel()">Update / Hot-Swap Model</button><div id="mle-update-msg" class="text-dim" style="font-size:var(--fs-sm);margin-top:6px"></div>';
     sBox.innerHTML = `
       <div><strong>Scored:</strong> ${fmt(st.scored != null ? st.scored : st.total)}</div>
       <div><span class="badge badge-benign">benign</span> ${fmt(st.benign)}</div>
@@ -8012,7 +8002,7 @@ async function mleScore() {
             : (v === 'grayware' || v === 'suspicious') ? 'badge-warning' : 'badge-benign';
   box.innerHTML = `<span class="badge ${cls}">${_escSP(v)}</span>
     <span style="margin-left:8px">score <strong>${_escSP(r.score != null ? r.score : '--')}</strong></span>
-    <div class="text-dim" style="font-size:10px;margin-top:4px">model ${_escSP(r.model || '--')} &middot; features v${_escSP(r.features_version != null ? r.features_version : '--')}</div>`;
+    <div class="text-dim" style="font-size:var(--fs-xs);margin-top:4px">model ${_escSP(r.model || '--')} &middot; features v${_escSP(r.features_version != null ? r.features_version : '--')}</div>`;
 }
 
 async function mleUpdateModel() {
@@ -8052,7 +8042,7 @@ async function loadMLInference() {
   const verdictCanvas = document.getElementById('chart-ml-verdict');
   if (verdictCanvas && !charts.mlVerdict) {
     charts.mlVerdict = new Chart(verdictCanvas.getContext('2d'),{
-      type:'doughnut', data:{labels:['Benign','Suspicious','Malicious'],datasets:[{data:[benign,gray,mal],backgroundColor:['#3fb950','#d29922','#f85149'],borderWidth:0}]},
+      type:'doughnut', data:{labels:['Benign','Suspicious','Malicious'],datasets:[{data:[benign,gray,mal],backgroundColor:statusPalette(['ok','warn','err']),borderWidth:0}]},
       options:{responsive:true,maintainAspectRatio:false,cutout:'60%',plugins:{legend:{position:'bottom',labels:{color:getComputedStyle(document.documentElement).getPropertyValue('--text-dim').trim(),font:{size:10},boxWidth:8}}}}
     });
   } else if (charts.mlVerdict) {
@@ -8089,12 +8079,12 @@ function renderCrucible(c) {
     <div class="grid grid-4 section">
       <div class="card"><h3>Pending Samples</h3><div class="big-num" id="wf-pending">--</div><div class="sub">In analysis queue</div></div>
       <div class="card"><h3>Analyzed Today</h3><div class="big-num" id="wf-analyzed">--</div><div class="sub">Samples processed</div></div>
-      <div class="card"><h3>Last Model Update</h3><div id="wf-last-update" style="font-size:12px;line-height:2"></div></div>
-      <div class="card"><h3>Auto-Retrain</h3><div id="wf-retrain-status" style="font-size:12px;line-height:2"></div></div>
+      <div class="card"><h3>Last Model Update</h3><div id="wf-last-update" style="font-size:var(--fs-md);line-height:2"></div></div>
+      <div class="card"><h3>Auto-Retrain</h3><div id="wf-retrain-status" style="font-size:var(--fs-md);line-height:2"></div></div>
     </div>
     <div class="section"><div class="section-title">Analysis Backend</div><div class="card">
       <div class="grid grid-2">
-        <div id="wf-backend" style="font-size:12px;line-height:2"></div>
+        <div id="wf-backend" style="font-size:var(--fs-md);line-height:2"></div>
         <div><div class="table-wrap"><table>
           <thead><tr><th>Chamber</th><th>Fidelity</th><th>State</th><th>Detail</th></tr></thead>
           <tbody id="wf-chambers"></tbody></table></div></div>
@@ -8232,7 +8222,7 @@ async function loadIoTDevices() {
   const pieCanvas = document.getElementById('chart-iot-pie');
   if (pieCanvas && !charts.iotPie) {
     charts.iotPie = new Chart(pieCanvas.getContext('2d'),{
-      type:'doughnut',data:{labels:['IoT','Non-IoT'],datasets:[{data:[iotCount,nonIotCount],backgroundColor:['#2f81f7','#484f58'],borderWidth:0}]},
+      type:'doughnut',data:{labels:['IoT','Non-IoT'],datasets:[{data:[iotCount,nonIotCount],backgroundColor:statusPalette(['info','muted']),borderWidth:0}]},
       options:{responsive:true,maintainAspectRatio:false,cutout:'60%',plugins:{legend:{position:'bottom',labels:{color:getComputedStyle(document.documentElement).getPropertyValue('--text-dim').trim(),font:{size:10},boxWidth:8}}}}
     });
   }
@@ -8241,7 +8231,7 @@ async function loadIoTDevices() {
   devices.forEach(d=>{typeCounts[d.cls]=(typeCounts[d.cls]||0)+1;});
   const typeLabels = Object.keys(typeCounts).slice(0,8);
   const typeData = typeLabels.map(l=>typeCounts[l]);
-  const typeColors = ['#2f81f7','#3fb950','#d29922','#f85149','#a371f7','#f0883e','#8b949e','#56d4dd'];
+  const typeColors = chartPalette();
   const typeCanvas = document.getElementById('chart-iot-types');
   if (typeCanvas && !charts.iotTypes) {
     charts.iotTypes = new Chart(typeCanvas.getContext('2d'),{
@@ -8283,6 +8273,14 @@ if (token) {
 // Enter key on login
 document.getElementById('login-pass').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
 document.getElementById('login-user').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
+
+function renderDeviceConvergence(c) {
+  c.innerHTML = `<div class="page-header"><h2>Boot &amp; Convergence</h2></div>
+    <p class="conv-intro">After the control and data planes boot, the lifecycle supervisor replays the committed configuration through configd. This page shows whether that replay reached every subsystem that can be observed, from the running configuration and live state. Nothing here changes configuration; re-apply replays what is committed.</p>
+    <div id="device-convergence-body"></div>`;
+  if (window.ffnConvergence) window.ffnConvergence.page(document.getElementById('device-convergence-body'));
+  else document.getElementById('device-convergence-body').textContent = 'Convergence view unavailable';
+}
 </script>
 <script src="/static/vr-interfaces.js"></script>
 <script src="/static/modal-layers.js"></script>

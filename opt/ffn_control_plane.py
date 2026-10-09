@@ -21,6 +21,8 @@ async def exchange(path, message, timeout=125, limit=CONTROL_LIMIT):
     if len(raw) > limit:
         raise ValueError('request exceeds limit')
     async def perform():
+        if not hasattr(asyncio, 'open_unix_connection'):
+            raise OSError('local control sockets are unavailable on this host')
         reader, writer = await asyncio.open_unix_connection(path, limit=limit + 1)
         try:
             writer.write(raw)
