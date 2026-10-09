@@ -41,7 +41,11 @@ class FeedTests(unittest.TestCase):
                 result=feed.assess(dict(self.row,**change),self.rules,'boot')
                 self.assertFalse(result['software_candidate']);self.assertTrue(result['blockers'])
         rules=copy.deepcopy(self.rules);rules[self.token]['interface_pairs'].append(['ethernet1/3','ethernet1/2'])
-        self.assertIn('interface-pair-ambiguous',feed.assess(self.row,rules,'boot')['blockers'])
+        # Several authorised pairs stay a candidate: the L3 plan selects the routed one.
+        self.assertNotIn('interface-pair-ambiguous',feed.assess(self.row,rules,'boot')['blockers'])
+        self.assertTrue(feed.assess(self.row,rules,'boot')['software_candidate'])
+        rules[self.token]['interface_pairs']=[]
+        self.assertIn('no-interface-pair',feed.assess(self.row,rules,'boot')['blockers'])
         rules=copy.deepcopy(self.rules);rules[self.token]['inspection_required']=True
         self.assertIn('inspection-required',feed.assess(self.row,rules,'boot')['blockers'])
 

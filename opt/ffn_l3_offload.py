@@ -13,8 +13,37 @@ import subprocess
 import time
 
 
+# Neighbour states the kernel itself forwards with (NUD_VALID). A forwarded
+# flow gives the kernel no transport confirmation, so under traffic an entry
+# cycles REACHABLE -> STALE -> DELAY -> PROBE -> REACHABLE every reachable_time
+# while its link address stays the same; only the address or a failed entry
+# changes what a next hop means.
+NUD_VALID = frozenset(('PERMANENT', 'NOARP', 'REACHABLE', 'PROBE', 'STALE', 'DELAY'))
+
+
 def fingerprint(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def neighbor_valid(neighbor):
+    if 'valid' in neighbor:
+        return neighbor['valid'] is True
+    return bool(set(neighbor.get('state', [])) & NUD_VALID) and bool(neighbor.get('lladdr'))
+
+
+def project_neighbor(row):
+    return dict({k: row[k] for k in ('dst', 'dev', 'lladdr') if k in row}, valid=neighbor_valid(row))
+
+
+def project_linkinfo(info):
+    # Bridge info carries hello/gc/topology-change timers that advance every
+    # second, and bond slave data changes with LACP; planning reads only the
+    # kind and the VLAN identity.
+    result = {k: info[k] for k in ('info_kind', 'info_slave_kind') if k in info}
+    data = info.get('info_data')
+    if isinstance(data, dict):
+        result['info_data'] = {k: data[k] for k in ('id', 'protocol') if k in data}
+    return result
 
 
 def snapshot(deadline):
@@ -46,10 +75,18 @@ def snapshot(deadline):
             raise ValueError('Invalid or oversized L3 inventory')
         if key in fields:
             rows = [{k: row[k] for k in fields[key] if k in row} for row in rows]
+        if key == 'links':
+            for row in rows:
+                if isinstance(row.get('linkinfo'), dict):
+                    row['linkinfo'] = project_linkinfo(row['linkinfo'])
         if key == 'addresses':
             for row in rows:
                 row['addr_info'] = [{k: a[k] for k in ('family', 'local', 'prefixlen') if k in a}
                                     for a in row.get('addr_info', [])]
+        if key == 'neighbors':
+            # The neighbour state machine advances under traffic without
+            # changing the next hop; keep only what planning depends on.
+            rows = [project_neighbor(row) for row in rows]
         result[key] = sorted(rows, key=lambda row: json.dumps(row, sort_keys=True))
     return result
 
@@ -111,7 +148,8 @@ def attachment(name, bindings, state):
     return result
 
 
-def resolve(destination, outgoing, bindings, state):
+def route_for(destination, state):
+    """The one main-table unicast route that forwards to `destination`, or a reason it cannot be used."""
     address = ipaddress.IPv4Address(destination)
     if address.is_unspecified or address.is_multicast or address.is_loopback or address.is_link_local:
         raise ValueError('Destination requires the software exception path')
@@ -137,6 +175,36 @@ def resolve(destination, outgoing, bindings, state):
         route.get('tos', 0) not in (0, '0x00') or route.get('flags') or
         route.get('table', 'main') not in ('main', 254)):
         raise ValueError('Selected route requires the software exception path')
+    return route
+
+
+def select_pair(pairs, forward_destination, reverse_destination, bindings, state):
+    """The interface pair the routes select, provided the rule authorises it.
+
+    A security rule between zones yields every ingress/egress combination of
+    their interfaces; a session actually enters where the reverse route for
+    its original source points and leaves where the forward route for its
+    translated destination points. One pair, when a rule has one, is verified
+    against the routes by resolve(); with several, the routes choose and the
+    rule must list the choice. Nothing is guessed from traffic.
+    """
+    if not pairs:
+        raise ValueError('No interface pair is authorised for this session')
+    if len(pairs) == 1:
+        return list(pairs[0])
+    forward_dev = route_for(forward_destination, state).get('dev')
+    reverse_dev = route_for(reverse_destination, state).get('dev')
+    matches = [list(pair) for pair in pairs
+               if (bindings.get(pair[0]) or {}).get('device') == reverse_dev
+               and (bindings.get(pair[1]) or {}).get('device') == forward_dev]
+    if len(matches) != 1:
+        raise ValueError('Routes select %s to %s, which the rule does not authorise as an interface pair'
+                         % (reverse_dev, forward_dev))
+    return matches[0]
+
+
+def resolve(destination, outgoing, bindings, state):
+    route = route_for(destination, state)
     target = attachment(outgoing, bindings, state)
     if route.get('dev') != target['device']:
         raise ValueError('Route egress disagrees with the authorized interface pair')
@@ -145,8 +213,8 @@ def resolve(destination, outgoing, bindings, state):
     if len(neighbors) != 1:
         raise ValueError('Next-hop neighbor is unresolved: ' + neighbor_ip)
     neighbor = neighbors[0]
-    if not set(neighbor.get('state', [])) & {'REACHABLE', 'PERMANENT'}:
-        raise ValueError('Next-hop neighbor requires software reachability confirmation: ' + neighbor_ip)
+    if not neighbor_valid(neighbor):
+        raise ValueError('Next-hop neighbor is not valid for forwarding: ' + neighbor_ip)
     metrics = route.get('metrics', [])
     if metrics:
         # MTU locks, encapsulation metrics and other route attributes need an
@@ -166,13 +234,14 @@ def plan(row, bindings, state):
         return result
     try:
         main_table_only(state)
-        incoming, outgoing = row['rule']['interface_pairs'][0]
-        attachment(incoming, bindings, state)
         # Routing follows DNAT but precedes SNAT. The actual conntrack tuples
         # supply each direction's post-translation destination.
+        incoming, outgoing = select_pair(row['rule']['interface_pairs'], row['translated']['destination'],
+                                         row['original']['source'], bindings, state)
+        attachment(incoming, bindings, state)
         forward = resolve(row['translated']['destination'], outgoing, bindings, state)
         reverse = resolve(row['original']['source'], incoming, bindings, state)
-        result.update(available=True, directions=[forward, reverse])
+        result.update(available=True, directions=[forward, reverse], pair=[incoming, outgoing])
     except (ValueError, KeyError, TypeError) as error:
         result['blockers'] = [str(error)]
     return result

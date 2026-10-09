@@ -62,7 +62,9 @@ def assess(row,rules,boot):
     if type(row.get('timeout')) is not int or row['timeout']<=0:reasons.append('session-expiry-unavailable')
     if row.get('zone',0)!=0:reasons.append('nondefault-conntrack-zone')
     pairs=rule['interface_pairs'] if rule else []
-    if len(pairs)!=1:reasons.append('interface-pair-ambiguous')
+    # A rule between zones with several interfaces authorises several pairs;
+    # the L3 plan selects the one the routes use. No pair at all is a block.
+    if not pairs:reasons.append('no-interface-pair')
     if rule and rule['inspection_required']:reasons.append('inspection-required')
     fields={'source','destination','source_port','destination_port','protocol'}
     complete=all(set(row[direction])==fields for direction in ('original','reply'))

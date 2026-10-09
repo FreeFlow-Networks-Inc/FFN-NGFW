@@ -30,6 +30,7 @@ class L3Tests(unittest.TestCase):
 
     def test_routes_actual_translation_both_directions_and_retains_vlan_owner(self):
         result = l3.plan(self.row, self.bindings, self.state)
+        self.assertEqual(result['pair'], ['lan', 'wan'])
         self.assertTrue(result['available'], result)
         self.assertFalse(result['hardware_admission'])
         forward, reverse = result['directions']
@@ -54,12 +55,88 @@ class L3Tests(unittest.TestCase):
         self.assertFalse(result['available'])
         self.assertIn('management-profile', result['blockers'][0])
 
-    def test_rejects_stale_unresolved_or_multicast_neighbor(self):
-        for change in ({'state': ['STALE']}, {'state': ['FAILED']}, {'lladdr': 'ff:ff:ff:ff:ff:ff'},
-                       {'lladdr': '00:00:00:00:00:00'}, {'dst': '203.0.113.99'}):
+    def test_pair_is_selected_by_the_routes_and_authorised_by_the_rule(self):
+        # A second WAN interface: the rule authorises both pairs, the routes pick one.
+        self.bindings['wan2'] = dict(device='p8', index=13, alias='')
+        self.state['links'].append(dict(ifname='p8', ifindex=13, ifalias='', address='02:00:00:00:00:02', flags=['UP', 'LOWER_UP'], mtu=1500))
+        self.state['neighbors'].append(dict(dst='198.51.100.1', dev='p8', state=['REACHABLE'], lladdr='02:00:00:00:00:09'))
+        self.row['rule'] = {'interface_pairs': [['lan', 'wan'], ['lan', 'wan2']]}
+        result = l3.plan(self.row, self.bindings, self.state)
+        self.assertTrue(result['available'], result['blockers']); self.assertEqual(result['pair'], ['lan', 'wan'])
+        self.assertEqual(result['directions'][0]['interface'], 'wan')
+        self.state['routes'].append(dict(dst='198.51.100.0/24', dev='p8', gateway='198.51.100.1'))
+        result = l3.plan(self.row, self.bindings, self.state)
+        self.assertTrue(result['available'], result['blockers']); self.assertEqual(result['pair'], ['lan', 'wan2'])
+        self.assertEqual((result['directions'][0]['interface'], result['directions'][1]['interface']), ('wan2', 'lan'))
+        # The routes select a pair the rule does not list: blocked, never guessed.
+        self.row['rule'] = {'interface_pairs': [['wan', 'wan2'], ['wan2', 'wan']]}
+        result = l3.plan(self.row, self.bindings, self.state)
+        self.assertFalse(result['available']); self.assertIn('does not authorise', result['blockers'][0]); self.assertNotIn('pair', result)
+        # One authorised pair is still verified against the routes.
+        self.row['rule'] = {'interface_pairs': [['lan', 'wan']]}
+        result = l3.plan(self.row, self.bindings, self.state)
+        self.assertFalse(result['available']); self.assertIn('disagrees', result['blockers'][0])
+        self.row['rule'] = {'interface_pairs': []}
+        self.assertIn('No interface pair', l3.plan(self.row, self.bindings, self.state)['blockers'][0])
+
+    def test_rejects_failed_unresolved_or_multicast_neighbor(self):
+        for change in ({'state': ['FAILED']}, {'state': ['INCOMPLETE']}, {'state': []}, {'valid': False},
+                       {'lladdr': 'ff:ff:ff:ff:ff:ff'}, {'lladdr': '00:00:00:00:00:00'}, {'dst': '203.0.113.99'}):
             state = copy.deepcopy(self.state); state['neighbors'][1].update(change)
             with self.subTest(change=change):
                 self.assertFalse(l3.plan(self.row, self.bindings, state)['available'])
+        no_lladdr = copy.deepcopy(self.state); del no_lladdr['neighbors'][1]['lladdr']
+        self.assertFalse(l3.plan(self.row, self.bindings, no_lladdr)['available'])
+
+    def test_kernel_valid_neighbor_states_keep_the_next_hop(self):
+        # STALE/DELAY/PROBE entries still carry the link address the kernel
+        # forwards with; the generation must survive the state machine.
+        for states in (['STALE'], ['DELAY'], ['PROBE'], ['REACHABLE'], ['NOARP']):
+            state = copy.deepcopy(self.state); state['neighbors'][1]['state'] = states
+            with self.subTest(states=states):
+                self.assertTrue(l3.plan(self.row, self.bindings, state)['available'])
+        projected = copy.deepcopy(self.state)
+        projected['neighbors'] = [l3.project_neighbor(n) for n in projected['neighbors']]
+        self.assertEqual(projected['neighbors'][1], dict(dst='203.0.113.1', dev='p7', lladdr='02:00:00:00:00:07', valid=True))
+        self.assertTrue(l3.plan(self.row, self.bindings, projected)['available'])
+
+    def test_snapshot_projection_is_stable_across_neighbor_state_churn(self):
+        import json
+        from unittest.mock import patch
+        raw = {
+            'link': [dict(ifindex=1, ifname='p7', flags=['UP'], mtu=1500, stats64={'rx': {'bytes': 1}}),
+                     dict(ifindex=3, ifname='br-data', flags=['UP'], mtu=1500,
+                          linkinfo={'info_kind': 'bridge', 'info_data': {'ageing_time': 30000, 'hello_timer': 1.52, 'gc_timer': 24.1}}),
+                     dict(ifindex=4, ifname='trunk.80', flags=['UP'], mtu=1500, link='trunk', link_index=5,
+                          linkinfo={'info_kind': 'vlan', 'info_data': {'id': 80, 'protocol': '802.1Q', 'flags': {'bits': 1}}})],
+            'address': [dict(ifindex=1, ifname='p7', addr_info=[dict(family='inet', local='203.0.113.2', prefixlen=24, valid_life_time=100)])],
+            'route': [dict(dst='default', dev='p7', gateway='203.0.113.1')],
+            'rule': [dict(priority=32766, src='all', table='main')],
+            'neigh': [dict(dst='203.0.113.1', dev='p7', lladdr='02:00:00:00:00:07', state=['REACHABLE'])],
+        }
+        def run(argv, **kw):
+            kind = next(k for k in raw if k in argv)
+            return type('R', (), {'stdout': json.dumps(raw[kind])})()
+        with patch.object(l3.subprocess, 'run', side_effect=run), patch.object(l3.time, 'monotonic', return_value=0):
+            first = l3.snapshot(5)
+            raw['neigh'][0]['state'] = ['STALE']; raw['link'][0]['stats64']['rx']['bytes'] = 2
+            raw['address'][0]['addr_info'][0]['valid_life_time'] = 50
+            raw['link'][1]['linkinfo']['info_data'].update(hello_timer=0.52, gc_timer=23.1)
+            second = l3.snapshot(5)
+            raw['link'][2]['linkinfo']['info_data']['id'] = 81
+            retagged = l3.snapshot(5)
+            raw['link'][2]['linkinfo']['info_data']['id'] = 80
+            raw['neigh'][0]['state'] = ['FAILED']; del raw['neigh'][0]['lladdr']
+            failed = l3.snapshot(5)
+            raw['neigh'][0].update(lladdr='02:00:00:00:00:08', state=['REACHABLE'])
+            moved = l3.snapshot(5)
+        self.assertEqual(first, second); self.assertEqual(l3.fingerprint(first), l3.fingerprint(second))
+        self.assertEqual([r.get('linkinfo') for r in first['links']],
+                         [None, {'info_kind': 'bridge', 'info_data': {}}, {'info_kind': 'vlan', 'info_data': {'id': 80, 'protocol': '802.1Q'}}])
+        self.assertNotEqual(first, retagged)
+        self.assertEqual(first['neighbors'], [dict(dst='203.0.113.1', dev='p7', lladdr='02:00:00:00:00:07', valid=True)])
+        self.assertNotEqual(first, failed); self.assertFalse(failed['neighbors'][0]['valid'])
+        self.assertNotEqual(first, moved); self.assertEqual(moved['neighbors'][0]['lladdr'], '02:00:00:00:00:08')
 
     def test_ownership_carrier_vlan_and_route_mismatches(self):
         for change in ({'ifindex': 100}, {'ifalias': 'replaced'}, {'flags': ['UP']}, {'master': 'vrf1'}):
