@@ -70,13 +70,19 @@ jobs:
           python3 opt/ffn_cpu_planes.py selftest
 
       - name: conntrack accounting and acknowledged session observations
-        run: python3 -m unittest discover -s tests -p 'test_session*.py'
+        run: |
+          python3 -m unittest discover -s tests -p 'test_session*.py'
+          python3 -m unittest discover -s tests -p 'test_l3_offload.py'
+
+      - name: Dependency ordered commits and verified checkpoints
+        run: python3 -m unittest discover -s tests -p 'test_commit_apply.py'
 
       - name: NAT64 and NPTv6 address and packet primitives
         run: |
           python3 -m unittest discover -s tests -p 'test_nat_ipv6.py'
           python3 -m unittest discover -s tests -p 'test_nat_bindings.py'
           python3 -m unittest discover -s tests -p 'test_security_nft.py'
+          python3 -m unittest discover -s tests -p 'test_security_generation.py'
 
       - name: NAT editor dynamic references and translation modes
         run: node tests/test_policy_selectors.cjs
@@ -264,6 +270,7 @@ jobs:
           python tests/test_policy_barrier.py
           python tests/test_commit_review.py
           python tests/test_qos_interfaces.py
+          python tests/test_vrrp.py
           python tests/test_extensions.py
 
       - name: Objects browser workflows against disposable candidate configuration
@@ -273,6 +280,7 @@ jobs:
           NODE_PATH="$RUNNER_TEMP/objects-browser/node_modules" TEST_PYTHON=python node tests/test_objects_browser.cjs
           NODE_PATH="$RUNNER_TEMP/objects-browser/node_modules" TEST_PYTHON=python node tests/test_policies_browser.cjs
           NODE_PATH="$RUNNER_TEMP/objects-browser/node_modules" TEST_PYTHON=python node tests/test_nat_ipv6_browser.cjs
+          NODE_PATH="$RUNNER_TEMP/objects-browser/node_modules" TEST_PYTHON=python node tests/test_vrrp_browser.cjs
           NODE_PATH="$RUNNER_TEMP/objects-browser/node_modules" node tests/test_commit_review_browser.cjs
 
       - name: plane protocol, transport and Linux networking
@@ -282,17 +290,22 @@ jobs:
           python tests/test_plane_sockets.py
           python tests/test_control_gateway.py
           python tests/test_linux_network.py
+          python tests/test_route_monitor.py
           python tests/test_vr_interfaces.py
           python tests/test_vr_route_api.py
 
       - name: native L2 and L3 packet forwarding in disposable namespaces
-        run: sudo python3 tests/test_network_namespace.py
+        run: |
+          sudo python3 tests/test_network_namespace.py
+          sudo python3 tests/test_l3_namespace.py
 
       - name: candidate policy validation and supervised Security/NAT packets
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq nftables conntrack iputils-ping
           sudo python3 tests/test_security_runtime_namespace.py
+          sudo python3 tests/test_network_address_namespace.py
+          sudo python3 tests/test_interface_services.py
 
       - name: patch management API permissions
         run: python tests/test_patch_api.py

@@ -1,0 +1,37 @@
+name: Native conntrack accounting
+
+on:
+  pull_request:
+    paths: ['dataplanes/ctlease/**', '.github/workflows/ctlease.yml']
+  push:
+    paths: ['dataplanes/ctlease/**', '.github/workflows/ctlease.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+          persist-credentials: false
+      - name: Install generic kernel headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y linux-headers-generic build-essential
+      - name: Build kernel endpoint and native control library
+        working-directory: dataplanes/ctlease
+        run: |
+          set -eu
+          headers=$(find /usr/src -maxdepth 1 -type d -name 'linux-headers-*-generic' | sort -V | tail -n 1)
+          test -n "$headers"
+          make KDIR="$headers" -j2
+          make client
+          cc -std=c11 -Wall -Wextra -Werror ctlease_abi.c -o ctlease-abi
+          ./ctlease-abi
+          python3 -m py_compile ffn_ctlease.py test_ctlease.py
+      # Loading needs the exact running kernel. The isolated netns integration
+      # suite is run on build hosts/appliances with matching prepared kernels.

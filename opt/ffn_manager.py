@@ -475,6 +475,8 @@ class VRRoute(BaseModel):
     next_hop: str = ""          # "" for a link/onlink route (dev only)
     dev: Optional[str] = None
     metric: int = 0
+    onlink: bool = False
+    path_monitor: dict = {}
 
 
 class MlScoreRequest(BaseModel):
@@ -6562,7 +6564,24 @@ async def vr_set_routing(name: str, cfg: VrRoutingConfig, user: dict = Depends(g
 @app.get("/api/network/virtual-routers/{name}/routes")
 async def vr_routes_list(name: str, user: dict = Depends(get_current_user)):
     vr = await _vr_candidate_get(name)
-    return {'virtual_router': name, 'routes': vr.get('routes', []), 'source': 'candidate'}
+    rows=vr.get('routes', [])
+    if _vr_platform_managed() and controld is not None:
+        try:
+            import uuid
+            answer=await asyncio.to_thread(controld.plane_request,dict(v=1,id=str(uuid.uuid4()),resource='network',action='status',payload={}))
+            health=answer.get('result',{}).get('route_health',{}) if answer.get('ok') else {}
+            from ffn_route_monitor import validate as monitor_settings
+            for row in rows:
+                dev=re.sub(r'^ethernet1/', 'p', row.get('dev') or '')
+                matches=[value for value in health.get('routes',{}).values() if
+                         value.get('route',{}).get('dev')==dev and value['route'].get('dst')==row['dest_cidr'] and
+                         value['route'].get('metric',100)==row['metric'] and value['route'].get('via','')==row['next_hop'] and
+                         value['route'].get('onlink',False)==row.get('onlink',False) and
+                         monitor_settings(value['route'].get('monitor',{}))==monitor_settings(row.get('path_monitor',{}))]
+                row['runtime']=matches[0] if len(matches)==1 and health.get('fresh') else dict(installed=False,reason='runtime-unconfirmed')
+        except Exception:
+            for row in rows:row['runtime']=dict(installed=False,reason='runtime-unavailable')
+    return {'virtual_router': name, 'routes': rows, 'source': 'candidate'}
 
 
 async def _vr_interface_inventory(user):
@@ -9138,7 +9157,7 @@ async def config_review(partial_xpath: Optional[str] = None, validate: bool = Fa
                 validation=report, validated=validate, lock=lock,
                 can_commit=user.get('role') in ('admin','superuser') and
                     (not lock['locked'] or lock.get('holder') == user['username']),
-                validation_scope='Policy compilation and commissioned policy-provider checks. Other settings are checked by configd during apply.',
+                validation_scope='Candidate policy and interface-reference validation; carrier and LACP negotiation are not commit prerequisites. Configd applies and verifies dependencies before activating Security/NAT.',
                 applied=False)
 
 
@@ -9217,15 +9236,16 @@ async def _config_commit_serial(req, user):
         # Fallback: in-process hostname/DNS/NTP writes (legacy).
         if controld is not None and controld.available():
             try:
-                apply_status = controld.apply_config()
+                apply_status = await asyncio.to_thread(controld.apply_config)
                 result["apply_status"] = apply_status
                 result["applied_to_system"] = [
                     f"{a['applier']}:{a['xpath']}={a['new']}"
                     for a in apply_status.get("applied", [])
                 ]
             except Exception as exc:
-                logger.warning("controld apply_config failed: %s — falling back", exc)
-                result["applied_to_system"] = _apply_running_config()
+                logger.warning("controld apply_config failed: %s", exc)
+                result["apply_status"] = dict(overall='unconfirmed', errors=[dict(xpath='commit',applier='controld',error=_public_error(exc))])
+                result["applied_to_system"] = []
         else:
             result["applied_to_system"] = _apply_running_config()
 
@@ -9233,7 +9253,10 @@ async def _config_commit_serial(req, user):
         # apply on purpose: the MP is the first hop of the chain, and publishing
         # a config the MP itself has not accepted would put the planes ahead of
         # their own management plane.
-        result["planes"] = _publish_to_planes()
+        apply_result=result.get('apply_status',{})
+        result["planes"] = (_publish_to_planes() if apply_result.get('overall')=='applied' and
+            not apply_result.get('errors') and not apply_result.get('validation_errors') else
+            dict(published=False,error='Distribution held until configd acknowledges the committed generation'))
         result["changes_committed"] = d["total_changes"]
 
         async with aiosqlite.connect(DB_PATH) as db:

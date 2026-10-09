@@ -6,6 +6,12 @@ from urllib.parse import urlencode
 
 
 HELP='''show policies qos-interfaces [candidate|running]
+show policies vrrp [candidate|running] [scope=vsys1]
+request policies vrrp add|edit <name> mode=participate|passthrough [field=value ...]
+request policies vrrp remove <name>
+VRRP fields: scope, interface, family, vrid, priority, advert_ms, preempt,
+virtual_addresses, track_interfaces, enabled; passthrough uses domain and family.
+Virtual addresses accept IP/netmask objects or CIDRs. Changes are staged for Commit.
 request policies qos-interface add|edit <interface> profile=<name> max-mbps=<rate> default-class=4 enabled=no
 request policies qos-interface remove <interface>
 show policies commit-preview [partial-xpath]
@@ -46,6 +52,12 @@ authentication dos sdwan. The same runtime blockers apply in CLI and WebUI.'''
 def handle(tokens,api,token):
     if len(tokens)<2 or tokens[0] not in ('show','request') or tokens[1]!='policies':return False
     if len(tokens)<3:print(HELP);return True
+    if tokens[2]=='vrrp':
+        try:
+            from ffn_vrrp_cli import command
+            command(tokens,api,token)
+        except ValueError as error:print(str(error))
+        return True
     if tokens[:3]==['show','policies','qos-interfaces']:
         if len(tokens)>4 or len(tokens)==4 and tokens[3] not in ('candidate','running'):print(HELP);return True
         print(json.dumps(api('/api/config/qos/interfaces?source='+(tokens[3] if len(tokens)==4 else 'candidate'),token=token),indent=2));return True

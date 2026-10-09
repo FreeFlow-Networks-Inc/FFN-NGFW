@@ -169,7 +169,8 @@ def render(plan,mapping,links,revision):
         if logical not in mapping or mapping[logical] not in links:raise NatError('Uncommissioned or missing interface: '+logical)
         link=links[mapping[logical]]
         if link.get('master') or link.get('linkinfo',{}).get('info_kind') in ('bridge','vrf'):raise NatError('NAT provider currently requires routed interfaces in the main routing table')
-        if not any(a['family']=='inet' for a in link.get('addr_info',[])):raise NatError('No active IPv4 address on '+logical)
+        # Rules may be installed while a port is disconnected or DHCP has no
+        # lease. Masquerade selects the egress address when a packet is routed.
     lines=['table ip '+TABLE+' {',' comment "ffn-nat:'+digest(plan)+'"',' chain prerouting { type nat hook prerouting priority dstnat; policy accept;','  ct direction reply return','  ct mark != 0 return']
     chains=[];post=[]
     for i,r in enumerate(plan['rules']):

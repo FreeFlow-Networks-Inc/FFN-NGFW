@@ -87,7 +87,7 @@ class ControldClient:
     def lock_status(self):         return self.query("commit/lock/status")
     def acquire_lock(self, user, reason="commit"): return self.query("commit/lock/acquire", user=user, reason=reason)
     def release_lock(self, user):  return self.query("commit/lock/release", user=user)
-    def apply_config(self):        return self.query("commit/apply")
+    def apply_config(self):        return ControldClient(self.socket_path,130).query("commit/apply")
     def apply_status(self):        return self.query("commit/apply-status")
     def route_add(self, destination, next_hop, interface="", metric=100):
         return self.query("route/add", destination=destination, next_hop=next_hop,

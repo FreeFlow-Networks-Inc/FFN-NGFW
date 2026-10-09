@@ -113,7 +113,7 @@ def merge_html(live,source):
         if any(s.count(start)!=1 or s.count(end)!=1 for s in (live,source)):raise ValueError('Policy navigation boundaries changed')
         a=live.index(start);b=live.index(end,a);x=source.index(start);y=source.index(end,x)
         live=live[:a]+source[x:y]+live[b:]
-    for name in ('config-policies.js','policy-profiles.js'):
+    for name in ('config-policies.js','policy-profiles.js','vrrp.js'):
         asset='<script src="/static/'+name+'"></script>'
         if asset not in live:live=replace_once(live,'</head>',asset+'\n</head>')
     for old,new in [
@@ -124,6 +124,8 @@ def merge_html(live,source):
         ("    'security-profiles': renderObjectsSecurityProfiles,", "    'security-profiles': renderObjectsSecurityProfiles,\n    'decryption-profiles': c => renderPolicyProfiles(c, 'decryption'),"),
         ("function renderNPQoSProfile(c){c.innerHTML=netPageHTML(_CTX_NP_QOS);netRenderList(_CTX_NP_QOS);}", "function renderNPQoSProfile(c){renderPolicyProfiles(c,'qos');}")]:
         live=replace_once(live,old,new)
+    live=replace_once(live,"    {id:'routing',label:'Virtual Routers'},", "    {id:'routing',label:'Virtual Routers'},\n    {id:'vrrp',label:'VRRP'},")
+    live=replace_once(live,"    'routing': renderNetworkRouting,", "    'routing': renderNetworkRouting,\n    'vrrp': renderNetworkVRRP,")
     return live
 
 
@@ -136,12 +138,12 @@ def main():
             manager/'static/index.html':merge_html((manager/'static/index.html').read_text(),(root/'static/index.html').read_text()),
             daemon/'ffn_controld.py':merge_control((daemon/'ffn_controld.py').read_text()),
             daemon/'ffn_configd.py':merge_configd((daemon/'ffn_configd.py').read_text()),cli:merge_cli(cli.read_text())}
-    for name in ('ffn_policy_api.py','ffn_policy_config.py','ffn_interface_addresses.py','ffn_policy_plan.py','ffn_policy_profiles.py','ffn_qos_config.py','ffn_nat_policy.py','ffn_ipv6_translation.py','ffn_policy_cli.py','ffn_config_objects.py'):
+    for name in ('ffn_policy_api.py','ffn_policy_config.py','ffn_interface_addresses.py','ffn_policy_plan.py','ffn_policy_profiles.py','ffn_qos_config.py','ffn_vrrp.py','ffn_vrrp_cli.py','ffn_nat_policy.py','ffn_ipv6_translation.py','ffn_policy_cli.py','ffn_config_objects.py'):
         writes[manager/name]=(root/'opt'/name).read_text()
     writes[daemon/'ffn_policy_config.py']=(root/'opt/ffn_policy_config.py').read_text()
-    for name in ('ffn_interface_addresses.py','ffn_policy_plan.py','ffn_policy_profiles.py','ffn_qos_config.py','ffn_nat_policy.py','ffn_ipv6_translation.py'):
+    for name in ('ffn_interface_addresses.py','ffn_policy_plan.py','ffn_policy_profiles.py','ffn_qos_config.py','ffn_vrrp.py','ffn_nat_policy.py','ffn_ipv6_translation.py'):
         writes[daemon/name]=(root/'opt'/name).read_text()
-    for name in ('config-policies.js','policy-profiles.js','config-objects.css'):writes[manager/'static'/name]=(root/'static'/name).read_text()
+    for name in ('config-policies.js','policy-profiles.js','vrrp.js','config-objects.css'):writes[manager/'static'/name]=(root/'static'/name).read_text()
     backup=manager/('policies-backup-'+str(time.time_ns()));backup.mkdir()
     for i,(path,text) in enumerate(writes.items()):
         mode=path.stat().st_mode & 0o777 if path.exists() else 0o644

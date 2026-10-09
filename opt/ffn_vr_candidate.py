@@ -53,7 +53,9 @@ def routes(node, vr):
     for index, route in enumerate(node.findall('routing-table/ip/static-route/entry'), 1):
         result.append(dict(id=_number(route, 'ffn-id', index), vr_id=vr['id'],
                            dest_cidr=route.findtext('destination', ''), next_hop=route.findtext('nexthop/ip-address', ''),
-                           dev=route.findtext('interface'), metric=_number(route, 'metric', 10), table_id=vr['table_id']))
+                           dev=route.findtext('interface'), metric=_number(route, 'metric', 10), table_id=vr['table_id'],
+                           onlink=route.findtext('ffn-onlink','no')=='yes',
+                           path_monitor=json.loads(route.findtext('ffn-path-monitor','{}'))))
     return result
 
 
@@ -82,6 +84,9 @@ def put_fields(node, fields):
 
 
 def put_route(node, data, route_id):
+    from ffn_route_monitor import validate
+    child(node,'ffn-path-monitor').text=json.dumps(validate(data.get('path_monitor'),data['dest_cidr']),sort_keys=True)
+    child(node,'ffn-onlink').text='yes' if data.get('onlink',False) else 'no'
     for path, value in [('ffn-id', route_id), ('destination', data['dest_cidr']),
                         ('nexthop/ip-address', data.get('next_hop')), ('interface', data.get('dev')),
                         ('metric', data.get('metric', 100))]:

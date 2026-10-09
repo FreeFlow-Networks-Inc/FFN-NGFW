@@ -24,10 +24,11 @@ import sys
 import uuid
 
 LIMIT = 1024 * 1024
-ACTIONS = {'status', 'validate', 'apply', 'lookup', 'result', 'resolve', 'inventory'}
-# Actions that run a controller. result, resolve and inventory are answered
-# from this node's journal and configuration and never start a process.
-COMMANDS = ('status', 'validate', 'apply', 'lookup')
+ACTIONS = {'status', 'validate', 'apply', 'lookup', 'result', 'resolve', 'inventory', 'refresh'}
+# Actions that run a controller (refresh runs a registered observation
+# collector). result, resolve and inventory are answered from this node's
+# journal and configuration and never start a process.
+COMMANDS = ('status', 'validate', 'apply', 'lookup', 'refresh')
 DEFAULT_TIMEOUT = {'apply': 90}
 FALLBACK_TIMEOUT = 20
 # The response ladder is fixed and a configured budget has to stay inside it:
@@ -70,6 +71,8 @@ def check(request):
         raise ValueError('inventory is the only action on the reserved %r resource' % INVENTORY)
     if request['action'] in ('status', 'inventory') and request['payload']:
         raise ValueError('%s takes no payload' % request['action'])
+    if request['action'] == 'refresh' and request['payload']:
+        raise ValueError('observation refresh takes no payload')
     if request['action'] in ('apply', 'validate'):
         revision = request['payload'].get('revision')
         if type(revision) is not int or revision < 0:
@@ -89,9 +92,16 @@ async def process(argv, data, timeout):
             out.extend(chunk)
             if len(out) > LIMIT: raise ValueError('controller output exceeds limit')
     async def exchange():
-        proc.stdin.write(data)
-        await proc.stdin.drain()
-        proc.stdin.close()
+        input_closed = False
+        try:
+            proc.stdin.write(data)
+            await proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            # An early validation failure can close stdin before drain runs.
+            # Read its bounded response instead of losing the actual error.
+            input_closed = True
+        finally:
+            proc.stdin.close()
         out, err = await asyncio.gather(read(proc.stdout), read(proc.stderr))
         await proc.wait()
         if proc.returncode:
@@ -103,6 +113,8 @@ async def process(argv, data, timeout):
                 except (json.JSONDecodeError, UnicodeError):
                     pass
             raise RuntimeError('controller failed with exit code %d' % proc.returncode)
+        if input_closed:
+            raise RuntimeError('controller closed input before request delivery completed')
         return decode(out)
     try:
         return await asyncio.wait_for(exchange(), timeout)
@@ -283,7 +295,11 @@ class Plane:
         # it with its own controller: some backends take exclusive file locks
         # even for reads. Writes retain the global transaction lock.
         resource_lock = self.resource_locks.setdefault(request['resource'], asyncio.Lock())
-        if request['action'] == 'status':
+        # A registered refresh renews ephemeral observations from the backend;
+        # it cannot accept configuration or caller-supplied link state. Like a
+        # read, a lost reply can be retried using a new live observation, without
+        # creating an uncertain configuration transaction in the journal.
+        if request['action'] in ('status', 'refresh'):
             async with resource_lock:
                 return await self.local(request)
         async with self.lock:

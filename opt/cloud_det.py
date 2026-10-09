@@ -1108,6 +1108,11 @@ def _selftest_drainer() -> int:
             time.sleep(0.1)
         check(svc.queue_depth() == 0,
               "the drainer emptied the queue with no operator action")
+        # The queue reads empty as soon as the row is marked done inside the
+        # batch; the drainer counts the batch only when it returns. Wait for
+        # that cycle before reading the count, or the check races it.
+        while time.time() < deadline and drainer.summary()["analyzed"] < 1:
+            time.sleep(0.05)
         check(drainer.summary()["analyzed"] >= 1,
               "the drainer reports what it analysed: %s"
               % drainer.summary()["analyzed"])
