@@ -237,5 +237,99 @@ class IntentTests(unittest.TestCase):
         self.assertIsNone(dhcp.device_addresses('ae1.69', run=lambda argv: '[]'))
 
 
+class FakeSock:
+    def __init__(self, error=None):
+        self.error, self.closed, self.sent = error, False, []
+
+    def recv(self, size):
+        if self.error:
+            raise self.error
+        raise BlockingIOError()
+
+    def send(self, frame):
+        if self.error:
+            raise self.error
+        self.sent.append(frame)
+
+    def close(self):
+        self.closed = True
+
+    def fileno(self):
+        return 99
+
+
+class InstanceRecovery(unittest.TestCase):
+    """A served device can be re-created under the daemon (the aggregate owner
+    rebuilds its parent on apply); the old packet socket then fails forever."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.leases = patch.object(dhcp, 'LEASES', Path(self.tmp.name))
+        self.leases.start(); self.addCleanup(self.leases.stop)
+        self.lines = []
+        spec = dhcp.validate_server('ae1.69', SPEC)
+        self.inst = dhcp.Instance('ae1.69', spec, self.lines.append)
+
+    def bound(self, sock, index=5):
+        self.inst.sock, self.inst.ifindex, self.inst.state = sock, index, 'serving'
+        self.inst.server.mac = SERVER_MAC
+
+    def test_a_receive_error_closes_the_socket_so_the_tick_rebinds(self):
+        sock = FakeSock(OSError(127, 'Network is down'))
+        self.bound(sock)
+        self.inst.receive()
+        self.assertIsNone(self.inst.sock)
+        self.assertTrue(sock.closed)
+        self.assertEqual(self.inst.state, 'error')
+        self.assertIn('Network is down', self.inst.detail)
+        self.assertTrue(any('re-binding' in line for line in self.lines))
+
+    def test_a_send_or_probe_error_is_a_fault_too(self):
+        sock = FakeSock()
+        self.bound(sock)
+        self.inst.pending = [b'\x00' * 12 + b'\x08\x00' + b'\x00' * 300]
+        with patch.object(self.inst.server, 'handle', return_value=[b'reply']):
+            sock.error = OSError(127, 'Network is down')
+            self.inst.receive()
+        self.assertIsNone(self.inst.sock)
+        self.assertEqual(self.inst.state, 'error')
+        probe = FakeSock(OSError(19, 'No such device'))
+        self.bound(probe)
+        self.assertFalse(self.inst.probe('10.1.0.15'))
+        self.assertIsNone(self.inst.sock)
+
+    def test_the_watch_faults_on_a_new_index_or_a_removed_device_and_is_quiet_otherwise(self):
+        sock = FakeSock()
+        self.bound(sock, index=5)
+        with patch('socket.if_nametoindex', return_value=5):
+            self.inst.watch()
+        self.assertIs(self.inst.sock, sock)
+        with patch('socket.if_nametoindex', return_value=7):
+            self.inst.watch()
+        self.assertIsNone(self.inst.sock)
+        self.assertIn('re-created', self.inst.detail)
+        self.bound(FakeSock(), index=7)
+        with patch('socket.if_nametoindex', side_effect=OSError(19, 'No such device')):
+            self.inst.watch()
+        self.assertIsNone(self.inst.sock)
+        self.assertIn('removed', self.inst.detail)
+
+    def test_the_tick_watches_then_opens_everything_without_a_socket(self):
+        daemon = dhcp.Daemon(self.lines.append)
+        calls = []
+        class Stub:
+            def __init__(self, sock):
+                self.sock = sock
+            def watch(self):
+                calls.append('watch'); self.sock = None
+            def open(self):
+                calls.append('open'); self.sock = object(); return True
+        daemon.instances = {'ae1.69': Stub(object()), 'ae1.17': Stub(None)}
+        daemon.maintain()
+        self.assertEqual(calls, ['watch', 'watch', 'open', 'open'])
+        self.assertTrue(all(inst.sock is not None for inst in daemon.instances.values()))
+
+
 if __name__ == '__main__':
     unittest.main()

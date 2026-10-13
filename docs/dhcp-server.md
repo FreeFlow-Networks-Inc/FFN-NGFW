@@ -83,3 +83,18 @@ ffn-convergence                                              # dhcp-server: serv
 A server that is committed but reads `interface-absent` or `address-missing`
 on the dataplane is pending: the device or its address has not appeared yet
 (an aggregate's subinterface after boot, an interface being re-addressed).
+
+## Device re-creation
+
+A packet socket stays bound to the interface index it was given. The
+aggregate owner rebuilds its parent device on apply, and every VLAN unit
+with it, so a server bound before that has a dead socket: every receive
+and send fails with ENETDOWN (errno 127 on MIPS) for the life of the
+process, and a reload does not help because an unchanged spec keeps its
+instance. On 2026-10-10 this silenced all three servers two minutes after a
+dataplane boot, and nothing noticed until the leases had expired three days
+later (the convergence page did report "not serving: Network is down").
+An instance now treats any socket error as a fault that closes the socket,
+the daemon checks each served device's index on its five-second tick, and
+the same tick binds again by name. The journal shows the fault and the
+new "serving" line.
