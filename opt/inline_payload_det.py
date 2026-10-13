@@ -767,8 +767,8 @@ def selftest() -> int:
 
     # -- 3. IOC + file-type + entropy heuristics ---------------------------
     iocs = extract_iocs(b"connect to http://evil.example.com/gate.php and 203.0.113.9")
-    assert "evil.example.com" in iocs["domain"] and "203.0.113.9" in iocs["ip"]
-    assert "http://evil.example.com/gate.php" in iocs["url"]
+    assert any(d == "evil.example.com" for d in iocs["domain"]) and any(a == "203.0.113.9" for a in iocs["ip"])
+    assert any(u == "http://evil.example.com/gate.php" for u in iocs["url"])
     assert detect_file_type(b"MZ\x90\x00stuff") == "pe"
     assert detect_file_type(b"%PDF-1.7") == "pdf"
     assert shannon_entropy(b"\x00" * 100) < 0.1

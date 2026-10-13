@@ -821,7 +821,7 @@ main(int argc, char **argv)
                     /* Kernel-originated packets: send out the CPU NIC */
                     uint16_t sent = rte_eth_tx_burst(
                         g_cfg.cpu_port_ids[p], 0, kni_bufs, nb);
-                    for (uint16_t i = sent; i < nb; i++)
+                    for (unsigned i = sent; i < nb; i++)
                         rte_pktmbuf_free(kni_bufs[i]);
                 }
                 rte_kni_handle_request(g_cfg.kni[p]);

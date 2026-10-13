@@ -22,7 +22,25 @@ from ffn_interface_management import SERVICES, validate
 
 RUNTIME = Path('/run/ffn-interface-services')
 PROFILES = Path('/run/ffn-interface-profiles')
-ALLOWED = {f'{proto}/{port}' for proto, ports in SERVICES.values() for port in ports}
+ALLOWED = {f'{proto}/{port}' for specs in SERVICES.values() for proto, ports in (specs if isinstance(specs, list) else [specs]) for port in ports}
+# The FFN Protect daemon serves these itself on the addresses its committed intent names; the relay
+# must leave them alone even though the interface's management profile permits the ports.
+PROTECT_INTENT = Path('/etc/ffn/protect.json')
+PROTECT_PORTS = (443, 4501)
+
+
+def protect_listeners(path=PROTECT_INTENT):
+    """(address, port) pairs the FFN Protect daemon owns; empty when no intent is applied."""
+    try:
+        data = json.loads(path.read_text())['protect']
+    except (OSError, ValueError, KeyError, TypeError):
+        return set()
+    pairs = set()
+    for kind in ('portals', 'gateways'):
+        for spec in (data.get(kind) or {}).values() if isinstance(data.get(kind), dict) else []:
+            if isinstance(spec, dict) and isinstance(spec.get('address'), str):
+                pairs.update((spec['address'], port) for port in PROTECT_PORTS)
+    return pairs
 # Product listener defaults; installations may override their loopback endpoints.
 DEFAULT_PROVIDERS = {key: {'host': '127.0.0.1', 'port': int(key.split('/')[1])}
                      for key in ALLOWED}
@@ -216,6 +234,9 @@ def permissions(root=PROFILES):
                             result[(name, address, proto, port)] = tuple(policy['sources'])
         except (OSError, ValueError, KeyError, TypeError):
             continue
+    owned = protect_listeners(PROTECT_INTENT)
+    for key in [k for k in result if (k[1], k[3]) in owned]:
+        del result[key]
     return result
 
 
