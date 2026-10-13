@@ -522,8 +522,41 @@ class Instance:
         self.device, self.spec, self.log = device, spec, log
         self.server = Server(device, spec, Leases(LEASES / (device + '.json'), device), probe=self.probe, log=log)
         self.sock = None
+        self.ifindex = None
         self.state, self.detail = 'starting', ''
         self.pending = []
+
+    def fault(self, detail):
+        """Drop the socket: the serve loop re-opens the device on its next tick.
+
+        A packet socket stays bound to the interface index it was given. When
+        the aggregate owner re-creates the parent (and so every VLAN unit) the
+        old index is gone and every receive or send fails with ENETDOWN (127
+        on MIPS) for the rest of the process. On 2026-10-10 that silenced all
+        three servers two minutes after a dataplane boot and nothing noticed
+        until the leases had expired; a reload could not help because reload()
+        keeps an instance whose spec is unchanged. Binding again by name is
+        the only recovery, so a fault closes the socket and says why.
+        """
+        if self.sock is not None:
+            self.sock.close()
+            self.sock = None
+        self.ifindex = None
+        self.state, self.detail = 'error', detail[:200]
+        self.log('%s: %s; re-binding' % (self.device, detail[:200]))
+
+    def watch(self):
+        """Fault when the served device vanished or came back under a new index."""
+        import socket
+        if self.sock is None:
+            return
+        try:
+            index = socket.if_nametoindex(self.device)
+        except OSError:
+            self.fault('device removed')
+            return
+        if index != self.ifindex:
+            self.fault('device re-created (ifindex %s -> %s)' % (self.ifindex, index))
 
     def open(self):
         import ctypes
@@ -545,6 +578,7 @@ class Instance:
             info = fcntl.ioctl(sock.fileno(), SIOCGIFHWADDR, struct.pack('256s', self.device.encode()))
             self.server.mac = info[18:24]
             sock.setblocking(False)
+            self.ifindex = socket.if_nametoindex(self.device)
         except OSError as error:
             sock.close()
             self.state, self.detail = 'error', str(error)[:200]
@@ -570,7 +604,7 @@ class Instance:
             except BlockingIOError:
                 break
             except OSError as error:
-                self.state, self.detail = 'error', str(error)[:200]
+                self.fault(str(error))
                 return
         for frame in frames:
             if frame[12:14] == b'\x08\x06':
@@ -579,7 +613,8 @@ class Instance:
                 for reply in self.server.handle(frame):
                     self.sock.send(reply)
             except OSError as error:
-                self.log('%s: send failed: %s' % (self.device, error))
+                self.fault('send failed: %s' % error)
+                return
             except Exception as error:   # a malformed frame must never stop the server
                 self.log('%s: %s' % (self.device, error))
 
@@ -591,7 +626,8 @@ class Instance:
                    + self.server.mac + self.server.server_ip + bytes(6) + target)
         try:
             self.sock.send(request)
-        except OSError:
+        except OSError as error:
+            self.fault('probe failed: %s' % error)
             return False
         deadline = time.monotonic() + 0.3
         while True:
@@ -602,7 +638,8 @@ class Instance:
                 return False
             try:
                 frame = self.sock.recv(65535)
-            except OSError:
+            except OSError as error:
+                self.fault('probe failed: %s' % error)
                 return False
             if frame[12:14] == b'\x08\x06' and len(frame) >= 42 and frame[20:22] == b'\x00\x02' and frame[28:32] == target:
                 return True
@@ -649,6 +686,14 @@ class Daemon:
         self.revision, self.configuration = intent['revision'], intent.get('configuration')
         self.reload_requested = False
 
+    def maintain(self):
+        """The five-second tick: notice re-created or removed devices, then bind whatever has no socket."""
+        for inst in self.instances.values():
+            inst.watch()
+        for inst in self.instances.values():
+            if inst.sock is None:
+                inst.open()
+
     def publish(self):
         now = time.time()
         atomic(RUN / 'status.json', dict(schema=1, boot_id=boot_id(), pid=os.getpid(), process_start=self.process_start,
@@ -671,9 +716,7 @@ class Daemon:
                 next_open = 0.0
             now = time.monotonic()
             if now >= next_open:
-                for inst in self.instances.values():
-                    if inst.sock is None:
-                        inst.open()
+                self.maintain()
                 next_open = now + 5
             sockets = {inst.sock: inst for inst in self.instances.values() if inst.sock is not None}
             try:
