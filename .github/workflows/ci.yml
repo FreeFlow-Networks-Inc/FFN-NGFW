@@ -86,6 +86,8 @@ jobs:
 
       - name: NAT editor dynamic references and translation modes
         run: node tests/test_policy_selectors.cjs
+      - name: FFN Protect gateway (daemon, intent, convergence)
+        run: python3 -m unittest discover -s tests -p 'test_protect_*.py'
 
       # Exercises the update trust model itself: wrong key, tampered payload,
       # unsigned manifest, and the hmac-to-ed25519 downgrade refusal. It rebinds
@@ -139,6 +141,8 @@ jobs:
 
       - name: control-plane WebUI workflow
         run: node tests/test_plane_ui.cjs
+      - name: FFN Protect console pages
+        run: node tests/test_protect_ui.cjs
 
       - name: code patch lifecycle and renderer
         run: |
