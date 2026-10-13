@@ -274,7 +274,7 @@ class SignatureDB:
 
     # -- import: YARA (basic subset) --------------------------------------
     _YARA_HDR = re.compile(r"rule\s+(\w+)\s*(?::[^\{]+)?\{")
-    _YARA_STR = re.compile(r"\$(\w+)\s*=\s*(\"(?:\\.|[^\"])*\"|\{[0-9a-fA-F\s?]+\})")
+    _YARA_STR = re.compile(r"\$(\w+)\s*=\s*(\"(?:[^\"\\\\]|\\\\.)*\"|\{[0-9a-fA-F\s?]+\})")
     _YARA_COND = re.compile(r"condition\s*:\s*(.+?)\s*$", re.S)
 
     @classmethod

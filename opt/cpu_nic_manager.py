@@ -11,6 +11,7 @@ Import the router in ffn_manager.py:
     app.include_router(cpu_nic_router)
 """
 
+import ipaddress
 import json
 import logging
 import os
@@ -120,6 +121,39 @@ def _sim_interfaces():
             "addr_info": [],
         },
     ]
+
+
+IFNAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.:-]{0,14}\Z")
+BOND_NAMES = {"bond%d" % i: "bond%d" % i for i in range(8)}
+
+
+def _known_nic(requested):
+    """The inventory's own name for a manageable CPU NIC; the request only selects it.
+
+    Only that string ever reaches a command line or a sysfs path, never the request's."""
+    if not isinstance(requested, str) or not IFNAME.fullmatch(requested):
+        raise HTTPException(status_code=400, detail="Invalid interface name")
+    for nic in discover_cpu_nics():
+        if nic["name"] == requested:
+            return nic["name"]
+    raise HTTPException(status_code=404, detail="NIC not found")
+
+
+def _ipv4(value, what):
+    try:
+        return str(ipaddress.IPv4Address(value))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid " + what)
+
+
+def _bounded(value, what, low, high):
+    try:
+        number = int(value)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid " + what)
+    if not low <= number <= high:
+        raise HTTPException(status_code=400, detail="%s must be %d to %d" % (what, low, high))
+    return number
 
 
 def _get_nic_stats(ifname):
@@ -238,46 +272,47 @@ async def list_cpu_nics():
 @cpu_nic_router.put("/{name}/config")
 async def configure_nic(name: str, cfg: NicConfig):
     """Set IP/mask/gateway/VLAN/MTU on a CPU NIC."""
-    nics = discover_cpu_nics()
-    found = any(n["name"] == name for n in nics)
-    if not found:
-        raise HTTPException(status_code=404, detail=f"NIC {name} not found")
+    name = _known_nic(name)
 
     actions = []
 
     # Flush existing addresses if setting a new IP
     if cfg.ip_address and cfg.netmask:
-        prefix = _mask_to_prefix(cfg.netmask)
+        address = _ipv4(cfg.ip_address, "address")
+        prefix = _bounded(_mask_to_prefix(_ipv4(cfg.netmask, "netmask")), "prefix length", 0, 32)
         try:
             _run(["ip", "addr", "flush", "dev", name])
-            _run(["ip", "addr", "add", f"{cfg.ip_address}/{prefix}",
+            _run(["ip", "addr", "add", f"{address}/{prefix}",
                   "dev", name])
-            actions.append(f"ip={cfg.ip_address}/{prefix}")
+            actions.append(f"ip={address}/{prefix}")
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 
     if cfg.gateway:
+        gateway = _ipv4(cfg.gateway, "gateway")
         try:
-            _run(["ip", "route", "replace", "default", "via", cfg.gateway,
+            _run(["ip", "route", "replace", "default", "via", gateway,
                   "dev", name], check=False)
-            actions.append(f"gw={cfg.gateway}")
+            actions.append(f"gw={gateway}")
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 
     if cfg.mtu:
+        mtu = _bounded(cfg.mtu, "mtu", 68, 9216)
         try:
-            _run(["ip", "link", "set", name, "mtu", str(cfg.mtu)])
-            actions.append(f"mtu={cfg.mtu}")
+            _run(["ip", "link", "set", name, "mtu", str(mtu)])
+            actions.append(f"mtu={mtu}")
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 
     if cfg.vlan_id is not None and cfg.vlan_id > 0:
-        vlan_if = f"{name}.{cfg.vlan_id}"
+        vlan = _bounded(cfg.vlan_id, "vlan id", 1, 4094)
+        vlan_if = f"{name}.{vlan}"
         try:
             _run(["ip", "link", "add", "link", name, "name", vlan_if,
-                  "type", "vlan", "id", str(cfg.vlan_id)])
+                  "type", "vlan", "id", str(vlan)])
             _run(["ip", "link", "set", vlan_if, "up"])
-            actions.append(f"vlan={cfg.vlan_id}")
+            actions.append(f"vlan={vlan}")
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 
@@ -289,6 +324,7 @@ async def bridge_to_fpga(name: str, req: BridgeRequest):
     """Bridge a CPU NIC to an FPGA port."""
     if req.fpga_port < 0 or req.fpga_port > 3:
         raise HTTPException(status_code=400, detail="fpga_port must be 0-3")
+    name = _known_nic(name)
 
     bridge_name = f"br_ffn{req.fpga_port}"
     fpga_if = f"ffn{req.fpga_port}"
@@ -317,10 +353,7 @@ async def bridge_to_fpga(name: str, req: BridgeRequest):
 @cpu_nic_router.get("/{name}/stats")
 async def nic_stats(name: str):
     """Return interface statistics for a CPU NIC."""
-    nics = discover_cpu_nics()
-    found = any(n["name"] == name for n in nics)
-    if not found:
-        raise HTTPException(status_code=404, detail=f"NIC {name} not found")
+    name = _known_nic(name)
 
     counters = _get_nic_stats(name)
     return {"nic": name, "stats": counters}
@@ -329,10 +362,7 @@ async def nic_stats(name: str):
 @cpu_nic_router.post("/{name}/set-management")
 async def set_management(name: str):
     """Designate a NIC as the management interface."""
-    nics = discover_cpu_nics()
-    found = any(n["name"] == name for n in nics)
-    if not found:
-        raise HTTPException(status_code=404, detail=f"NIC {name} not found")
+    name = _known_nic(name)
 
     _set_mgmt_iface(name)
     return {"status": "ok", "management_nic": name}
@@ -341,10 +371,7 @@ async def set_management(name: str):
 @cpu_nic_router.post("/{name}/dhcp/start")
 async def dhcp_start(name: str):
     """Start DHCP client on a NIC."""
-    nics = discover_cpu_nics()
-    found = any(n["name"] == name for n in nics)
-    if not found:
-        raise HTTPException(status_code=404, detail=f"NIC {name} not found")
+    name = _known_nic(name)
 
     try:
         # Kill any existing dhclient on this interface
@@ -358,6 +385,7 @@ async def dhcp_start(name: str):
 @cpu_nic_router.post("/{name}/dhcp/stop")
 async def dhcp_stop(name: str):
     """Stop DHCP client on a NIC."""
+    name = _known_nic(name)
     try:
         _run(["dhclient", "-r", name], check=False)
         _run(["pkill", "-f", f"dhclient.*{name}"], check=False)
@@ -371,24 +399,28 @@ async def create_bond(req: BondRequest):
     """Create a bonded interface from multiple CPU NICs."""
     mode_map = {0: "balance-rr", 1: "active-backup", 4: "802.3ad"}
     mode_str = mode_map.get(req.mode, "active-backup")
+    bond_name = BOND_NAMES.get(req.bond_name)
+    if bond_name is None:
+        raise HTTPException(status_code=400, detail="bond_name must be bond0 to bond7")
+    members = [_known_nic(member) for member in req.members]
 
     try:
         # Create bond master
-        _run(["ip", "link", "add", req.bond_name, "type", "bond",
+        _run(["ip", "link", "add", bond_name, "type", "bond",
               "mode", mode_str])
-        _run(["ip", "link", "set", req.bond_name, "up"])
+        _run(["ip", "link", "set", bond_name, "up"])
 
         # Enslave members
-        for member in req.members:
+        for member in members:
             _run(["ip", "link", "set", member, "down"])
-            _run(["ip", "link", "set", member, "master", req.bond_name])
+            _run(["ip", "link", "set", member, "master", bond_name])
             _run(["ip", "link", "set", member, "up"])
 
         return {
             "status": "created",
-            "bond": req.bond_name,
+            "bond": bond_name,
             "mode": mode_str,
-            "members": req.members,
+            "members": members,
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
