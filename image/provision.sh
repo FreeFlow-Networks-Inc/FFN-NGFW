@@ -292,7 +292,7 @@ systemctl enable ffn-firstboot.service
 # so a chassis watchdog cannot reset us mid-boot; ffn-satd stays inert unless
 # /etc/ffn-ngfw/satellite.json enables it.
 for u in ffn-sysd ffn-watchdogd ffn-satd ffn-configd ffn-controld ffn-manager-v2 ffn-bmfw ffn-dpdk-fwd frr zerotier-one \
-         ffn-license-monitor.timer ffn-sigdb-update.timer ffn-selftest.service ffn-fips-selftest.service; do
+         ffn-license-monitor.timer ffn-sigdb-update.timer ffn-alerts.timer ffn-selftest.service ffn-fips-selftest.service; do
   systemctl enable "$u" 2>/dev/null && echo "  enabled $u" || echo "  (skip $u — unit absent)"
 done
 

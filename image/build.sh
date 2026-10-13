@@ -148,6 +148,10 @@ tar czf "$PAYLOAD/varlib-seed.tgz" -C /var/lib \
   for t in ffn-license-monitor.timer ffn-sigdb-update.timer ffn-license-monitor.service ffn-sigdb-update.service ffn-license-fetch.service; do
     for base in /etc/systemd/system /lib/systemd/system; do [ -f "$base/$t" ] && cp "$base/$t" "$PAYLOAD/units/"; done
   done
+  # The alert evaluation ships from this tree, not harvested from the live box.
+  for f in ffn-alerts.service ffn-alerts.timer; do
+    [ -f "$HERE/$f" ] && cp "$HERE/$f" "$PAYLOAD/units/$f"
+  done
 fi
 cp "$HERE/config.sh" "$HERE/provision.sh" "$HERE/ffn-firstboot.sh" "$HERE/ffn-hwtune.sh" \
    "$HERE/ffn-selftest.sh" "$HERE/ffn-firstboot.service" "$HERE/ffn-selftest.service" \

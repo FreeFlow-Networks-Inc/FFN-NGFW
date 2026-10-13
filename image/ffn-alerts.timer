@@ -1,0 +1,14 @@
+[Unit]
+Description=Evaluate FFN NGFW alerts every two minutes
+Documentation=file:/opt/ffn-ngfw/ffn_alerts.py
+
+[Timer]
+# A condition is raised after two consecutive evaluations, so with this
+# cadence trouble is reported within about four minutes and a single slow
+# plane request never pages anyone.
+OnBootSec=3min
+OnUnitActiveSec=2min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target
