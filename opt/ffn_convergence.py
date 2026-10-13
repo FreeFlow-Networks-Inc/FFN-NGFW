@@ -459,14 +459,11 @@ def reapply(request_path=REQUEST, lifecycle=(LIFECYCLE, LIFECYCLE_JOURNAL), boot
     return dict(started=True, unit=unit, processor_boots=boots)
 
 
-def main(argv=None):
-    import argparse
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--json', action='store_true')
-    parser.add_argument('--no-planes', action='store_true', help='skip the control-plane resources and the dataplane audit')
-    args = parser.parse_args(argv)
+def live_report(no_planes=False):
+    """The assessment with the live collectors wired in: the control-plane resources, the dataplane
+    audit, health, DHCP and the management tunnel. The CLI and the alert evaluator share it."""
     resources, views = {}, None
-    if not args.no_planes:
+    if not no_planes:
         try:
             sys.path.insert(0, '/opt/ffn-ngfw')
             from ffn_controld_client import get
@@ -489,8 +486,17 @@ def main(argv=None):
         status = lambda: json.loads(audit.run_dp('cat ' + DP_SERVICES_STATUS))
         health = lambda: parse_health(audit.run_dp(HEALTH_COLLECT))
         dhcp = lambda: json.loads(audit.run_dp(DHCP_STATUS_COMMAND))
-    report = assess(resources=resources, dp_views=views, tunnel=None if args.no_planes else unit_active, dp_status=status,
-                    dp_health=health, dp_dhcp=dhcp)
+    return assess(resources=resources, dp_views=views, tunnel=None if no_planes else unit_active, dp_status=status,
+                  dp_health=health, dp_dhcp=dhcp)
+
+
+def main(argv=None):
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--json', action='store_true')
+    parser.add_argument('--no-planes', action='store_true', help='skip the control-plane resources and the dataplane audit')
+    args = parser.parse_args(argv)
+    report = live_report(no_planes=args.no_planes)
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:

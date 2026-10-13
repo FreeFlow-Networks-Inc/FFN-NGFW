@@ -21,6 +21,7 @@ install -d -m 0700 /etc/ffn/planes
 # beside the manager.
 install -m 0644 "$root/opt/ffn_planed.py" "$root/opt/ffn_linux_network.py" "$root/opt/ffn_route_monitor.py" "$root/opt/ffn_route_probe.py" "$root/opt/ffn_static_routes.py" \
                 "$root/opt/ffn_plane_network.py" \
+                "$root/opt/ffn_convergence.py" "$root/opt/ffn_alerts.py" \
                 "$root/opt/ffn_agent_protocol.py" "$root/opt/ffn_agent_resources.py" \
                 "$root/opt/ffn_dp_tools.py" "$root/opt/ffn_kernel_capabilities.py" "$root/opt/ffn_nat_runtime.py" \
                 "$root/opt/ffn_nat_policy.py" "$root/opt/ffn_ipv6_translation.py" "$root/opt/ffn_interface_management.py" "$root/opt/ffn_interface_services.py" /usr/local/lib/ffn/

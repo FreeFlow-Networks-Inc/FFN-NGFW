@@ -93,6 +93,7 @@
   </div>
   <div class="user-area">
 <select class="theme-picker" data-theme-picker aria-label="Color theme"><option value="light">Light</option><option value="dark">Dark</option></select>
+    <span id="alert-badge" class="badge badge-down" style="display:none;margin-right:8px;cursor:pointer" title="Active alerts: open the dashboard" onclick="switchTab('dashboard')"></span>
     <span id="fips-badge" class="badge" style="display:none;margin-right:8px" title="FIPS-CC mode"></span>
     <span id="commit-indicator" class="commit-indicator" style="display:none"></span>
     <button id="commit-btn" class="btn btn-sm" onclick="openCommitModal()" title="Open commit dialog">
@@ -1623,6 +1624,7 @@ function renderPage(pageId) {
 function renderDashOverview(c) {
   c.innerHTML = `
     <div class="page-header"><h2>Dashboard</h2><span id="dash-time" class="text-dim" style="font-size:var(--fs-sm)"></span></div>
+    <div class="section"><div class="card" id="dash-alerts" aria-live="polite"><span class="text-dim">Alerts: checking…</span></div></div>
     <div class="section"><div class="card conv-card" id="dash-convergence" aria-live="polite"><span class="conv-lead text-dim">Configuration convergence: checking…</span></div></div>
     <div class="section"><div class="grid grid-4" id="port-cards"></div></div>
     <div class="section"><div class="grid grid-2">
@@ -1817,18 +1819,94 @@ function _setPlaneWidget(prefix, info) {
 }
 
 let _dashboardRefreshSequence = 0;
+/* ---- Alerts: the dashboard card and the header badge (GET /api/alerts) ---- */
+function _alertAge(seconds) {
+  if (seconds == null || !isFinite(seconds)) return '';
+  if (seconds < 90) return Math.round(seconds) + 's';
+  if (seconds < 5400) return Math.round(seconds / 60) + ' min';
+  if (seconds < 172800) return (seconds / 3600).toFixed(1) + ' h';
+  return Math.round(seconds / 86400) + ' d';
+}
+function renderDashAlerts(view) {
+  const card = document.getElementById('dash-alerts');
+  if (!card) return;
+  while (card.firstChild) card.removeChild(card.firstChild);
+  const title = document.createElement('h3');
+  const now = Date.now() / 1000;
+  if (!view) {
+    title.textContent = 'Alerts';
+    card.appendChild(title);
+    const p = document.createElement('div'); p.className = 'text-dim';
+    p.textContent = 'Alert view unavailable (is ffn-alerts.timer running?)';
+    card.appendChild(p);
+    return;
+  }
+  const active = view.active || [];
+  title.textContent = active.length ? 'Alerts (' + active.length + ' active)' : 'Alerts';
+  card.appendChild(title);
+  if (view.stale) {
+    const p = document.createElement('div'); p.className = 'text-dim';
+    p.textContent = view.evaluated_at
+      ? 'Last evaluation ' + _alertAge(now - view.evaluated_at) + ' ago; the alert timer may be stopped'
+      : 'No evaluation has run yet';
+    card.appendChild(p);
+  }
+  if (!active.length) {
+    const p = document.createElement('div'); p.textContent = 'No active alerts'; p.style.color = 'var(--green)';
+    card.appendChild(p);
+    return;
+  }
+  const list = document.createElement('div');
+  for (const a of active) {
+    const row = document.createElement('div'); row.style.margin = '6px 0';
+    const badge = document.createElement('span');
+    badge.className = 'badge ' + (a.severity === 'critical' ? 'badge-down' : 'badge-warning');
+    badge.textContent = a.severity;
+    row.appendChild(badge);
+    const text = document.createElement('span');
+    text.textContent = ' ' + (a.plane ? String(a.plane).toUpperCase() + ' ' : '') + a.summary + (a.since ? ' (' + _alertAge(now - a.since) + ')' : '');
+    row.appendChild(text);
+    for (const d of (a.details || []).slice(0, 3)) {
+      const line = document.createElement('div'); line.className = 'text-dim';
+      line.style.marginLeft = '12px'; line.style.fontSize = 'var(--fs-xs)'; line.textContent = String(d);
+      row.appendChild(line);
+    }
+    list.appendChild(row);
+  }
+  card.appendChild(list);
+}
+async function refreshAlertBadge() {
+  const badge = document.getElementById('alert-badge');
+  if (!badge) return;
+  let view = null;
+  try { view = await api('/api/alerts'); } catch (e) { view = null; }
+  const count = view && view.active ? view.active.length : 0;
+  if (!count) { badge.style.display = 'none'; badge.textContent = ''; return; }
+  const critical = view.active.some(a => a.severity === 'critical');
+  badge.className = 'badge ' + (critical ? 'badge-down' : 'badge-warning');
+  badge.textContent = '⚠ ' + count + (count === 1 ? ' alert' : ' alerts');
+  badge.style.display = '';
+}
+let _alertPollTimer = null;
+function startAlertPolling() {
+  if (_alertPollTimer) clearInterval(_alertPollTimer);
+  refreshAlertBadge();
+  _alertPollTimer = setInterval(() => { if (!document.hidden) refreshAlertBadge(); }, 60000);
+}
+
 async function refreshDashboard() {
   const marker = document.getElementById('dash-time');
   if (!marker) return;
   const sequence = ++_dashboardRefreshSequence;
   const overview = currentSubPage === 'dash-overview';
-  const [tp, threats, sessions, status, resources, planes] = await Promise.all([
+  const [tp, threats, sessions, status, resources, planes, alertView] = await Promise.all([
     api('/api/dashboard/throughput'),
     overview ? api('/api/dashboard/threats') : null,
     overview ? api('/api/dashboard/sessions') : null,
     overview ? api('/api/system/status') : null,
     overview ? api('/api/system/resources') : null,
     overview ? api('/api/system/plane-usage') : null,
+    overview ? api('/api/alerts').catch(() => null) : null,
   ]);
   if (!marker.isConnected || sequence !== _dashboardRefreshSequence) return;
   if (overview) {
@@ -1837,6 +1915,7 @@ async function refreshDashboard() {
     _setPlaneWidget('dp', planes?.data_plane);
   }
   renderDataPortTraffic(tp);
+  if (overview) renderDashAlerts(alertView);
 
   // Threat chart
   if (charts.threats && threats) {
@@ -8349,7 +8428,7 @@ function closeModal(id) { document.getElementById(id).classList.remove('show'); 
 if (token) {
   document.getElementById('login-screen').style.display='none';
   document.getElementById('app').style.display='block';
-  window.addEventListener('DOMContentLoaded',()=>{switchTab('dashboard');startCommitPolling();},{once:true});
+  window.addEventListener('DOMContentLoaded',()=>{switchTab('dashboard');startCommitPolling();startAlertPolling();},{once:true});
 }
 
 // Enter key on login
