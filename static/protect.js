@@ -253,13 +253,15 @@ window.ffnProtect = {
   },
   select(options, value) {
     const n = document.createElement('select');
+    let found = false;
     for (const o of options) {
       const opt = document.createElement('option');
       opt.value = typeof o === 'string' ? o : o.value;
       opt.textContent = typeof o === 'string' ? o : o.label;
-      if (opt.value === value) opt.selected = true;
+      if (opt.value === value) { opt.selected = true; found = true; }
       n.appendChild(opt);
     }
+    if (found) n.value = value;
     return n;
   },
   check(value) {

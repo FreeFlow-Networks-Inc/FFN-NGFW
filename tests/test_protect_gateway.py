@@ -117,13 +117,13 @@ class FakeRadius:
             offset += size
         cipher, previous, plain = attributes[2], authenticator, b''
         for i in range(0, len(cipher), 16):   # RFC 2865 PAP hiding, as a RADIUS server undoes it
-            block = hashlib.md5(self.secret + previous).digest()  # lgtm[py/weak-sensitive-data-hashing]
+            block = hashlib.md5(self.secret + previous).digest()
             plain += bytes(a ^ b for a, b in zip(cipher[i:i + 16], block))
             previous = cipher[i:i + 16]
         self.seen.append(dict(code=code, user=attributes[1].decode(), password=plain.rstrip(b'\0').decode(), nas=socket.inet_ntoa(attributes[4])))
         reply_code = 2 if self.seen[-1]['password'] == self.password else 3
         head = struct.pack('!BBH', reply_code, identifier, 20)
-        self.sock.sendto(head + hashlib.md5(head + authenticator + self.secret).digest(), peer)  # lgtm[py/weak-sensitive-data-hashing]
+        self.sock.sendto(head + hashlib.md5(head + authenticator + self.secret).digest(), peer)
 
 
 class Radius(unittest.TestCase):

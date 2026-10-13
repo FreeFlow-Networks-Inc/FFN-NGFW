@@ -222,7 +222,7 @@ def radius_pap(host, port, secret, username, password, nas_ip, timeout=5, retrie
     # block, and the Response Authenticator is MD5 over the reply. The algorithm is the protocol's, not a
     # storage hash; no stronger digest interoperates with a RADIUS server.
     for i in range(0, len(padded), 16):
-        block = hashlib.md5(secret + previous).digest()  # lgtm[py/weak-sensitive-data-hashing]
+        block = hashlib.md5(secret + previous).digest()
         previous = bytes(a ^ b for a, b in zip(padded[i:i + 16], block))
         cipher += previous
 
@@ -246,7 +246,7 @@ def radius_pap(host, port, secret, username, password, nas_ip, timeout=5, retrie
                 code, _, length = struct.unpack('!BBH', reply[:4])
                 if not 20 <= length <= len(reply):
                     continue
-                expected = hashlib.md5(reply[:4] + authenticator + reply[20:length] + secret).digest()  # lgtm[py/weak-sensitive-data-hashing]
+                expected = hashlib.md5(reply[:4] + authenticator + reply[20:length] + secret).digest()
                 if not hmac.compare_digest(expected, reply[4:20]):
                     continue
                 return code == 2
