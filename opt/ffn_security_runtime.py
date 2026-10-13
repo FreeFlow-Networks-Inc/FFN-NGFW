@@ -166,6 +166,41 @@ def fingerprint(data, tables):
 def inventory():return json.loads(nat.nft(['-j','list','ruleset']))
 
 
+def drift(state, reads=3, delay=0.5, read_bindings=None, read_inventory=None, read_boot=None, sleep=time.sleep):
+    """Why the kernel must be replayed, or None.
+
+    The bindings are derived from the owners' status files and the link
+    table, which are evidence an owner may be rewriting at the moment of the
+    read. On 2026-10-13 about one read in twenty found an interface missing
+    for a fraction of a second, every such read replayed the whole policy,
+    and each replay closed transit for three seconds: the internet stutter.
+    A boot change counts at once; a bindings or ruleset difference has to be
+    seen in `reads` consecutive reads `delay` apart, and the reason is
+    returned so the journal says what was replayed and why.
+    """
+    read_bindings = read_bindings or (lambda: bindings()[0])
+    read_inventory = read_inventory or inventory
+    read_boot = read_boot or boot
+    if state['boot_id'] != read_boot():
+        return 'dataplane boot identity changed'
+    tables = {tuple(k) for k in state['tables']}
+    reason = None
+    for attempt in range(reads):
+        if attempt:
+            sleep(delay)
+        current = read_bindings()
+        if current != state['bindings']:
+            gone = sorted(set(state['bindings']) - set(current))
+            new = sorted(set(current) - set(state['bindings']))
+            changed = sorted(k for k in set(current) & set(state['bindings']) if current[k] != state['bindings'][k])
+            reason = 'interface bindings differ (missing %s, new %s, changed %s)' % (gone, new, changed)
+        elif fingerprint(read_inventory(), tables) != state['kernel_digest']:
+            reason = 'kernel ruleset differs from the applied generation'
+        else:
+            return None
+    return reason
+
+
 def table_names(data):
     return {(x['table']['family'],x['table']['name']) for x in data['nftables'] if 'table' in x}
 
@@ -379,9 +414,9 @@ def serve():
                 with lock():
                     state=saved()
                     if not state:continue
-                    current,_=bindings();data=inventory()
-                    if (state['boot_id']!=boot() or current!=state['bindings'] or
-                            fingerprint(data,{tuple(k) for k in state['tables']})!=state['kernel_digest']):
+                    reason=drift(state)
+                    if reason:
+                        print('policy replay: '+reason,file=sys.stderr,flush=True)
                         close_gate()
                         # Replay only after the compiler and platform have
                         # validated every current owner; never reset LACP.
