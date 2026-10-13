@@ -24,7 +24,7 @@ import re
 import ffn_dhcp_server as daemon
 
 INTERFACE = re.compile(r'(ethernet1/([1-9][0-9]{0,3})|ae([1-9][0-9]{0,2}))(\.([1-9][0-9]{0,3}))?\Z')
-RANGE = re.compile(r'\s*([0-9.]{7,15})\s*(?:-\s*([0-9.]{7,15})\s*)?\Z')
+RANGE = re.compile(r'([0-9.]{7,15})(?:-([0-9.]{7,15}))?\Z')
 OPTION_PAIRS = (('dns', 'dns'), ('ntp', 'ntp'), ('wins', 'wins'))
 
 
@@ -104,7 +104,7 @@ def describe(entry):
 
 
 def parse_pool(text):
-    match = RANGE.fullmatch(text or '')
+    match = RANGE.fullmatch(''.join((text or '').split()))
     if not match:
         raise ValueError('pool "%s" is not an address or a first-last range' % text)
     return [match.group(1), match.group(2) or match.group(1)]

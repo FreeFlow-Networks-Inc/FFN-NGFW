@@ -33,6 +33,7 @@ import ssl
 import stat
 import threading
 import time
+import urllib.parse
 
 DIR = "/srv/ffn-updates"
 PUBKEY = "/etc/ffn-ngfw/update-sign.pub"
@@ -55,7 +56,10 @@ def open_payload(name):
     """Never follow a link out of the publication directory, even if listed."""
     if not payload_name(name):
         raise ValueError('Invalid payload name')
-    path = os.path.join(DIR, name)
+    base = os.path.normpath(DIR)
+    path = os.path.normpath(os.path.join(base, name))
+    if os.path.dirname(path) != base or not path.startswith(base + os.sep):
+        raise ValueError('Invalid payload name')
     if os.path.islink(path):
         raise ValueError('Symlink payload rejected')
     fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
@@ -401,7 +405,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/octet-stream")
             self.send_header("Content-Length", str(size))
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Content-Disposition", 'attachment; filename="%s"' % name)
+            self.send_header("Content-Disposition", 'attachment; filename="%s"' % urllib.parse.quote(name, safe=''))
             self.end_headers()
             if self.command == "HEAD":
                 return

@@ -150,9 +150,14 @@ def _target_str(db_type: str) -> str:
     return "+".join(parts) if parts else "unknown"
 
 
+SOURCE_FILES = {name: name + ".txt" for name in COMPILERS}   # the only source names that reach the filesystem
+
+
 def _source_path(db_type: str) -> Path:
-    """Return the canonical on-disk path for a database file."""
-    return Path(DB_DIR) / f"{db_type}.txt"
+    """Return the canonical on-disk path for a database file; only a known type has one."""
+    if db_type not in SOURCE_FILES:
+        raise HTTPException(status_code=404, detail="Unknown database type")
+    return Path(DB_DIR) / SOURCE_FILES[db_type]
 
 
 def _read_entries(file_path: str):
@@ -452,7 +457,8 @@ async def update_all():
             rc = do_load(db_type, str(src))
             status = "loaded" if rc == 0 else "failed"
         except Exception as exc:
-            status = f"error: {exc}"
+            logger.warning("reload of %s failed: %s", db_type, exc)
+            status = "error"
             rc = 1
 
         if rc == 0:

@@ -39,7 +39,7 @@ KEYWORDS_BEFORE_REGEX = {"return", "typeof", "instanceof", "in", "of", "new",
 def extract_scripts(html):
     """Return [(offset_in_html, script_text), ...] for each inline <script>."""
     out = []
-    for m in re.finditer(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", html,
+    for m in re.finditer(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script\s*>", html,
                          re.S | re.I):
         out.append((m.start(1), m.group(1)))
     return out

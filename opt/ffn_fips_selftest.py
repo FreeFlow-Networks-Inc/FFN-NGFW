@@ -82,6 +82,8 @@ def kat_aes_ecb():
          hx("00112233445566778899aabbccddeeff"), hx("8ea2b7ca516745bfeafc49904b496089")),
     ]
     for key, pt, want in cases:
+        # ECB is the raw block primitive the FIPS-197 vectors are defined for (one block, no chaining);
+        # nothing is protected with it here, the test only proves the cipher core answers correctly.
         enc = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
         ct = enc.update(pt) + enc.finalize()
         if ct != want:

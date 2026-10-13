@@ -52,7 +52,7 @@ LEGITIMATE = [
 
 def js_of(html):
     out = []
-    for m in re.finditer(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", html,
+    for m in re.finditer(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script\s*>", html,
                          re.S | re.I):
         out.append((m.start(1), m.group(1)))
     return out
