@@ -19,16 +19,16 @@ function find(el, pred, out = []) { if (pred(el)) out.push(el); el.children.forE
 const calls = [];
 const same = (a, b) => assert.equal(JSON.stringify(a), JSON.stringify(b));
 const listing = {revision: 'b'.repeat(64), can_edit: true,
-  portals: [{name: 'main', vsys: 'vsys1', interface: 'ethernet1/5', address: '152.193.185.10', certificate: 'gw', auth_profile: 'users', login_lifetime: 86400,
+  portals: [{name: 'main', vsys: 'vsys1', interface: 'ethernet1/5', address: '203.0.113.10', certificate: 'gw', auth_profile: 'users', login_lifetime: 86400,
              connect_method: 'on-demand', gateways: [{name: 'vpn.example.com', priority: 1, description: 'Main'}], root_ca: ['root'], problems: []}],
-  gateways: [{name: 'main', vsys: 'vsys1', interface: 'ethernet1/5', address: '152.193.185.10', certificate: 'gw', auth_profile: 'users', tunnel: 'tunnel.1',
+  gateways: [{name: 'main', vsys: 'vsys1', interface: 'ethernet1/5', address: '203.0.113.10', certificate: 'gw', auth_profile: 'users', tunnel: 'tunnel.1',
               tunnel_address: '10.200.0.1/24', pools: ['10.200.0.10-10.200.0.250'], dns: ['10.1.0.3'], dns_suffix: ['corp.example'], access_routes: ['10.0.0.0/8'],
               exclude_routes: [], ipsec_crypto: 'aes-256-cbc', idle_timeout: 900, login_lifetime: 86400, mtu: 1400, hip: true, problems: ['certificate gw is not in the store']}],
   auth_profiles: [{name: 'users', method: 'local', server_profile: '', allow: ['alice']}],
   server_profiles: {ldap: [{name: 'corp', servers: [{address: 'ldap.corp', port: 636}], ssl: true, verify: true, bind_dn_template: '{user}@corp', has_ca: false, timeout: 5}], radius: []},
   users: [{name: 'alice'}], certificates: [{name: 'gw', subject: 'CN=vpn.example.com', not_after: 'Jan 1 2029', has_key: true, has_chain: false}],
   tunnel_units: {'tunnel.1': '10.200.0.1/24'},
-  interface_choices: [{name: 'ethernet1/5', addresses: ['152.193.185.10/32'], dhcp_client: false}, {name: 'ethernet1/1', addresses: [], dhcp_client: true}]};
+  interface_choices: [{name: 'ethernet1/5', addresses: ['203.0.113.10/32'], dhcp_client: false}, {name: 'ethernet1/1', addresses: [], dhcp_client: true}]};
 const status = {available: true, revision: 4, daemon_time: 1000,
   gateways: [{name: 'main', state: 'up', detail: '', sessions: 1, pool_size: 241, pool_used: 1}],
   portals: [{name: 'main', state: 'serving'}],
@@ -59,7 +59,7 @@ const protect = context.window.ffnProtect;
   assert.equal(byId.get('fp-pools').value, '10.200.0.10-10.200.0.250');
   assert.equal(byId.get('fp-tunnel-address').value, '10.200.0.1/24');
   assert.equal(byId.get('fp-hip').checked, true);
-  same(protect.gatewayPayload(), {revision: listing.revision, name: 'main', interface: 'ethernet1/5', address: '152.193.185.10', certificate: 'gw', auth_profile: 'users',
+  same(protect.gatewayPayload(), {revision: listing.revision, name: 'main', interface: 'ethernet1/5', address: '203.0.113.10', certificate: 'gw', auth_profile: 'users',
     tunnel: 'tunnel.1', tunnel_address: '10.200.0.1/24', pools: ['10.200.0.10-10.200.0.250'], dns: ['10.1.0.3'], dns_suffix: ['corp.example'],
     access_routes: ['10.0.0.0/8'], exclude_routes: [], ipsec_crypto: 'aes-256-cbc', idle_timeout: 900, login_lifetime: 86400, mtu: 1400, hip: true});
   calls.length = 0;
@@ -77,7 +77,7 @@ const protect = context.window.ffnProtect;
   assert(rendered.includes('{user}@corp') && rendered.includes('CN=vpn.example.com') && rendered.includes('alice'), 'authentication and certificates rendered');
   protect.editPortal('main');
   assert.equal(byId.get('fp-gateways').value, 'vpn.example.com 1 Main');
-  same(protect.portalPayload(), {revision: listing.revision, name: 'main', interface: 'ethernet1/5', address: '152.193.185.10', certificate: 'gw', auth_profile: 'users',
+  same(protect.portalPayload(), {revision: listing.revision, name: 'main', interface: 'ethernet1/5', address: '203.0.113.10', certificate: 'gw', auth_profile: 'users',
     connect_method: 'on-demand', login_lifetime: 86400, gateways: [{name: 'vpn.example.com', priority: 1, description: 'Main'}], root_ca: ['root']});
   calls.length = 0;
   await protect.remove('server-profile/ldap', 'corp');

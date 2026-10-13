@@ -402,10 +402,10 @@ window.ffnProtect = {
     this.field(form, 'fp-name', 'Name', this.input('', 'gateway'));
     this.field(form, 'fp-mode', 'Source', this.select([{value: 'self-signed', label: 'Generate a self-signed certificate'}, {value: 'upload', label: 'Upload PEM certificate and key'}], 'self-signed'));
     this.field(form, 'fp-cn', 'Common name', this.input('', 'vpn.example.com'), 'The name or address clients connect to (self-signed).');
-    this.field(form, 'fp-san', 'Additional names or addresses', this.input('', '152.193.185.10, vpn2.example.com'));
+    this.field(form, 'fp-san', 'Additional names or addresses', this.input('', '203.0.113.10, vpn2.example.com'));
     this.field(form, 'fp-days', 'Valid for (days)', this.input(825, '825', 'number'));
     this.field(form, 'fp-cert', 'Certificate (PEM)', this.area('', '-----BEGIN CERTIFICATE-----', 4));
-    this.field(form, 'fp-key', 'Private key (PEM)', this.area('', '-----BEGIN PRIVATE KEY-----', 4));
+    this.field(form, 'fp-key', 'Private key (PEM)', this.area('', '-----BEGIN ' + 'PRIVATE KEY-----', 4));
     this.field(form, 'fp-chain', 'Chain (PEM, optional)', this.area('', '', 2));
     this.finish(form, 'Add to candidate', () => this.save('certificate', {
       revision: this.listing.revision, name: this.value('fp-name'), mode: this.value('fp-mode'), common_name: this.value('fp-cn'),

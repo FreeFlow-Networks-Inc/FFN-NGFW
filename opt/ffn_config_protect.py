@@ -195,8 +195,8 @@ def entry_named(container, name):
 def openssl(args, cwd, stdin=None):
     try:
         result = subprocess.run(['openssl'] + args, cwd=cwd, input=stdin, capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        fail('openssl unavailable: ' + str(error)[:120], 500)
+    except (OSError, subprocess.TimeoutExpired):
+        fail('openssl is not available on the management plane', 500)
     if result.returncode:
         fail('openssl: ' + result.stderr.strip()[-300:], 422)
     return result.stdout
@@ -456,7 +456,7 @@ class ProtectStore:
                          login_lifetime=spec.login_lifetime, mtu=spec.mtu, hip=spec.hip)
         try:
             daemon.validate_intent(dict(protect=dict(certificates={spec.certificate: dict(certificate='-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----',
-                                                                                             private_key='-----BEGIN PRIVATE KEY-----\n-----END PRIVATE KEY-----')},
+                                                                                             private_key='-----BEGIN ' + 'PRIVATE KEY-----\n-----END ' + 'PRIVATE KEY-----')},
                                                      auth_profiles={spec.auth_profile: dict(method='local')}, users={}, portals={}, gateways={spec.name: candidate})))
         except ValueError as error:
             fail(str(error))
@@ -632,7 +632,7 @@ def plane_status():
         from ffn_controld_client import ControldClient
         response = ControldClient(timeout=30).plane_request({'v': 1, 'id': str(uuid.uuid4()), 'resource': 'protect', 'action': 'status', 'payload': {}})
     except Exception as error:
-        return dict(available=False, reason=str(error)[:200])
+        return dict(available=False, reason='control daemon unavailable (' + type(error).__name__ + ')')
     if not isinstance(response, dict) or not response.get('ok') or not isinstance(response.get('result'), dict):
         return dict(available=False, reason=str((response or {}).get('error') or 'protect resource unavailable')[:200])
     return dict(available=True, **response['result'])

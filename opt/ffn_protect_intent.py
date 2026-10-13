@@ -41,7 +41,7 @@ import re
 import ffn_protect_gateway as daemon
 from ffn_dhcp_intent import dp_device, interface_inventory, local_device, yes
 
-RANGE = re.compile(r'\s*([0-9.]{7,15})\s*(?:-\s*([0-9.]{7,15})\s*)?\Z')
+RANGE = re.compile(r'([0-9.]{7,15})(?:-([0-9.]{7,15}))?\Z')
 
 
 def members(node, path):
@@ -51,7 +51,7 @@ def members(node, path):
 
 def parse_pool(text):
     """'a.b.c.d-e.f.g.h' or one address as [first, last]; ValueError otherwise."""
-    match = RANGE.fullmatch(text or '')
+    match = RANGE.fullmatch(''.join((text or '').split()))   # whitespace removed first: no ambiguous repetition for the pattern
     if not match:
         raise ValueError('pool %r is not an address or address range' % text)
     first = str(ipaddress.IPv4Address(match.group(1)))

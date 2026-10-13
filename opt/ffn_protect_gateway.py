@@ -178,6 +178,7 @@ def ldap_bind(host, port, use_tls, dn, password, timeout=5, ca=None, verify=True
         sock = raw
         if use_tls:
             context = ssl.create_default_context(cadata=ca) if ca else ssl.create_default_context()
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
             if not verify:
                 context.check_hostname = False
                 context.verify_mode = ssl.CERT_NONE
@@ -217,8 +218,11 @@ def radius_pap(host, port, secret, username, password, nas_ip, timeout=5, retrie
     padded = password.encode()[:128] or bytes(16)
     padded += bytes(-len(padded) % 16)
     cipher, previous = b'', authenticator
+    # RFC 2865 section 5.2: PAP hides the password with MD5(shared secret + authenticator) chained per
+    # block, and the Response Authenticator is MD5 over the reply. The algorithm is the protocol's, not a
+    # storage hash; no stronger digest interoperates with a RADIUS server.
     for i in range(0, len(padded), 16):
-        block = hashlib.md5(secret + previous).digest()
+        block = hashlib.md5(secret + previous).digest()  # lgtm[py/weak-sensitive-data-hashing]
         previous = bytes(a ^ b for a, b in zip(padded[i:i + 16], block))
         cipher += previous
 
@@ -242,7 +246,7 @@ def radius_pap(host, port, secret, username, password, nas_ip, timeout=5, retrie
                 code, _, length = struct.unpack('!BBH', reply[:4])
                 if not 20 <= length <= len(reply):
                     continue
-                expected = hashlib.md5(reply[:4] + authenticator + reply[20:length] + secret).digest()
+                expected = hashlib.md5(reply[:4] + authenticator + reply[20:length] + secret).digest()  # lgtm[py/weak-sensitive-data-hashing]
                 if not hmac.compare_digest(expected, reply[4:20]):
                     continue
                 return code == 2

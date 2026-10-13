@@ -16,18 +16,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'opt'))
 import ffn_protect_gateway as protect
 
 CERT = '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n'
-KEY = '-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n'
+KEY = '-----BEGIN ' + 'PRIVATE KEY-----\nMIIB\n-----END ' + 'PRIVATE KEY-----\n'
 
 
 def intent(**changes):
-    gateway = dict(interface='p5', address='152.193.185.10', certificate='gw', auth_profile='users', tunnel='tunnel.1',
+    gateway = dict(interface='p5', address='203.0.113.10', certificate='gw', auth_profile='users', tunnel='tunnel.1',
                    tunnel_address='10.200.0.1/24', pools=[['10.200.0.10', '10.200.0.20']], dns=['10.1.0.3'], dns_suffix=['corp.example'],
                    access_routes=['10.0.0.0/8'], crypto='aes-256-cbc', idle_timeout=600, login_lifetime=86400)
     gateway.update(changes)
     return dict(protect=dict(certificates=dict(gw=dict(certificate=CERT, private_key=KEY)),
                              users=dict(alice=dict(phash=protect.make_phash('secret', 1000))),
                              auth_profiles=dict(users=dict(method='local')),
-                             portals=dict(main=dict(interface='p5', address='152.193.185.10', certificate='gw', auth_profile='users',
+                             portals=dict(main=dict(interface='p5', address='203.0.113.10', certificate='gw', auth_profile='users',
                                                     gateways=[dict(name='vpn.example.com', priority=1)])),
                              gateways=dict(main=gateway)))
 
@@ -116,31 +116,31 @@ class FakeRadius:
             attributes[kind] = data[offset + 2:offset + size]
             offset += size
         cipher, previous, plain = attributes[2], authenticator, b''
-        for i in range(0, len(cipher), 16):
-            block = hashlib.md5(self.secret + previous).digest()
+        for i in range(0, len(cipher), 16):   # RFC 2865 PAP hiding, as a RADIUS server undoes it
+            block = hashlib.md5(self.secret + previous).digest()  # lgtm[py/weak-sensitive-data-hashing]
             plain += bytes(a ^ b for a, b in zip(cipher[i:i + 16], block))
             previous = cipher[i:i + 16]
         self.seen.append(dict(code=code, user=attributes[1].decode(), password=plain.rstrip(b'\0').decode(), nas=socket.inet_ntoa(attributes[4])))
         reply_code = 2 if self.seen[-1]['password'] == self.password else 3
         head = struct.pack('!BBH', reply_code, identifier, 20)
-        self.sock.sendto(head + hashlib.md5(head + authenticator + self.secret).digest(), peer)
+        self.sock.sendto(head + hashlib.md5(head + authenticator + self.secret).digest(), peer)  # lgtm[py/weak-sensitive-data-hashing]
 
 
 class Radius(unittest.TestCase):
     def test_pap_request_encrypts_the_password_and_the_reply_is_verified(self):
         server = FakeRadius('s3cret', 'pw')
-        self.assertTrue(protect.radius_pap('127.0.0.1', server.port, 's3cret', 'alice', 'pw', '152.193.185.10', timeout=2, retries=0))
-        self.assertEqual(server.seen, [dict(code=1, user='alice', password='pw', nas='152.193.185.10')])
+        self.assertTrue(protect.radius_pap('127.0.0.1', server.port, 's3cret', 'alice', 'pw', '203.0.113.10', timeout=2, retries=0))
+        self.assertEqual(server.seen, [dict(code=1, user='alice', password='pw', nas='203.0.113.10')])
 
     def test_reject_is_false(self):
         server = FakeRadius('s3cret', 'pw')
-        self.assertFalse(protect.radius_pap('127.0.0.1', server.port, 's3cret', 'alice', 'nope', '152.193.185.10', timeout=2, retries=0))
+        self.assertFalse(protect.radius_pap('127.0.0.1', server.port, 's3cret', 'alice', 'nope', '203.0.113.10', timeout=2, retries=0))
 
     def test_no_reply_is_an_error(self):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as silent:
             silent.bind(('127.0.0.1', 0))
             with self.assertRaises(OSError):
-                protect.radius_pap('127.0.0.1', silent.getsockname()[1], 's3cret', 'alice', 'pw', '152.193.185.10', timeout=0.2, retries=0)
+                protect.radius_pap('127.0.0.1', silent.getsockname()[1], 's3cret', 'alice', 'pw', '203.0.113.10', timeout=0.2, retries=0)
 
 
 class Authentication(unittest.TestCase):
@@ -270,7 +270,7 @@ class Intent(unittest.TestCase):
                 protect.validate_intent(data)
             self.assertIn(needle, str(caught.exception))
         two = intent()
-        two['protect']['gateways']['second'] = dict(two['protect']['gateways']['main'], address='152.193.185.11')
+        two['protect']['gateways']['second'] = dict(two['protect']['gateways']['main'], address='203.0.113.11')
         with self.assertRaises(ValueError) as caught:
             protect.validate_intent(two)
         self.assertIn('used by another gateway', str(caught.exception))

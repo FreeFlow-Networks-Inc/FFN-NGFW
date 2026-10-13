@@ -8,13 +8,16 @@ for (const match of html.matchAll(/(?:src|href)="\/static\/([^"?]+)/g)) {
 }
 const script = [...html.matchAll(/<script(?![^>]*src=)[^>]*>([\s\S]*?)<\/script>/g)].map(x=>x[1]).join('\n');
 const elements = new Map();
+// Renderers that build text nodes (the dashboard alerts card) need the child-tree methods and createElement.
+const node = () => ({innerHTML:'',textContent:'',value:'',isConnected:true, firstChild:null,
+    disabled:false, style:{}, dataset:{}, setAttribute(key,value){this[key]=value;}, classList:{add(){},remove(){},toggle(){}},addEventListener(){},focus(){},setSelectionRange(){},
+    appendChild(child){return child;}, removeChild(){}, replaceChildren(){}});
 const element = id => {
-  if (!elements.has(id)) elements.set(id, {innerHTML:'',textContent:'',value:'',isConnected:true,
-    disabled:false, style:{}, dataset:{}, setAttribute(key,value){this[key]=value;}, classList:{add(){},remove(){},toggle(){}},addEventListener(){},focus(){},setSelectionRange(){}});
+  if (!elements.has(id)) elements.set(id, node());
   return elements.get(id);
 };
 const context = vm.createContext({console, window:{}, localStorage:{getItem(){return '';},removeItem(){}},
-  document:{getElementById:element,querySelectorAll(){return [];},addEventListener(){}},
+  document:{getElementById:element,createElement:node,createTextNode:text=>({textContent:text}),querySelectorAll(){return [];},addEventListener(){}},
   setInterval(){return 1;}, clearInterval(){},setTimeout(){},alert(){},confirm(){return true;},
   fetch:async()=>({ok:true,status:200,json:async()=>({})})});
 // Must evaluate the whole bundle: sliced function tests miss declaration-order failures.
