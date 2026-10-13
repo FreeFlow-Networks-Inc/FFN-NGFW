@@ -67,6 +67,11 @@ class ZoneStore:
         for kind in ('ethernet','aggregate-ethernet','loopback','tunnel','vlan'):
             for entry in dev.findall('network/interface/'+kind+'/entry'):
                 name = entry.get('name','')
+                if kind == 'tunnel':
+                    # tunnel units (tunnel.N) are the interfaces; their container entry is not one
+                    for sub in entry.findall('units/entry'):
+                        if sub.get('name'): result[sub.get('name')] = 'layer3'
+                    continue
                 mode = next((m for m in ('layer3','layer2','virtual-wire','tap','aggregate-group','ha') if entry.find(m) is not None), None)
                 if kind in ('loopback','tunnel','vlan'): mode = 'layer3'
                 if kind=='aggregate-ethernet' and entry.findtext('aggregate-only')=='yes':mode=None

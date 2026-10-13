@@ -20,6 +20,7 @@
 <script src="/static/plane-control.js"></script>
 <script src="/static/convergence.js"></script>
 <script src="/static/dhcp.js"></script>
+<script src="/static/protect.js"></script>
 <script src="/static/mp-interfaces.js"></script>
 <link rel="stylesheet" href="/static/tokens.css">
 <link rel="stylesheet" href="/static/console.css">
@@ -6046,7 +6047,10 @@ const _CTX_FP_PORTALS = netRegister({
     {key:'agent_config', label:'Agent Config (JSON)', type:'textarea'},
   ],
 });
-function renderFPPortals(c){c.innerHTML=netPageHTML(_CTX_FP_PORTALS);netRenderList(_CTX_FP_PORTALS);}
+function renderFPPortals(c){
+  if (window.ffnProtect) { window.ffnProtect.page(c, 'portals'); return; }
+  c.innerHTML = '<div class="page-header"><h2>FFN Protect Portals</h2></div><p class="text-dim">The FFN Protect console script did not load.</p>';
+}
 
 const _CTX_FP_GATEWAYS = netRegister({
   kind:'fp-gateways',
@@ -6062,7 +6066,10 @@ const _CTX_FP_GATEWAYS = netRegister({
     {key:'split_tunnel', label:'Split Tunnel Networks', type:'list', placeholder:'10.0.0.0/8, 172.16.0.0/12'},
   ],
 });
-function renderFPGateways(c){c.innerHTML=netPageHTML(_CTX_FP_GATEWAYS);netRenderList(_CTX_FP_GATEWAYS);}
+function renderFPGateways(c){
+  if (window.ffnProtect) { window.ffnProtect.page(c, 'gateways'); return; }
+  c.innerHTML = '<div class="page-header"><h2>FFN Protect Gateways</h2></div><p class="text-dim">The FFN Protect console script did not load.</p>';
+}
 
 const _CTX_FP_MDM = netRegister({
   kind:'fp-mdm',
@@ -6409,6 +6416,7 @@ const _CTX_NP_IFMGMT = netRegister({
     {key:'permit_snmp', label:'SNMP',  type:'select', opts:_OPT_YESNO},
     {key:'permit_response_pages', label:'Response Pages', type:'select', opts:_OPT_YESNO},
     {key:'permit_user_id', label:'User-ID Service', type:'select', opts:_OPT_YESNO},
+    {key:'permit_protect', label:'FFN Protect (443/tcp, 4501/udp)', type:'select', opts:_OPT_YESNO},
     {key:'permitted_ips', label:'Permitted IPs', type:'list', placeholder:'0.0.0.0/0'},
   ],
 });

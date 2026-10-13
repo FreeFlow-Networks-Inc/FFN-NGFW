@@ -34,7 +34,9 @@ SERVICES = {'ssh': ('tcp', [22]), 'http': ('tcp', [80]),
             'telnet': ('tcp', [23]), 'response-pages': ('tcp', [6080, 6081, 6082]),
             'user-id': ('tcp', [5007]), 'userid-service': ('tcp', [5007]),
             'userid-syslog-listener-ssl': ('tcp', [6514]),
-            'userid-syslog-listener-udp': ('udp', [514])}
+            'userid-syslog-listener-udp': ('udp', [514]),
+            # the FFN Protect portal and gateway listeners: HTTPS and ESP in UDP
+            'protect': [('tcp', [443]), ('udp', [4501])]}
 
 
 def yes(value):
@@ -58,9 +60,10 @@ def profile(device, name):
         return bool(values and yes(values[0]))
     if yes(entry.findtext('enabled', 'yes')):
         result['ping'] = enabled('ping')
-        for key, (proto, ports) in SERVICES.items():
+        for key, specs in SERVICES.items():
             if enabled(key):
-                result[proto].extend(ports)
+                for proto, ports in (specs if isinstance(specs, list) else [specs]):
+                    result[proto].extend(ports)
     for parent in ('permitted-ip', 'permitted_ips'):
         node = entry.find(parent)
         if node is None:

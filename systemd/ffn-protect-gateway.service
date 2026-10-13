@@ -1,0 +1,21 @@
+[Unit]
+Description=FFN Protect remote-access portal and gateway on the dataplane
+Documentation=file:/usr/local/lib/ffn/ffn_protect_gateway.py
+After=network.target ffn-network.service
+Wants=ffn-network.service
+
+[Service]
+Type=simple
+User=root
+UMask=0077
+# The listeners and the tunnel worker live in the forwarding namespace on the
+# WAN addresses the committed configuration names; nothing listens until an
+# intent is applied.
+ExecStart=/usr/sbin/ip netns exec ffn-data /usr/bin/python3 /usr/local/lib/ffn/ffn_protect_gateway.py serve
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
