@@ -12197,6 +12197,8 @@ from ffn_config_objects import install as _install_object_api
 _install_object_api(app, get_current_user, _require_admin, _extension_audit, config_mgr, CANDIDATE_CONFIG)
 from ffn_config_dhcp import install as _install_dhcp_api
 _install_dhcp_api(app, get_current_user, _require_admin, _audit, config_mgr, CANDIDATE_CONFIG)
+from ffn_config_service_routes import install as _install_service_routes_api
+_install_service_routes_api(app, get_current_user, _require_admin, _audit, config_mgr, CANDIDATE_CONFIG)
 from ffn_alerts import install as _install_alerts_api
 _install_alerts_api(app, get_current_user, _require_admin, _audit)
 from ffn_policy_api import install as _install_policy_api

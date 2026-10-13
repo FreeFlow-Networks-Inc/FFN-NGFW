@@ -18,8 +18,13 @@ PERMIT=0x80000000
 def elements(values):return '{ '+', '.join(str(v) for v in values)+' }'
 
 
-def render(xml,bindings,session_tokens=None):
+def render(xml,bindings,session_tokens=None,host_links=()):
     """Bindings are logical interface -> verified current kernel ifindex.
+
+    host_links: [{'index': ifindex, 'address': source}] for the dataplane end of the
+    management plane's service-route link; that traffic is the firewall's own
+    (DNS, NTP, updates ...) and is granted both ways without a rule, as PAN-OS
+    treats service-route traffic.
 
     Use numeric ifindexes so a newly recreated aggregate cannot inherit an old
     permit before its new owner is acknowledged. A separate reconciler is needed
@@ -68,13 +73,21 @@ def render(xml,bindings,session_tokens=None):
                     pairs.append((incoming,outgoing))
             if not pairs:raise NatError(row['name']+': no applicable routed zone pair')
             rules.append(dict(row,pairs=pairs))
-    plan_digest=digest({'rules':rules,'zones':sorted((s,z,v) for (s,z),v in zones.items())})
+    hosts=[]
+    for link in host_links or ():
+        index=link.get('index');address=link.get('address')
+        if type(index) is not int or not 1<=index<=0x7fffffff or not isinstance(address,str):raise NatError('Invalid service-route link')
+        hosts.append((index,address))
+    plan_digest=digest({'rules':rules,'zones':sorted((s,z,v) for (s,z),v in zones.items()),'host_links':sorted(hosts)})
     lines=['table inet '+TABLE+' {',' comment "ffn-security:'+plan_digest+'"',
            ' chain forward { type filter hook forward priority -260; policy drop;',
            '  meta mark set meta mark & 0x7fffffff',
            '  meta nfproto != ipv4 drop','  ct state invalid drop',
            '  ct direction reply ct state != established drop',
            '  ct direction reply ct label & 0 != 0 drop']
+    for index,address in hosts:
+        lines.append('  ct direction original iif %d ip saddr %s goto grant'%(index,address))
+        lines.append('  ct direction reply oif %d ct original ip saddr %s goto grant'%(index,address))
     for i,rule in enumerate(rules):
         m=rule['match']
         for incoming,outgoing in rule['pairs']:

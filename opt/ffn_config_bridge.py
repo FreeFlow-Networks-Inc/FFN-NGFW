@@ -94,6 +94,23 @@ def _profiles(con):
             except Exception: out[x[0]]={}
     except Exception: pass
     return out
+def _mgmt_services():
+    """The MGT port's permitted services/sources (deviceconfig/system/mp-interfaces/entry[MGT]) as
+    one host-firewall rule, when the platform can name the port's Linux device."""
+    try:
+        root=ET.parse(XML).getroot()
+        entry=next((e for e in root.iter("mp-interfaces") for e in e.findall("entry") if e.get("name")=="MGT"),None)
+        if entry is None: return []
+        sys.path.append("/opt/ffn-ngfw")
+        from ffn_mp_interfaces import decode, management_rule
+        data=decode(entry)
+        if not data or (not data.get("services") and not data.get("permitted")): return []
+        sys.path.append("/opt/ffn-platforms/pa5200-management")
+        from mp_interfaces import inventory
+        dev=next((p["netdev"] for p in inventory() if p.get("name")=="MGT"),None)
+        if not dev or dev not in REAL: return []
+        return [dict(management_rule(data),iface=dev)]
+    except Exception: return []
 def _iface_mgmt(al, profs):
     """Per-interface mgmt: only interfaces that ATTACH a profile get admin services."""
     mgmt=[]
@@ -148,5 +165,5 @@ for (nm,vid,data_ifs) in _vsyses(al):
     vconf.append({"name":nm,"vsys_id":vid,"zones":zones,"rules":ro})
 cfg={"table":"ffn_ngfw","mgmt_ifaces":MGMT_IFACES,"mgmt_tcp_ports":MGMT_PORTS,
      "trusted_ifaces":TRUSTED_IFACES,
-     "nfqueue_base":0,"queue_bypass":True,"default_forward":"drop","enable_nat":True,"mgmt":ifmgmt,"vsys":vconf}
+     "nfqueue_base":0,"queue_bypass":True,"default_forward":"drop","enable_nat":True,"mgmt":ifmgmt,"mgmt_services":_mgmt_services(),"vsys":vconf}
 json.dump(cfg,sys.stdout,indent=2)

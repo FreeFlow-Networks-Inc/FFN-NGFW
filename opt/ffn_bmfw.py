@@ -210,6 +210,7 @@ class DataplaneConfig:
     mgmt_ifaces: List[str] = field(default_factory=list)
     mgmt_tcp_ports: List[int] = field(default_factory=lambda: [22, 443])
     mgmt: List[dict] = field(default_factory=list)  # per-iface mgmt profiles
+    mgmt_services: List[dict] = field(default_factory=list)  # the MGT port's permitted services/sources
     # Internal chassis buses, accepted WHOLESALE like "lo" -- not networks.
     #
     # mgmt_ifaces is the wrong tool for these: it opens exactly
@@ -294,6 +295,7 @@ class DataplaneConfig:
         cfg.trusted_ifaces = d.get("trusted_ifaces", [])
         cfg.mgmt_tcp_ports = d.get("mgmt_tcp_ports", [22, 443])
         cfg.mgmt = d.get("mgmt", [])
+        cfg.mgmt_services = d.get("mgmt_services", [])
         cfg.nfqueue_base = d.get("nfqueue_base", 0)
         cfg.queue_bypass = d.get("queue_bypass", True)
         cfg.default_forward = d.get("default_forward", "drop")
@@ -438,11 +440,25 @@ class NftGenerator:
             L.append('        iifname "%s" accept comment "trusted transport"'
                      % _t)
         L.append("        meta l4proto { icmp, icmpv6 } accept")
-        if c.mgmt_ifaces and c.mgmt_tcp_ports:
-            mgmt_if = ", ".join('"%s"' % i for i in c.mgmt_ifaces)
+        # A management port whose permitted services are configured (Device > Setup >
+        # Interfaces) gets exactly those; the others keep the product's management ports.
+        restricted = {m.get("iface") for m in (getattr(c, "mgmt_services", []) or []) if m.get("iface")}
+        open_mgmt = [i for i in c.mgmt_ifaces if i not in restricted]
+        if open_mgmt and c.mgmt_tcp_ports:
+            mgmt_if = ", ".join('"%s"' % i for i in open_mgmt)
             mgmt_pt = ", ".join(str(p) for p in c.mgmt_tcp_ports)
             L.append('        iifname { %s } tcp dport { %s } accept comment "mgmt"'
                      % (mgmt_if, mgmt_pt))
+        for _m in (getattr(c, "mgmt_services", []) or []):
+            _dev = _m.get("iface")
+            if not _dev or _dev not in c.mgmt_ifaces: continue
+            _src = ("ip saddr { %s } " % ", ".join(_m["permitted_ip"])) if _m.get("permitted_ip") else ""
+            if _m.get("icmp"):
+                L.append('        iifname "%s" %sicmp type echo-request accept comment "mgt services"' % (_dev, _src))
+            for _proto in ("tcp", "udp"):
+                if _m.get(_proto):
+                    L.append('        iifname "%s" %s%s dport { %s } accept comment "mgt services"'
+                             % (_dev, _src, _proto, ", ".join(str(p) for p in _m[_proto])))
         # per-interface management-profile rules (only where a profile is enabled)
         for _m in (getattr(c, "mgmt", []) or []):
             _dev = _m.get("iface")
