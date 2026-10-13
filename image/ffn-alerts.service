@@ -4,12 +4,12 @@
 # ffn-alert), the bounded event log, the console's dashboard and header
 # badge, and the email/webhook outputs in /etc/ffn-ngfw/alerts.json.
 Description=FFN NGFW alert evaluation
-Documentation=file:/opt/ffn-ngfw/ffn_alerts.py
+Documentation=file:/usr/local/lib/ffn/ffn_alerts.py
 After=ffn-controld.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 /opt/ffn-ngfw/ffn_alerts.py evaluate
+ExecStart=/usr/bin/python3 /usr/local/lib/ffn/ffn_alerts.py evaluate
 # Plane requests for the assessment take tens of seconds each; a stuck one
 # must not pile evaluations up behind it.
 TimeoutStartSec=170

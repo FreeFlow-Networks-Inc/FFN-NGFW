@@ -215,13 +215,22 @@ def recent_events(path=EVENTS, count=RECENT_SHOWN):
     return list(reversed(out))
 
 
+def live_convergence_report(no_planes=False):
+    """The convergence module lives beside this file in a repository checkout and under
+    /usr/local/lib/ffn on an appliance; the controld client it needs sits in /opt/ffn-ngfw."""
+    for extra in (Path(__file__).resolve().parent, Path('/usr/local/lib/ffn'), Path('/opt/ffn-ngfw')):
+        if str(extra) not in sys.path:
+            sys.path.append(str(extra))
+    from ffn_convergence import live_report
+    return live_report(no_planes=no_planes)
+
+
 def evaluate(report=None, now=None, state_path=STATE, events_path=EVENTS, view_path=VIEW, config_path=CONFIG,
              units=None, outputs=None):
     """One evaluation: compare with the last state, emit transitions, publish the view."""
     now = time.time() if now is None else now
     if report is None:
-        from ffn_convergence import live_report
-        report = live_report()
+        report = live_convergence_report()
     if units is None:
         units = unit_states()
     outputs = outputs or Outputs(read_json(config_path, {}))
@@ -312,9 +321,7 @@ def main(argv=None):
     if args.action == 'status':
         print(json.dumps(status(), indent=2, sort_keys=True))
         return 0
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from ffn_convergence import live_report
-    view = evaluate(report=live_report(no_planes=args.no_planes))
+    view = evaluate(report=live_convergence_report(no_planes=args.no_planes))
     print('alerts: %d active, %d raised or cleared this evaluation, overall %s' % (
         len(view['active']), len(view['events']), view.get('overall')), flush=True)
     return 0
