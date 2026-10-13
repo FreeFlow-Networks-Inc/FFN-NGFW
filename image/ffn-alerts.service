@@ -13,5 +13,6 @@ ExecStart=/usr/bin/python3 /usr/local/lib/ffn/ffn_alerts.py evaluate
 # Plane requests for the assessment take tens of seconds each; a stuck one
 # must not pile evaluations up behind it.
 TimeoutStartSec=170
-ProtectHome=yes
-PrivateTmp=yes
+# No ProtectHome: the dataplane collectors are ssh sessions that read root's
+# key and known-hosts files, and a hidden /root made every subsystem look
+# unavailable from this unit while the same report was converged by hand.
