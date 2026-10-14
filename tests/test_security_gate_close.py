@@ -33,3 +33,21 @@ class GateCloseTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class LeaseRenewalTests(unittest.TestCase):
+    """The lease follows the collector's health and is renewed before the tick waits for the network lock."""
+
+    def test_lease_follows_fresh_collector_evidence_only(self):
+        now=runtime.time.monotonic()
+        self.assertTrue(runtime.lease_current(dict(ready=True,monotonic=now-1)))
+        self.assertFalse(runtime.lease_current(dict(ready=False,monotonic=now)))
+        self.assertFalse(runtime.lease_current(dict(ready=True,monotonic=now-4)))
+        self.assertFalse(runtime.lease_current({}))
+
+    def test_renewal_precedes_the_locked_drift_check(self):
+        source=Path(runtime.__file__).read_text()
+        body=source[source.index('def serve():'):]
+        loop=body[body.index('while running:',body.index('collector.start()')):]
+        self.assertLess(loop.index('lease_current(events)'),loop.index('with lock():'))
+        self.assertLess(loop.index('with lock():'),loop.index('reason=drift(state)'))
