@@ -88,6 +88,8 @@ jobs:
         run: node tests/test_policy_selectors.cjs
       - name: FFN Protect gateway (daemon, intent, convergence)
         run: python3 -m unittest discover -s tests -p 'test_protect_*.py'
+      - name: service routes and management interface settings
+        run: python3 -m unittest discover -s tests -p 'test_service_routes.py'
 
       # Exercises the update trust model itself: wrong key, tampered payload,
       # unsigned manifest, and the hmac-to-ed25519 downgrade refusal. It rebinds
@@ -143,6 +145,8 @@ jobs:
         run: node tests/test_plane_ui.cjs
       - name: FFN Protect console pages
         run: node tests/test_protect_ui.cjs
+      - name: service route configuration card
+        run: node tests/test_service_routes_ui.cjs
 
       - name: code patch lifecycle and renderer
         run: |

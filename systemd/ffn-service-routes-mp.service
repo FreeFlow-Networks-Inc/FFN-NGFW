@@ -1,0 +1,17 @@
+[Unit]
+Description=FFN service routes on the management plane (re-install the stored rules)
+Documentation=file:/opt/ffn-ngfw/ffn_service_routes.py
+After=network-online.target ffn-controld.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+# Policy-routing rules that send the routed services' ports over the internal
+# link to the dataplane; /etc/ffn-ngfw/service-routes.json is what the last
+# commit installed.
+ExecStart=/usr/bin/python3 /opt/ffn-ngfw/ffn_service_routes.py mp-boot
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target

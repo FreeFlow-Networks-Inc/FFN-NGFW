@@ -1,0 +1,17 @@
+[Unit]
+Description=FFN service routes on the dataplane (re-install the stored intent)
+Documentation=file:/usr/local/lib/ffn/ffn_service_routes.py
+After=network.target ffn-network.service
+Wants=ffn-network.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+# The stored intent names egress interfaces the network owner creates; the
+# commit path re-applies on every change and this unit covers a boot.
+ExecStart=/usr/bin/python3 /usr/local/lib/ffn/ffn_service_routes.py boot
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

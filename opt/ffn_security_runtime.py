@@ -29,6 +29,21 @@ STATE=Path('/etc/ffn/policy-runtime.json')
 HEALTH=Path('/run/ffn-security-health.json')
 DATABASE=Path('/var/lib/ffn/security-sessions.db')
 GATE='ffn_policy_gate'
+HOST_LINKS=Path('/run/ffn-service-routes/status.json')
+
+
+def host_links(path=HOST_LINKS):
+    """The dataplane end of the management plane's service-route link, when the installer has
+    published one for this boot: [{'index': ifindex, 'address': source}]. Root-owned evidence only."""
+    try:
+        st=path.stat()
+        if st.st_uid!=0 or st.st_mode & 0o022:return []
+        row=json.loads(path.read_text())
+        link=row.get('link') or {}
+        if row.get('boot_id')!=boot() or type(link.get('index')) is not int or not isinstance(link.get('address'),str):return []
+        return [dict(index=link['index'],address=link['address'])]
+    except (OSError,ValueError,AttributeError):
+        return []
 LEASE_SECONDS=8
 
 
@@ -166,7 +181,7 @@ def fingerprint(data, tables):
 def inventory():return json.loads(nat.nft(['-j','list','ruleset']))
 
 
-def drift(state, reads=3, delay=0.5, read_bindings=None, read_inventory=None, read_boot=None, sleep=time.sleep):
+def drift(state, reads=3, delay=0.5, read_bindings=None, read_inventory=None, read_boot=None, sleep=time.sleep, read_host_links=None):
     """Why the kernel must be replayed, or None.
 
     The bindings are derived from the owners' status files and the link
@@ -183,6 +198,9 @@ def drift(state, reads=3, delay=0.5, read_bindings=None, read_inventory=None, re
     read_boot = read_boot or boot
     if state['boot_id'] != read_boot():
         return 'dataplane boot identity changed'
+    read_host_links = read_host_links or host_links
+    if read_host_links() != state.get('host_links', []):
+        return 'service route link changed'
     tables = {tuple(k) for k in state['tables']}
     reason = None
     for attempt in range(reads):
@@ -272,7 +290,8 @@ def prepare(request, replay=False, *, candidate=False):
         try:token_generation=(j.db.execute('SELECT coalesce(max(token),0) FROM rules').fetchone()[0]//2048)+1
         finally:j.close()
     tokens,metadata=tokens_for(request['xml'],token_generation)
-    security=render(request['xml'],{k:v['index'] for k,v in current.items()},tokens)
+    hosts=host_links()
+    security=render(request['xml'],{k:v['index'] for k,v in current.items()},tokens,hosts)
     nat_revision=old_nat['revision'] if old_nat['digest']==digest(compiled['plan']) else old_nat['revision']+1
     nat_script=nat.render(compiled['plan'],{k:v['device'] for k,v in current.items()},addresses,nat_revision)
     scripts={('inet',GATE):gate(),('inet','ffn_security'):security['script'],('ip',nat.TABLE):nat_script}
@@ -285,7 +304,7 @@ def prepare(request, replay=False, *, candidate=False):
     batch=''.join(('delete table '+family+' '+name+'\n' if (family,name) in names else '')+script
                   for (family,name),script in scripts.items())
     nat.nft(['-c','-f','-'],batch)
-    state=dict(version=1,revision=generation,token_generation=token_generation,xml=request['xml'],digest=security['digest'],
+    state=dict(version=1,revision=generation,token_generation=token_generation,xml=request['xml'],digest=security['digest'],host_links=hosts,
                bindings=current,tables=list(scripts),scripts=[(list(key),value) for key,value in scripts.items()],
                boot_id=boot(),nat=dict(revision=nat_revision,plan=compiled['plan'],digest=digest(compiled['plan']),script=nat_script))
     if candidate:state['pending_interfaces']=pending

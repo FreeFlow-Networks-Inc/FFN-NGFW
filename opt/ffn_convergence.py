@@ -327,6 +327,34 @@ def protect_gateway(root, status):
     return subsystem('protect-gateway', 'dp', 'converged', '%d portal(s) and %d gateway(s) serving, %d session(s)'
                      % (len(expected['portals']), len(expected['gateways']), len(running.get('sessions') or [])),
                      ['gateway %s: %s on %s' % (name, spec['tunnel'], spec['address']) for name, spec in sorted(expected['gateways'].items())])
+# ---------------------------------------------------------------- service routes
+def service_routes(root, status):
+    """Every committed service route is installed on the dataplane with its link up."""
+    try:
+        import ffn_service_routes as routes
+        expected = routes.compile_intent(root)['routes']
+    except (ValueError, ImportError) as error:
+        return subsystem('service-routes', 'dp', 'failed', 'Committed service routes do not compile', [str(error)[:200]])
+    if not expected:
+        return subsystem('service-routes', 'dp', 'converged', 'No service routes committed; services use the management interface')
+    if not isinstance(status, dict) or not isinstance(status.get('config'), dict):
+        return subsystem('service-routes', 'dp', 'unavailable', 'Dataplane service-route state is not observable',
+                         [str((status or {}).get('error', 'no service-routes status'))[:200]])
+    applied = status['config'].get('routes') or {}
+    if applied != expected:
+        return subsystem('service-routes', 'dp', 'drift', '%d committed service route(s) differ from the dataplane intent' % len(expected),
+                         ['not applied: ' + ', '.join(sorted(set(expected) - set(applied)))] if set(expected) - set(applied) else ['differ: ' + ', '.join(sorted(expected))])
+    running = status.get('running')
+    if not isinstance(running, dict):
+        return subsystem('service-routes', 'dp', 'pending', 'Service routes applied; nothing installed on this boot')
+    link = running.get('link') or {}
+    if type(link.get('index')) is not int:
+        return subsystem('service-routes', 'dp', 'failed', 'Service-route link to the management plane is missing')
+    problems = running.get('problems') or []
+    if problems:
+        return subsystem('service-routes', 'dp', 'failed', '%d egress interface(s) without a route' % len(problems), problems[:8])
+    return subsystem('service-routes', 'dp', 'converged', '%d service route(s) installed' % len(expected),
+                     ['%s via %s as %s' % (s, r['device'], r['address']) for s, r in sorted(expected.items())])
 
 
 # ---------------------------------------------------------------- security runtime
@@ -379,6 +407,7 @@ CORE_SERVICES = {('tcp', 22), ('tcp', 443), ('tcp', 8443)}
 DP_SERVICES_STATUS = '/run/ffn-interface-services/status.json'
 DHCP_STATUS_COMMAND = 'python3 /usr/local/lib/ffn/ffn_dhcp_server.py status'
 PROTECT_STATUS_COMMAND = 'python3 /usr/local/lib/ffn/ffn_protect_gateway.py status'
+SERVICE_ROUTES_STATUS_COMMAND = 'python3 /usr/local/lib/ffn/ffn_service_routes.py status'
 
 
 def unit_active(unit=TUNNEL_UNIT, run=subprocess.run):
@@ -422,7 +451,8 @@ def overall(subsystems):
 
 
 def assess(config_path=CONFIG, receipt_path=RECEIPT, lifecycle=(LIFECYCLE, LIFECYCLE_JOURNAL), boot_id_path=BOOT_ID,
-           dp_health=None, resources=None, dp_views=None, clock=time.time, tunnel=None, dp_status=None, dp_dhcp=None, dp_protect=None):
+           dp_health=None, resources=None, dp_views=None, clock=time.time, tunnel=None, dp_status=None, dp_dhcp=None,
+           dp_protect=None, dp_service_routes=None):
     """resources: {('faceplate','status'): result-or-None, ('aggregate','status'): ...};
     dp_dhcp: callable returning the dataplane's `dhcp status` record, or None;
     dp_health: callable returning (record, dp uptime, dp boot id) for the Security collector, or None;
@@ -468,6 +498,11 @@ def assess(config_path=CONFIG, receipt_path=RECEIPT, lifecycle=(LIFECYCLE, LIFEC
             subsystems.append(protect_gateway(root, dp_protect()))
         except Exception as error:
             subsystems.append(protect_gateway(root, {'error': str(error)[:200]}))
+    if dp_service_routes is not None:
+        try:
+            subsystems.append(service_routes(root, dp_service_routes()))
+        except Exception as error:
+            subsystems.append(service_routes(root, {'error': str(error)[:200]}))
     if dp_health is not None:
         try:
             subsystems.append(security_runtime(*dp_health()))
@@ -531,15 +566,16 @@ def live_report(no_planes=False):
                 views = lambda: audit.collect(audit.run_dp)
         except ImportError:
             views = None
-    status = health = dhcp = protect = None
+    status = health = dhcp = protect = service_routes_status = None
     if views is not None:
         import ffn_ifmgmt_audit as audit
         status = lambda: json.loads(audit.run_dp('cat ' + DP_SERVICES_STATUS))
         health = lambda: parse_health(audit.run_dp(HEALTH_COLLECT))
         dhcp = lambda: json.loads(audit.run_dp(DHCP_STATUS_COMMAND))
         protect = lambda: json.loads(audit.run_dp(PROTECT_STATUS_COMMAND))
+        service_routes_status = lambda: json.loads(audit.run_dp(SERVICE_ROUTES_STATUS_COMMAND))
     return assess(resources=resources, dp_views=views, tunnel=None if no_planes else unit_active, dp_status=status,
-                  dp_health=health, dp_dhcp=dhcp, dp_protect=protect)
+                  dp_health=health, dp_dhcp=dhcp, dp_protect=protect, dp_service_routes=service_routes_status)
 
 
 def main(argv=None):

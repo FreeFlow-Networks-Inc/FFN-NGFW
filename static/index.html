@@ -21,6 +21,7 @@
 <script src="/static/convergence.js"></script>
 <script src="/static/dhcp.js"></script>
 <script src="/static/protect.js"></script>
+<script src="/static/service-routes.js"></script>
 <script src="/static/mp-interfaces.js"></script>
 <link rel="stylesheet" href="/static/tokens.css">
 <link rel="stylesheet" href="/static/console.css">
@@ -3628,12 +3629,14 @@ function renderDeviceSetup(c) {
   c.innerHTML = `<div class="page-header"><h2>Setup</h2></div>
     <div class="setup-tabs" role="tablist" aria-label="Device setup" onkeydown="consoleTabKey(event)">
       <button id="setup-tab-management" role="tab" aria-controls="setup-panel-management" aria-selected="true" class="active" onclick="switchSetupTab('management')">Management</button>
+      <button id="setup-tab-interfaces" role="tab" tabindex="-1" aria-controls="setup-panel-interfaces" aria-selected="false" onclick="switchSetupTab('interfaces')">Interfaces</button>
       <button id="setup-tab-services" role="tab" tabindex="-1" aria-controls="setup-panel-services" aria-selected="false" onclick="switchSetupTab('services')">Services</button>
       <button id="setup-tab-operations" role="tab" tabindex="-1" aria-controls="setup-panel-operations" aria-selected="false" onclick="switchSetupTab('operations')">Operations</button>
     </div>
     <div id="setup-panel-management" role="tabpanel" aria-labelledby="setup-tab-management">
       <div class="card setup-settings"><h3>General Settings</h3>${fields(['hostname','timezone'])}</div>
     </div>
+    <div id="setup-panel-interfaces" role="tabpanel" aria-labelledby="setup-tab-interfaces" hidden></div>
     <div id="setup-panel-services" role="tabpanel" aria-labelledby="setup-tab-services" hidden>
       <div class="grid grid-2"><div class="card setup-settings"><h3>DNS</h3>${fields(['dns_primary','dns_secondary'])}</div>
       <div class="card setup-settings"><h3>NTP</h3>${fields(['ntp_server'])}</div></div>
@@ -3645,7 +3648,8 @@ function renderDeviceSetup(c) {
     </div>
     <div id="setup-panel-operations" role="tabpanel" aria-labelledby="setup-tab-operations" hidden></div>`;
   loadSetupInfo();
-  window.ffnMpInterfaces?.render(document.getElementById('setup-panel-management'));
+  window.ffnMpInterfaces?.render(document.getElementById('setup-panel-interfaces'));
+  window.ffnServiceRoutes?.render(document.getElementById('setup-panel-services'));
 }
 function consoleTabKey(event) {
   if (!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
@@ -3658,8 +3662,8 @@ function consoleTabKey(event) {
   tabs[next].click(); tabs[next].focus();
 }
 function switchSetupTab(name) {
-  if (!['management','services','operations'].includes(name)) return;
-  for (const key of ['management','services','operations']) {
+  if (!['management','interfaces','services','operations'].includes(name)) return;
+  for (const key of ['management','interfaces','services','operations']) {
     const selected = name === key;
     const button = document.getElementById('setup-tab-'+key);
     button.classList.toggle('active', selected);
@@ -3667,7 +3671,7 @@ function switchSetupTab(name) {
     button.tabIndex = selected ? 0 : -1;
     document.getElementById('setup-panel-'+key).hidden = !selected;
   }
-  document.getElementById('setup-settings-actions').hidden = name === 'operations';
+  document.getElementById('setup-settings-actions').hidden = name === 'operations' || name === 'interfaces';
   const operations = document.getElementById('setup-panel-operations');
   if (name === 'operations' && !operations.dataset.loaded) {
     operations.dataset.loaded = 'true';
