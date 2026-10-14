@@ -131,6 +131,11 @@ def renew():
     nat.nft(['-f','-'],'flush set inet '+GATE+' live\nadd element inet '+GATE+' live { ipv4 timeout '+str(LEASE_SECONDS)+'s }\n')
 
 
+def lease_current(events):
+    """The collector evidence the lease may follow: ready and reported within the last three seconds."""
+    return bool(events.get('ready')) and 0<=time.monotonic()-events.get('monotonic',-1)<=3
+
+
 def health():
     try:
         st=HEALTH.stat()
@@ -429,6 +434,17 @@ def serve():
                 last_forwarding=None
                 publish(False,error=problem or fault);continue
             publish(True,last_forwarding,last_error)
+            # The lease is the collector's dead-man switch, so it follows the
+            # collector's health, not the network lock. The lock is shared with
+            # the aggregate, route, fabric and interface owners; on 2026-10-14
+            # a tick that waited behind one of them for more than eight seconds
+            # let the lease expire and closed transit for one to three seconds
+            # with nothing wrong. A generation this loop has already verified
+            # is renewed before the wait; a fault, a replay or a changed state
+            # still closes the gate on this same tick, below.
+            if last_forwarding is not None and lease_current(events):
+                try:renew()
+                except (NatError,OSError,subprocess.SubprocessError):pass
             try:
                 with lock():
                     state=saved()
