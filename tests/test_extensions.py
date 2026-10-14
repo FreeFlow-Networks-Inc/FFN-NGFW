@@ -38,6 +38,21 @@ class ExtensionTests(unittest.TestCase):
             app=FastAPI();install(app,user,lambda u:None,audit,selected=temp)
             self.assertEqual(app.state.platform_policy_guard(b'<config/>'),{'drained':True})
 
+    def test_declared_lldp_provider_is_required_and_wired(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            (root/'extension.json').write_text(json.dumps({'id':'fixture','label':'Fixture','api_version':1,'lldp_neighbors_version':1}))
+            (root/'static').mkdir()
+            (root/'control.py').write_text('from fastapi import APIRouter\ndef router(*a): return APIRouter()\n')
+            app=FastAPI()
+            with self.assertLogs('ffn_extensions',level='ERROR'):
+                install(app,user,lambda u:None,audit,selected=temp)
+            self.assertFalse(app.state.platform_lldp_neighbors()['available'])
+            with (root/'control.py').open('a') as f:
+                f.write('\ndef lldp_neighbors(): return {"available": True, "interfaces": [{"local_interface": "ethernet1/5"}]}\n')
+            app=FastAPI();install(app,user,lambda u:None,audit,selected=temp)
+            self.assertEqual(app.state.platform_lldp_neighbors()['interfaces'][0]['local_interface'],'ethernet1/5')
+
     def test_disabled_never_imports_or_probes(self):
         app = FastAPI()
         with patch('ffn_extensions.importlib.util.spec_from_file_location') as imp:

@@ -34,6 +34,12 @@ def install(app, current_user, require_admin, record_audit, selected=None):
                 app.state.platform_mp_interfaces = unavailable_mp_interfaces
                 if type(manifest['mp_interfaces_version']) is not int or manifest['mp_interfaces_version'] != 1:
                     raise ValueError('unsupported management interface version')
+            if manifest.get('lldp_neighbors_version') is not None:
+                def unavailable_lldp():
+                    return {'available': False, 'reason': 'Selected platform LLDP agent unavailable', 'interfaces': []}
+                app.state.platform_lldp_neighbors = unavailable_lldp
+                if type(manifest['lldp_neighbors_version']) is not int or manifest['lldp_neighbors_version'] != 1:
+                    raise ValueError('unsupported LLDP neighbour version')
             if manifest.get('data_port_stats_version') is not None:
                 def unavailable_traffic():
                     raise RuntimeError('Selected platform data-port telemetry unavailable')
@@ -86,6 +92,8 @@ def install(app, current_user, require_admin, record_audit, selected=None):
                     raise ValueError('selected platform lacks its policy barrier')
             if manifest.get('data_port_stats_version') == 1 and not callable(getattr(mod,'data_port_stats',None)):
                 raise ValueError('selected platform lacks data-port telemetry')
+            if manifest.get('lldp_neighbors_version') == 1 and not callable(getattr(mod,'lldp_neighbors',None)):
+                raise ValueError('LLDP neighbour provider missing')
             if manifest.get('mp_interfaces_version') == 1 and not callable(getattr(mod,'mp_interfaces_status',None)):
                 raise ValueError('selected platform lacks management interface provider')
             routes = mod.router(current_user, require_admin, record_audit)
@@ -126,6 +134,8 @@ def install(app, current_user, require_admin, record_audit, selected=None):
             state = 'enabled'
             if manifest.get('mp_interfaces_version') == 1:
                 app.state.platform_mp_interfaces = mod.mp_interfaces_status
+            if manifest.get('lldp_neighbors_version') == 1:
+                app.state.platform_lldp_neighbors = mod.lldp_neighbors
             if manifest.get('data_port_stats_version') == 1:
                 app.state.platform_data_port_stats = mod.data_port_stats
             if manifest.get('aggregate_status_version') == 1:

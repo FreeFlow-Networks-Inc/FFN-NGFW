@@ -10177,6 +10177,14 @@ async def lldp_neighbors(user: dict = Depends(get_current_user)):
     Return LLDP neighbor table. Tries `lldpctl -f json0` (lldpd) first,
     falls back to lldp from openlldp, or returns empty if no daemon.
     """
+    # A selected hardware platform may own LLDP on its dataplane (the PA-5200's
+    # ffn-lldpd); its table takes precedence over a management-plane lldpd.
+    provider = getattr(app.state, 'platform_lldp_neighbors', None)
+    if provider is not None:
+        try:
+            return await asyncio.get_running_loop().run_in_executor(None, provider)
+        except Exception as error:
+            return {"available": False, "reason": "Platform LLDP provider failed: " + str(error), "interfaces": []}
     if not shutil.which("lldpctl"):
         return {"available": False, "reason": "lldpd not installed",
                 "interfaces": []}
