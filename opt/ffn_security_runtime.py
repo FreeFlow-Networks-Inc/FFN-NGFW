@@ -27,7 +27,11 @@ from ffn_session_events import Journal, EventError, Collector
 
 STATE=Path('/etc/ffn/policy-runtime.json')
 HEALTH=Path('/run/ffn-security-health.json')
-DATABASE=Path('/var/lib/ffn/security-sessions.db')
+# The session journal lives in RAM: it only has to outlive a runtime restart (conntrack itself does
+# not survive a reboot), and on the PA-5200 the dataplane root is an NFS export of the MP's system
+# disk, where every sqlite commit became a synchronous write on the control path (66 ms average on
+# 2026-10-14) and a saturated disk froze the tick that renews the transit gate.
+DATABASE=Path('/run/ffn/security-sessions.db')
 GATE='ffn_policy_gate'
 LEASE_SECONDS=8
 
