@@ -149,6 +149,20 @@ class L3Tests(unittest.TestCase):
             with self.subTest(change=change):
                 self.assertFalse(l3.plan(self.row, self.bindings, state)['available'])
 
+    def test_onlink_gateway_route_is_a_plain_next_hop_but_other_flags_stay_in_software(self):
+        # A /32 WAN address with a provider gateway outside any connected
+        # prefix is routed `via <gw> dev p<n> onlink`; the gateway is still one
+        # neighbour on the device, so the plan resolves it like any other.
+        default = next(r for r in self.state['routes'] if r.get('dst', 'default') == 'default')
+        default['flags'] = ['onlink']
+        self.assertEqual(l3.route_for('198.51.100.7', self.state), default)
+        plan = l3.plan(self.row, self.bindings, self.state)
+        self.assertTrue(plan['available'], plan['blockers'])
+        for flags in (['onlink', 'pervasive'], ['offload'], ['rt_offload']):
+            default['flags'] = flags
+            with self.assertRaisesRegex(ValueError, 'software exception path'):
+                l3.route_for('198.51.100.7', self.state)
+
     def test_longest_prefix_precedes_metric_and_ecmp_is_rejected(self):
         self.state['routes'].append(dict(dst='198.51.100.0/24', dev='p7', gateway='203.0.113.1', metric=200))
         result = l3.plan(self.row, self.bindings, self.state)
