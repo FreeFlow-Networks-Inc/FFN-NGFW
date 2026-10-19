@@ -61,7 +61,7 @@ Run end to end, from a clean clone:
 | hardware | what was verified |
 |---|---|
 | generic x86-64 Linux, no accelerator | `dataplanes` builds and its test suite passes (`make test` → 0 failed): policy classification, flow cache, invalidation on policy reload, fail-closed defaults, packet I/O |
-| PA-5200-series appliances | via the `pa5200` platform — see [platform/README.md](platform/README.md) |
+| PA-5200-series appliances | via the `pa5200` platform — see [platform/README.md](https://github.com/FreeFlow-Networks-Inc/ffn-platform-pa5200) |
 | FFN VU9P FPGA accelerator card | via the `vu9p` platform (private; FFN's own gateware) |
 
 ### Recognised by autodetection
