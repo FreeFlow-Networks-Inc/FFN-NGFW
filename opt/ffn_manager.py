@@ -4310,10 +4310,65 @@ async def dashboard_sessions(breakdown: bool = False, vsys: Optional[str] = None
         base["breakdown"] = _count_conntrack_by_state(
             vsys_id=vsys_id if vsys_scoped else None)
 
+    # --- 3. Dataplane session stream (the PA-5200's FE100 observation feed) ---
+    # Everything above counts the MP's OWN conntrack: management flows. On an
+    # appliance whose traffic crosses a separate dataplane that number is not
+    # the firewall's session table; the relay's synchronized inventory is. It
+    # takes over the headline count only while it is fresh and ready, and the
+    # stream block always says which it was, so a stale feed is never shown as
+    # an empty table.
+    stream = _dataplane_sessions_summary()
+    if stream is not None:
+        base["stream"] = stream
+        if stream.get("ready") and vsys_id is None:
+            base["active"] = stream["sessions"]
+            base["source"] = stream["source"]
+            for key in ("tcp", "udp", "other", "software_candidates", "l3_candidates",
+                        "hardware_admitted", "blocked"):
+                base[key] = stream.get(key)
+            if stream.get("max_sessions"):
+                max_sessions = stream["max_sessions"]
+            if breakdown:
+                base["breakdown"] = _dataplane_sessions_breakdown() or base.get("breakdown")
+
     active = base.get("active", 0)
     base["max_sessions"] = max_sessions
     base["capacity_percent"] = round(active / max(max_sessions, 1) * 100, 2) if max_sessions else 0
     return base
+
+
+def _dataplane_session_views():
+    """The selected platform's session-inventory module, or None off that hardware."""
+    return platform_mod("session_inventory")
+
+
+def _dataplane_sessions_summary() -> Optional[dict]:
+    """Counters of the dataplane session stream, or None when this platform has none.
+
+    A reader failure is reported inside the block rather than raised: the
+    dashboard must keep answering with the MP's own numbers and say why the
+    stream is missing.
+    """
+    views = _dataplane_session_views()
+    if views is None:
+        return None
+    try:
+        return views.summary()
+    except Exception as exc:  # the report is observation data; never fail the page on it
+        logger.debug("session inventory summary failed: %s", exc)
+        return {"source": "dataplane-session-stream", "available": False, "fresh": False,
+                "ready": False, "reason": _public_error(exc)}
+
+
+def _dataplane_sessions_breakdown() -> Optional[dict]:
+    views = _dataplane_session_views()
+    if views is None or not hasattr(views, "breakdown"):
+        return None
+    try:
+        return views.breakdown()
+    except Exception as exc:
+        logger.debug("session inventory breakdown failed: %s", exc)
+        return None
 
 
 @app.get("/api/dashboard/ddos")
@@ -12058,32 +12113,92 @@ async def logs_system(limit: int = 50, offset: int = 0, user: dict = Depends(get
             "source": "journald"}
 
 
-@app.get("/api/monitor/sessions")
-async def monitor_sessions(limit: int = 100, vsys: Optional[str] = None, user: dict = Depends(get_current_user)):
-    """
-    Live session / connection browser. Prefers FPGA session table via
-    controld, falls back to psutil net_connections.
+@app.get("/api/monitor/sessions/{identity}")
+async def monitor_session(identity: str, user: dict = Depends(get_current_user)):
+    """One dataplane session by its identity (or a unique prefix of at least eight hex digits)."""
+    views = _dataplane_session_views()
+    if views is None:
+        raise HTTPException(status_code=404, detail="No dataplane session inventory on this platform")
+    try:
+        value = views.entry(identity)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=_public_error(exc))
+    if value.get("session") is None:
+        if value.get("ready"):
+            raise HTTPException(status_code=404, detail="Session not found")
+        raise HTTPException(status_code=503, detail="Session inventory unavailable: "
+                            + str(value.get("reason") or "stream not ready"))
+    return value
 
-    `vsys` (name 'vsys2' or numeric id '2') scopes the view to that vsys's
-    conntrack partition via the `ct mark`/zone tag (contract §2). Since the
-    conntrack tag is only visible via conntrack (not psutil/FPGA table), a
+
+@app.get("/api/monitor/sessions")
+async def monitor_sessions(limit: int = 100, offset: int = 0, vsys: Optional[str] = None,
+                           q: Optional[str] = None, offload: Optional[str] = None,
+                           protocol: Optional[str] = None, user: dict = Depends(get_current_user)):
+    """
+    Live session / connection browser.
+
+    On a platform with a dataplane session stream (the PA-5200's FE100
+    observation feed) this is that stream's synchronized inventory: the
+    firewall's sessions with their rule, NAT, counters and offload verdict,
+    filtered by `q` (address, port, rule, blocker), `vsys`, `offload`
+    (candidate | blocked | l3-ready) and `protocol`. The same inventory feeds
+    `/api/dashboard/sessions`, so the list and the counters agree. While the
+    stream is not ready the response carries `stream` with the reason and
+    falls back to the views below.
+
+    Otherwise it prefers the FPGA session table via controld and falls back
+    to psutil net_connections.
+
+    `vsys` (name 'vsys2' or numeric id '2') scopes the fallback view to that
+    vsys's conntrack partition via the `ct mark`/zone tag (contract §2). Since
+    the conntrack tag is only visible via conntrack (not psutil/FPGA table), a
     vsys-scoped request reads the scoped conntrack flow list directly and
     labels the source; it degrades gracefully when conntrack is absent.
     """
+    limit = max(0, min(int(limit), 5000))
+    offset = max(0, int(offset))
+    stream = None
+    views = _dataplane_session_views()
+    if views is not None:
+        try:
+            stream = views.entries(limit=limit, offset=offset, query=q, vsys=vsys,
+                                   offload_filter=offload or None, protocol=protocol or None)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception as exc:
+            logger.debug("session inventory read failed: %s", exc)
+            stream = {"source": "dataplane-session-stream", "available": False, "fresh": False,
+                      "ready": False, "entries": [], "reason": _public_error(exc)}
+        if stream.get("ready"):
+            if vsys not in (None, ""):
+                stream["vsys"] = vsys
+                stream["vsys_scoped"] = True
+            return stream
     vsys_id = _resolve_vsys_id(vsys)
     if vsys_id is not None:
         entries, source = _conntrack_entries(limit, vsys_id=vsys_id)
-        return {"entries": entries, "source": source,
+        resp = {"entries": entries, "source": source,
                 "vsys": vsys_id, "vsys_scoped": source.startswith("conntrack")}
+        if stream is not None:
+            resp["stream"] = stream
+        return resp
+    resp = None
     if controld is not None and controld.available():
         try:
             sessions = controld.query("state/sessions")
             if sessions:
                 sessions["entries"] = _live_connections(limit)
-                return sessions
+                resp = sessions
         except Exception:
             pass
-    return {"entries": _live_connections(limit), "source": "psutil"}
+    if resp is None:
+        resp = {"entries": _live_connections(limit), "source": "psutil"}
+    if stream is not None:
+        resp["stream"] = stream
+    return resp
 
 
 def _live_connections(limit: int) -> list:
