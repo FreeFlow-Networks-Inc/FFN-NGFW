@@ -1,7 +1,7 @@
 # Identity-bound hardware accounting
 
-`ffn_ctlease.ko` pins one existing, assured IPv4 UDP conntrack object to a file
-descriptor. `libffn-ctlease.so` performs the native ioctls; `ffn_ctlease.py` is
+`ffn_ctlease.ko` pins one existing, assured IPv4 UDP or established TCP conntrack
+object to a file descriptor. `libffn-ctlease.so` performs the native ioctls; `ffn_ctlease.py` is
 the control-plane binding. None of these components creates connections,
 allocates NAT, forwards packets, installs hardware flows, or enables offload.
 
@@ -27,8 +27,27 @@ it when there are no new hardware deltas.
 The device is mode 0600, requires `CAP_NET_ADMIN` in the bound network
 namespace, and rejects use after crossing into another namespace. It requires
 kernel conntrack accounting, marks, and labels. Helper sessions, fixed timeouts,
-existing kernel/hardware offload, and TCP are unsupported. TCP requires its own
-sequence/window and FIN/RST synchronization before admission is possible.
+sequence-adjusted sessions and existing kernel/hardware offload are unsupported.
+
+## TCP
+
+A flow the hardware carries is invisible to the kernel: conntrack's TCP window
+tracking goes stale and, on hand-back, every segment is `ct state invalid`
+(the PA-5220 stalled a session for five minutes this way on 2026-10-19). The
+lease does what `nf_flow_table` does for its own offloaded flows:
+
+* bind requires an established, assured object and marks both directions
+  `IP_CT_TCP_FLAG_BE_LIBERAL`; the timeout bound is the established default
+  (432000 s) rather than UDP's 300 s, so a leased flow never expires sooner
+  than it would in software;
+* release zeroes both directions' `td_maxwin`, so the windows are re-learned
+  from the next segments; the liberal flags stay, as in the kernel's own
+  teardown fixup, so segments reordered across the hand-back are not invalid;
+* a FIN or RST that reaches the kernel moves the state off ESTABLISHED, and the
+  next update or check returns `ESTALE`: the owner must withdraw the hardware
+  flow. Making such segments reach the kernel (a hardware exception for TCP
+  control flags, or acknowledged withdrawal) is the owner's job; the module
+  cannot see packets.
 
 ## Integration order
 
@@ -65,6 +84,9 @@ compiler. Never load a module built against a different kernel release/config.
 namespace without connected interfaces, creates only test conntrack objects,
 and removes the namespace/module afterward. Tests cover identity rejection,
 delete/recreate, expiry, replay/gaps, duplicate ownership, label/mark changes,
-namespace crossing, byte accounting, reason-without-activity, and timeout bounds.
-The suite passed on Linux 6.8 and the PA-5220's Linux 6.18.49 MIPS64 kernel.
+namespace crossing, byte accounting, reason-without-activity, and timeout bounds,
+on a UDP object and again on an established TCP object, plus TCP's liberal
+windows, established-only binding and FIN/RST invalidation. The UDP suite passed
+on Linux 6.8 and the PA-5220's Linux 6.18.49 MIPS64 kernel; the CI `integration`
+job runs the whole suite against the runner's kernel on every change.
 These are lifecycle tests, not production forwarding qualification.
