@@ -3031,7 +3031,14 @@ async function loadSessions() {
       + (vsysVal !== '' ? ' — vsys ' + vsysVal : '')
       + (st ? ' — dataplane session stream UNAVAILABLE (' + (st.reason || 'not ready') + '); these are the management plane\'s own connections' : '');
   }
-  filterSessions();
+  // The dataplane page was filtered by the server; rendering it must not go
+  // through filterSessions(), whose typing debounce would call loadSessions()
+  // again and loop. The legacy sources still narrow client-side.
+  if (sessionDataplane) renderSessionTable(sessionData); else filterSessions();
+}
+
+function _sessEndpoint(address, port) {
+  return port == null ? _escSP(address) : _escSP(address) + ':' + port;
 }
 
 function _sessState(s) {
@@ -3055,14 +3062,14 @@ function renderSessionTable(data) {
   }
   if (sessionDataplane) {
     tbody.innerHTML = data.map((s,i)=>{
-      const nat = (s.nat && (s.nat.source || s.nat.destination)) ? `${_escSP(s.xsrc)}:${s.xsport} → ${_escSP(s.xdst)}:${s.xdport}` : '<span class="text-dim">-</span>';
+      const nat = (s.nat && (s.nat.source || s.nat.destination)) ? `${_sessEndpoint(s.xsrc, s.xsport)} → ${_sessEndpoint(s.xdst, s.xdport)}` : '<span class="text-dim">-</span>';
       const bytes = s.bytes || {};
       return `<tr>
     <td class="mono" title="${_escSP(s.id)}">${_escSP(s.short_id || (s.id||'').slice(0,12))}</td>
     <td>${s.vsys!=null?`<span class="badge" style="background:var(--accent-dim);color:var(--on-accent);font-family:var(--font-mono)">${_escSP(s.vsys)}</span>`:'<span class="text-dim">--</span>'}</td>
     <td>${_escSP(s.protocol||'-')}</td>
-    <td class="mono">${_escSP(s.src)}:${s.sport}</td>
-    <td class="mono">${_escSP(s.dst)}:${s.dport}</td>
+    <td class="mono">${_sessEndpoint(s.src, s.sport)}</td>
+    <td class="mono">${_sessEndpoint(s.dst, s.dport)}</td>
     <td class="mono">${nat}</td>
     <td>${_escSP(s.rule||'-')}</td>
     <td><span class="badge badge-${s.state_name==='ESTABLISHED'||s.state_name==='ACTIVE'?'up':'info'}">${_escSP(s.state_name||'-')}</span></td>
@@ -3119,8 +3126,8 @@ function showSessionDetail(i) {
     <div><strong>Identity:</strong> <span class="mono">${_escSP(s.id)}</span> (conntrack ${s.ct})</div>
     <div><strong>vsys / rule:</strong> ${_escSP(s.vsys||'-')} / ${_escSP(s.rule||'-')}</div>
     <div><strong>Protocol:</strong> ${_escSP(s.protocol)} (${s.proto})</div>
-    <div><strong>Original (c2s):</strong> <span class="mono">${_escSP(s.src)}:${s.sport} → ${_escSP(s.dst)}:${s.dport}</span></div>
-    ${(nat.source||nat.destination) ? `<div><strong>Translated:</strong> <span class="mono">${_escSP(s.xsrc)}:${s.xsport} → ${_escSP(s.xdst)}:${s.xdport}</span></div>` : ''}
+    <div><strong>Original (c2s):</strong> <span class="mono">${_sessEndpoint(s.src, s.sport)} → ${_sessEndpoint(s.dst, s.dport)}</span></div>
+    ${(nat.source||nat.destination) ? `<div><strong>Translated:</strong> <span class="mono">${_sessEndpoint(s.xsrc, s.xsport)} → ${_sessEndpoint(s.xdst, s.xdport)}</span></div>` : ''}
     <div><strong>NAT:</strong> source ${nat.source?'yes':'no'}, destination ${nat.destination?'yes':'no'}</div>
     <div><strong>State:</strong> ${_escSP(s.state_name||'-')} — <strong>Age:</strong> ${s.age_seconds!=null?Math.round(s.age_seconds)+'s':'-'} — <strong>TTL:</strong> ${s.ttl!=null?s.ttl+'s':'-'}</div>
     <div><strong>Bytes c2s / s2c:</strong> ${fmt(bytes.c2s||0)} / ${fmt(bytes.s2c||0)} — <strong>Packets:</strong> ${fmt(packets.c2s||0)} / ${fmt(packets.s2c||0)}</div>
