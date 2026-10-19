@@ -18,7 +18,10 @@ os.environ["FFN_DB_PATH"] = str(Path(_tmp.name) / "config.db")
 os.environ["FFN_CONFIG_DIR"] = str(Path(_tmp.name) / "config")
 os.environ["FFN_JWT_SECRET"] = "session-views-test-only-signing-secret"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "opt"))
-import ffn_manager as m  # noqa: E402
+try:
+    import ffn_manager as m  # noqa: E402
+except ImportError as exc:  # the manager needs its runtime deps; CI runs this in the auth job
+    raise unittest.SkipTest("ffn_manager runtime dependencies unavailable: %s" % exc)
 
 USER = {"username": "test", "role": "admin"}
 
