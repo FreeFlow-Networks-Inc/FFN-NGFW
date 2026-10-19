@@ -1938,7 +1938,8 @@ async function refreshDashboard() {
       barEl.style.width = Math.min(pct, 100) + '%';
       barEl.style.background = pct > 90 ? 'var(--red)' : (pct > 70 ? 'var(--orange)' : 'var(--green)');
     }
-    document.getElementById('dash-hit-ratio').textContent = `Hit ratio: ${sessions.hit_ratio}% | Hits: ${fmt(sessions.hits)} | Misses: ${fmt(sessions.misses)}`;
+    document.getElementById('dash-hit-ratio').textContent = sessionStreamLine(sessions) ||
+      `Hit ratio: ${sessions.hit_ratio}% | Hits: ${fmt(sessions.hits)} | Misses: ${fmt(sessions.misses)}`;
   }
 
   // Resources
@@ -1975,6 +1976,20 @@ async function refreshDashboard() {
 
 }
 
+/* The dataplane session stream (the PA-5200's FE100 observation feed) is the
+   session table on that hardware: the dashboard counters, the Session Browser
+   and the CLI's `show session` all read the same inventory, so they agree.
+   `s.stream` is present on platforms that have one; `ready` means the headline
+   numbers come from it. Anything else is the management plane's own
+   connection counters, which the line says explicitly. */
+function sessionStreamLine(s) {
+  const st = s && s.stream;
+  if (!st) return '';
+  if (!st.ready) return 'Dataplane session stream: UNAVAILABLE (' + (st.reason || 'not ready') + ') — management-plane connection counters shown';
+  return `Dataplane session stream: ready (seq ${st.sequence}, policy rev ${st.policy_revision}) — ${fmt(st.sessions)} sessions: tcp ${fmt(st.tcp)}, udp ${fmt(st.udp)}, other ${fmt(st.other)} — ` +
+    `FE100 offload: ${fmt(st.software_candidates)} candidates, ${fmt(st.l3_candidates)} L3-ready, ${fmt(st.hardware_admitted)} in hardware (${st.mode}), ${fmt(st.blocked)} blocked`;
+}
+
 /* ---- Dashboard > Throughput (dedicated) ---- */
 function renderDashThroughput(c) {
   c.innerHTML = `
@@ -1992,25 +2007,63 @@ function renderDashSessions(c) {
   c.innerHTML = `
     <div class="page-header"><h2>Session Table</h2></div>
     <div class="grid grid-4 section">
-      <div class="card"><h3>Active</h3><div class="big-num" id="dash-sessions">--</div></div>
-      <div class="card"><h3>Established</h3><div class="big-num" id="dash-established">--</div></div>
-      <div class="card"><h3>LISTEN</h3><div class="big-num" id="dash-listen">--</div></div>
-      <div class="card"><h3>TIME_WAIT</h3><div class="big-num" id="dash-timewait">--</div></div>
+      <div class="card"><h3 id="dash-sessions-label">Active</h3><div class="big-num" id="dash-sessions">--</div></div>
+      <div class="card"><h3 id="dash-established-label">Established</h3><div class="big-num" id="dash-established">--</div></div>
+      <div class="card"><h3 id="dash-listen-label">LISTEN</h3><div class="big-num" id="dash-listen">--</div></div>
+      <div class="card"><h3 id="dash-timewait-label">TIME_WAIT</h3><div class="big-num" id="dash-timewait">--</div></div>
     </div>
-    <div class="card"><div id="dash-hit-ratio" class="text-dim" style="font-size:var(--fs-md)"></div></div>`;
+    <div class="grid grid-4 section" id="dash-offload-tiles" style="display:none">
+      <div class="card"><h3>Software offload candidates</h3><div class="big-num" id="dash-offload-candidates">--</div></div>
+      <div class="card"><h3>L3-ready</h3><div class="big-num" id="dash-offload-l3">--</div></div>
+      <div class="card"><h3>In hardware</h3><div class="big-num" id="dash-offload-hw">--</div></div>
+      <div class="card"><h3>Blocked</h3><div class="big-num" id="dash-offload-blocked">--</div></div>
+    </div>
+    <div class="card"><div id="dash-hit-ratio" class="text-dim" style="font-size:var(--fs-md)"></div>
+      <div id="dash-offload-blockers" class="text-dim" style="font-size:var(--fs-sm);margin-top:6px"></div></div>`;
   loadSessionDetail();
   startRefresh(loadSessionDetail, 3000);
 }
 
 async function loadSessionDetail() {
-  const s = await api('/api/dashboard/sessions');
+  const s = await api('/api/dashboard/sessions?breakdown=true');
   if (!s) return;
   const el = id => document.getElementById(id);
+  const st = s.stream;
+  const tiles = el('dash-offload-tiles');
+  if (st && st.ready) {
+    // The dataplane's table: TCP/UDP by state, with the FE100 offload verdicts.
+    const b = s.breakdown || {};
+    if (el('dash-sessions-label')) el('dash-sessions-label').textContent = 'Active sessions';
+    if (el('dash-established-label')) el('dash-established-label').textContent = 'TCP established';
+    if (el('dash-listen-label')) el('dash-listen-label').textContent = 'TCP other states';
+    if (el('dash-timewait-label')) el('dash-timewait-label').textContent = 'UDP';
+    if (el('dash-sessions')) el('dash-sessions').textContent = fmt(s.active||0);
+    if (el('dash-established')) el('dash-established').textContent = fmt(b.tcp_established||0);
+    if (el('dash-listen')) el('dash-listen').textContent = fmt(b.tcp_other||0);
+    if (el('dash-timewait')) el('dash-timewait').textContent = fmt(b.udp||0);
+    if (tiles) tiles.style.display = '';
+    if (el('dash-offload-candidates')) el('dash-offload-candidates').textContent = fmt(st.software_candidates||0);
+    if (el('dash-offload-l3')) el('dash-offload-l3').textContent = fmt(st.l3_candidates||0);
+    if (el('dash-offload-hw')) el('dash-offload-hw').textContent = fmt(st.hardware_admitted||0);
+    if (el('dash-offload-blocked')) el('dash-offload-blocked').textContent = fmt(st.blocked||0);
+    if (el('dash-hit-ratio')) el('dash-hit-ratio').textContent =
+      `${fmt(s.active||0)} / ${fmt(s.max_sessions||0)} sessions (${(s.capacity_percent||0).toFixed(2)}% of the dataplane table) — ${sessionStreamLine(s)}`;
+    const blockers = Object.entries(st.blockers || {}).slice(0, 8).map(([k, v]) => `${_escSP(k)} ${fmt(v)}`).join(' · ');
+    if (el('dash-offload-blockers')) el('dash-offload-blockers').textContent = blockers ? 'Why sessions are not offload candidates: ' + blockers : '';
+    return;
+  }
+  if (tiles) tiles.style.display = 'none';
+  if (el('dash-sessions-label')) el('dash-sessions-label').textContent = 'Active';
+  if (el('dash-established-label')) el('dash-established-label').textContent = 'Established';
+  if (el('dash-listen-label')) el('dash-listen-label').textContent = 'LISTEN';
+  if (el('dash-timewait-label')) el('dash-timewait-label').textContent = 'TIME_WAIT';
   if (el('dash-sessions')) el('dash-sessions').textContent = fmt(s.active||s.established||0);
   if (el('dash-established')) el('dash-established').textContent = fmt(s.established||0);
   if (el('dash-listen')) el('dash-listen').textContent = fmt(s.listen||0);
   if (el('dash-timewait')) el('dash-timewait').textContent = fmt(s.time_wait||0);
-  if (el('dash-hit-ratio')) el('dash-hit-ratio').textContent = `Total: ${s.total_connections||0} connections | Hit ratio: ${s.hit_ratio}%`;
+  if (el('dash-hit-ratio')) el('dash-hit-ratio').textContent = (sessionStreamLine(s) ? sessionStreamLine(s) + ' | ' : '') +
+    `Total: ${s.total_connections||0} connections | Hit ratio: ${s.hit_ratio}%`;
+  if (el('dash-offload-blockers')) el('dash-offload-blockers').textContent = '';
 }
 
 /* ---- Dashboard > DDoS Heatmap (dedicated) ---- */
@@ -2888,14 +2941,31 @@ function renderSessionBrowser(c) {
     <div class="page-header"><h2>Session Browser</h2>
       <span id="sess-source" class="text-dim" style="font-size:var(--fs-sm)"></span>
     </div>
+    <div id="sess-counters" class="grid grid-4 section" style="display:none">
+      <div class="card"><h3>Sessions</h3><div class="big-num" id="sess-count-total">--</div><div class="text-dim" id="sess-count-proto" style="font-size:var(--fs-xs)"></div></div>
+      <div class="card"><h3>Software offload candidates</h3><div class="big-num" id="sess-count-candidates">--</div></div>
+      <div class="card"><h3>L3-ready</h3><div class="big-num" id="sess-count-l3">--</div></div>
+      <div class="card"><h3>In hardware</h3><div class="big-num" id="sess-count-hw">--</div><div class="text-dim" id="sess-count-blocked" style="font-size:var(--fs-xs)"></div></div>
+    </div>
     <div class="filters-bar">
-      <input type="text" id="sess-filter" placeholder="Filter by IP, port, process..." oninput="filterSessions()">
+      <input type="text" id="sess-filter" placeholder="Filter by address, port, rule, blocker..." oninput="filterSessions()">
       <select id="sess-vsys" onchange="loadSessions()" style="margin-left:8px">
         <option value="">All vsys</option>
       </select>
+      <select id="sess-offload" onchange="loadSessions()" style="margin-left:8px;display:none">
+        <option value="">All offload states</option>
+        <option value="candidate">Software candidates</option>
+        <option value="l3-ready">L3-ready</option>
+        <option value="blocked">Blocked</option>
+      </select>
+      <select id="sess-proto" onchange="loadSessions()" style="margin-left:8px;display:none">
+        <option value="">All protocols</option>
+        <option value="tcp">TCP</option>
+        <option value="udp">UDP</option>
+      </select>
     </div>
     <div class="card"><div class="table-wrap" style="max-height:520px;overflow-y:auto">
-      <table><thead><tr><th>vsys</th><th>Proto</th><th>Local</th><th>Remote</th><th>State</th><th>PID</th><th>Process</th><th></th></tr></thead>
+      <table><thead id="session-table-head"><tr><th>vsys</th><th>Proto</th><th>Local</th><th>Remote</th><th>State</th><th>PID</th><th>Process</th><th></th></tr></thead>
       <tbody id="session-table-body"></tbody></table>
     </div></div>`;
   loadSessionVsysOptions();
@@ -2914,24 +2984,101 @@ async function loadSessionVsysOptions() {
 
 function _sessVsys(s) { return (s.vsys_id != null) ? s.vsys_id : (s.vsys != null ? s.vsys : null); }
 
-let sessionData = [];
+let sessionData = [], sessionDataplane = false;
+const SESSION_STREAM_SOURCE = 'dataplane-session-stream';
+const LEGACY_SESSION_HEAD = '<tr><th>vsys</th><th>Proto</th><th>Local</th><th>Remote</th><th>State</th><th>PID</th><th>Process</th><th></th></tr>';
+const DATAPLANE_SESSION_HEAD = '<tr><th>ID</th><th>vsys</th><th>Proto</th><th>Source</th><th>Destination</th><th>NAT</th><th>Rule</th><th>State</th><th>Age</th><th>Bytes c2s/s2c</th><th>Offload</th><th></th></tr>';
+
 async function loadSessions() {
-  const vsysSel = document.getElementById('sess-vsys');
-  const vsysVal = vsysSel ? vsysSel.value : '';
-  const r = await api('/api/monitor/sessions?limit=200' + (vsysVal !== '' ? '&vsys=' + encodeURIComponent(vsysVal) : ''));
+  const val = id => { const e = document.getElementById(id); return e ? e.value : ''; };
+  const vsysVal = val('sess-vsys'), offloadVal = val('sess-offload'), protoVal = val('sess-proto');
+  // The dataplane inventory filters server-side (the MP page is bounded); the
+  // text box also narrows the page here so the legacy sources keep working.
+  const q = (document.getElementById('sess-filter') || {}).value || '';
+  let query = '/api/monitor/sessions?limit=500';
+  if (vsysVal !== '') query += '&vsys=' + encodeURIComponent(vsysVal);
+  if (offloadVal !== '') query += '&offload=' + encodeURIComponent(offloadVal);
+  if (protoVal !== '') query += '&protocol=' + encodeURIComponent(protoVal);
+  if (q.trim() !== '') query += '&q=' + encodeURIComponent(q.trim());
+  const r = await api(query);
   if (!r) return;
   sessionData = r.entries || [];
+  sessionDataplane = r.source === SESSION_STREAM_SOURCE;
+  const head = document.getElementById('session-table-head');
+  if (head) head.innerHTML = sessionDataplane ? DATAPLANE_SESSION_HEAD : LEGACY_SESSION_HEAD;
+  for (const id of ['sess-offload', 'sess-proto']) {
+    const e = document.getElementById(id);
+    if (e) e.style.display = sessionDataplane ? '' : 'none';
+  }
+  const counters = document.getElementById('sess-counters');
+  if (counters) counters.style.display = sessionDataplane ? '' : 'none';
   const src = document.getElementById('sess-source');
-  if (src) src.textContent = 'Source: ' + (r.source || 'unknown') + ' — ' + sessionData.length + ' live connection(s)'
-    + (vsysVal !== '' ? ' — vsys ' + vsysVal : '');
-  filterSessions();
+  if (sessionDataplane) {
+    const c = r.counters || {};
+    const set = (id, text) => { const e = document.getElementById(id); if (e) e.textContent = text; };
+    set('sess-count-total', fmt(c.sessions || 0));
+    set('sess-count-proto', `tcp ${fmt(c.tcp || 0)} · udp ${fmt(c.udp || 0)} · other ${fmt(c.other || 0)} · NAT src ${fmt(c.nat_source || 0)} / dst ${fmt(c.nat_destination || 0)}`);
+    set('sess-count-candidates', fmt(c.software_candidates || 0));
+    set('sess-count-l3', fmt(c.l3_candidates || 0));
+    set('sess-count-hw', fmt(c.hardware_admitted || 0));
+    set('sess-count-blocked', `${fmt(c.blocked || 0)} blocked · ${r.mode || 'observation-only'}`);
+    if (src) src.textContent = `Source: dataplane session stream (seq ${r.sequence}, ${r.age_seconds != null ? r.age_seconds.toFixed(1) + 's old' : 'fresh'}) — ` +
+      `${fmt(r.matched)} of ${fmt(r.total)} sessions match` + (sessionData.length < (r.matched || 0) ? `, first ${sessionData.length} shown` : '') +
+      (vsysVal !== '' ? ' — vsys ' + vsysVal : '');
+  } else if (src) {
+    const st = r.stream;
+    src.textContent = 'Source: ' + (r.source || 'unknown') + ' — ' + sessionData.length + ' live connection(s)'
+      + (vsysVal !== '' ? ' — vsys ' + vsysVal : '')
+      + (st ? ' — dataplane session stream UNAVAILABLE (' + (st.reason || 'not ready') + '); these are the management plane\'s own connections' : '');
+  }
+  // The dataplane page was filtered by the server; rendering it must not go
+  // through filterSessions(), whose typing debounce would call loadSessions()
+  // again and loop. The legacy sources still narrow client-side.
+  if (sessionDataplane) renderSessionTable(sessionData); else filterSessions();
+}
+
+function _sessEndpoint(address, port) {
+  return port == null ? _escSP(address) : _escSP(address) + ':' + port;
+}
+
+function _sessState(s) {
+  if (!sessionDataplane) return s.state || '-';
+  return s.state_name || '-';
+}
+
+function _sessOffloadBadge(s) {
+  const kind = s.offload || 'blocked';
+  const cls = kind === 'l3-ready' ? 'up' : (kind === 'candidate' ? 'info' : 'warn');
+  const title = (s.blockers || []).join(', ');
+  return `<span class="badge badge-${cls}" title="${_escSP(title)}">${_escSP(kind)}</span>`;
 }
 
 function renderSessionTable(data) {
   const tbody = document.getElementById('session-table-body');
   if (!tbody) return;
   if (!data.length) {
-    tbody.innerHTML = '<tr><td colspan="8" class="text-dim">No active connections</td></tr>';
+    tbody.innerHTML = `<tr><td colspan="${sessionDataplane ? 12 : 8}" class="text-dim">${sessionDataplane ? 'No sessions match' : 'No active connections'}</td></tr>`;
+    return;
+  }
+  if (sessionDataplane) {
+    tbody.innerHTML = data.map((s,i)=>{
+      const nat = (s.nat && (s.nat.source || s.nat.destination)) ? `${_sessEndpoint(s.xsrc, s.xsport)} → ${_sessEndpoint(s.xdst, s.xdport)}` : '<span class="text-dim">-</span>';
+      const bytes = s.bytes || {};
+      return `<tr>
+    <td class="mono" title="${_escSP(s.id)}">${_escSP(s.short_id || (s.id||'').slice(0,12))}</td>
+    <td>${s.vsys!=null?`<span class="badge" style="background:var(--accent-dim);color:var(--on-accent);font-family:var(--font-mono)">${_escSP(s.vsys)}</span>`:'<span class="text-dim">--</span>'}</td>
+    <td>${_escSP(s.protocol||'-')}</td>
+    <td class="mono">${_sessEndpoint(s.src, s.sport)}</td>
+    <td class="mono">${_sessEndpoint(s.dst, s.dport)}</td>
+    <td class="mono">${nat}</td>
+    <td>${_escSP(s.rule||'-')}</td>
+    <td><span class="badge badge-${s.state_name==='ESTABLISHED'||s.state_name==='ACTIVE'?'up':'info'}">${_escSP(s.state_name||'-')}</span></td>
+    <td>${s.age_seconds!=null?Math.round(s.age_seconds)+'s':'-'}</td>
+    <td class="mono">${fmt(bytes.c2s||0)} / ${fmt(bytes.s2c||0)}</td>
+    <td>${_sessOffloadBadge(s)}</td>
+    <td><button class="btn btn-xs" onclick="showSessionDetail(${i})">Inspect</button></td>
+  </tr>`;
+    }).join('');
     return;
   }
   tbody.innerHTML = data.map((s,i)=>{
@@ -2949,12 +3096,21 @@ function renderSessionTable(data) {
   }).join('');
 }
 
+let _sessFilterTimer = null;
 function filterSessions() {
   const q = (document.getElementById('sess-filter').value||'').toLowerCase();
   // client-side vsys filter as a fallback when the API ignores the vsys param
   const vsysSel = document.getElementById('sess-vsys');
   const vsysVal = vsysSel ? vsysSel.value : '';
   let data = sessionData;
+  if (sessionDataplane) {
+    // The server filtered this page by the text; typing re-queries so the
+    // match is over the whole inventory, not the 500 rows already here.
+    clearTimeout(_sessFilterTimer);
+    _sessFilterTimer = setTimeout(loadSessions, 400);
+    renderSessionTable(data);
+    return;
+  }
   if (vsysVal !== '') data = data.filter(s => String(_sessVsys(s)) === String(vsysVal));
   if (q) data = data.filter(s=>((s.local||'')+(s.remote||'')+(s.process||'')+(s.proto||'')).toLowerCase().includes(q));
   renderSessionTable(data);
@@ -2963,8 +3119,27 @@ function filterSessions() {
 function showSessionDetail(i) {
   const s = sessionData[i];
   if (!s) return;
+  const box = document.getElementById('session-detail-content');
+  if (sessionDataplane) {
+    const nat = s.nat || {}, l3 = s.l3, bytes = s.bytes || {}, packets = s.packets || {};
+    box.innerHTML = `
+    <div><strong>Identity:</strong> <span class="mono">${_escSP(s.id)}</span> (conntrack ${s.ct})</div>
+    <div><strong>vsys / rule:</strong> ${_escSP(s.vsys||'-')} / ${_escSP(s.rule||'-')}</div>
+    <div><strong>Protocol:</strong> ${_escSP(s.protocol)} (${s.proto})</div>
+    <div><strong>Original (c2s):</strong> <span class="mono">${_sessEndpoint(s.src, s.sport)} → ${_sessEndpoint(s.dst, s.dport)}</span></div>
+    ${(nat.source||nat.destination) ? `<div><strong>Translated:</strong> <span class="mono">${_sessEndpoint(s.xsrc, s.xsport)} → ${_sessEndpoint(s.xdst, s.xdport)}</span></div>` : ''}
+    <div><strong>NAT:</strong> source ${nat.source?'yes':'no'}, destination ${nat.destination?'yes':'no'}</div>
+    <div><strong>State:</strong> ${_escSP(s.state_name||'-')} — <strong>Age:</strong> ${s.age_seconds!=null?Math.round(s.age_seconds)+'s':'-'} — <strong>TTL:</strong> ${s.ttl!=null?s.ttl+'s':'-'}</div>
+    <div><strong>Bytes c2s / s2c:</strong> ${fmt(bytes.c2s||0)} / ${fmt(bytes.s2c||0)} — <strong>Packets:</strong> ${fmt(packets.c2s||0)} / ${fmt(packets.s2c||0)}</div>
+    <div><strong>Offload:</strong> ${_sessOffloadBadge(s)} — software candidate: ${s.candidate?'yes':'no'}</div>
+    <div><strong>Blockers:</strong> ${(s.blockers||[]).length ? _escSP((s.blockers||[]).join(', ')) : 'none'}</div>
+    ${l3 ? `<div><strong>L3 plan:</strong> ${l3.available?'ready':'not ready'}${l3.pair ? ' (' + _escSP(l3.pair.join(' → ')) + ')' : ''}${(l3.blockers||[]).length ? ' — ' + _escSP(l3.blockers.join(', ')) : ''}</div>` : ''}
+    <div><strong>Hardware admission:</strong> none (observation only)</div>`;
+    document.getElementById('modal-session').classList.add('show');
+    return;
+  }
   const vt = _sessVsys(s);
-  document.getElementById('session-detail-content').innerHTML = `
+  box.innerHTML = `
     <div><strong>vsys tag:</strong> ${vt!=null?vt:'(untagged / shared)'}</div>
     <div><strong>Protocol:</strong> ${s.proto}</div>
     <div><strong>Local:</strong> ${s.local}</div>

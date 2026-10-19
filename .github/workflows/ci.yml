@@ -263,6 +263,9 @@ jobs:
       - name: management input security regressions
         run: python tests/test_manager_security.py
 
+      - name: session views over the dataplane session inventory
+        run: python tests/test_manager_session_views.py
+
       - name: console settings and snapshot workflows
         run: python tests/test_console_api.py
 
