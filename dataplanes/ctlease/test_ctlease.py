@@ -338,7 +338,8 @@ class TcpLeaseTests(LeaseTests):
     def test_fin_or_rst_reaching_the_kernel_invalidates(self):
         fd = self.bound()
         netlink(0, tcp_state(TCP_FIN_WAIT))
-        self.error(errno.ESTALE, fd, 2, b'')
+        with self.assertRaises(OSError) as caught: fcntl.ioctl(fd, COMMANDS[2], 0)
+        self.assertEqual(caught.exception.errno, errno.ESTALE)
         self.error(errno.ESTALE, fd, 1, Update(sequence=1, packets=(1, 0), octets=(100, 0), active=1))
         # the object itself is untouched: the owner withdraws the hardware flow and closes
         self.assertEqual(tcp_state_of(), TCP_FIN_WAIT)
