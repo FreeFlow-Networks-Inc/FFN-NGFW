@@ -170,9 +170,13 @@ def route_for(destination, state):
     if len(routes) != 1:
         raise ValueError('Ambiguous or multipath route')
     route = routes[0]
+    # `onlink` only says the gateway is reachable on the device without a
+    # covering prefix (a /32 WAN address with a provider gateway); the next hop
+    # is still one neighbour on that device, which resolve() requires to be
+    # valid. Any other flag keeps the session on the software path.
     if (route.get('type', 'unicast') != 'unicast' or
         any(k in route for k in ('nexthops', 'nhid', 'encap', 'via', 'expires')) or
-        route.get('tos', 0) not in (0, '0x00') or route.get('flags') or
+        route.get('tos', 0) not in (0, '0x00') or set(route.get('flags') or ()) - {'onlink'} or
         route.get('table', 'main') not in ('main', 254)):
         raise ValueError('Selected route requires the software exception path')
     return route
