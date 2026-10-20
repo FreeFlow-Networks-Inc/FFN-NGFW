@@ -31,6 +31,13 @@ import ffn_payload as payload
 MAX_BYTES = 128 * 1024 * 1024
 MAX_FILES = 4096
 SERVICES = ('ffn-controld.service', 'ffn-configd.service', 'ffn-manager-v2.service')
+# A unit that is PartOf=, Requires= or BindsTo= one of SERVICES is stopped with it and, unlike
+# after a crash, never started again by systemd: Restart= does not apply to an explicit stop.
+# The installer therefore asks systemd which units those are before it stops anything, and
+# starts the ones its stop took down once the services are back. 2026-10-20: the platform's
+# ffn-route-link-feed.service stayed stopped after a patch install, the dataplane's link
+# observation went stale and both default routes were withdrawn for fifteen minutes.
+DEPENDENT = re.compile(r'[A-Za-z0-9][A-Za-z0-9:_.@\\-]{0,254}\.(service|timer|socket|path)')
 TERMINAL = ('succeeded', 'failed', 'rolled_back')
 
 
@@ -314,12 +321,50 @@ class PatchManager:
         self._state(staged={**meta, 'files': [{k: v for k, v in e.items() if k != 'content'} for e in package['files']],
                             'requires': package.get('requires', {}), 'staged_at': int(time.time())})
 
-    def _service(self, verb, unit):
-        # Both executable and unit set are fixed by the installed updater.
-        if verb not in ('is-active', 'stop', 'start') or unit not in SERVICES:
+    def _service(self, verb, unit, dependents=()):
+        # Both executable and unit set are fixed by the installed updater: the services it
+        # replaces code under, and the units systemd itself named as depending on them.
+        if verb not in ('is-active', 'stop', 'start') or (unit not in SERVICES and unit not in dependents):
             raise PatchError('Invalid service operation')
         return self.run(['systemctl', verb, unit], executable='systemctl', shell=False,
                         capture_output=True, timeout=60).returncode == 0
+
+    def _dependents(self, services):
+        """The active units systemd lists as depending on `services` (reverse dependencies),
+        in the order found: the services themselves, targets and slices excluded. Asked
+        before anything is stopped, because afterwards they are simply inactive. Empty when
+        systemd cannot say."""
+        found = []
+        for unit in services:
+            try:
+                result = self.run(['systemctl', 'list-dependencies', '--reverse', '--plain', '--full', '--no-pager', '--no-legend', unit],
+                                  executable='systemctl', shell=False, capture_output=True, text=True, timeout=60)
+            except (OSError, subprocess.SubprocessError):
+                continue
+            output = result.stdout if isinstance(getattr(result, 'stdout', None), str) else ''
+            if result.returncode or not output:
+                continue
+            for line in output.splitlines():
+                words = line.split()
+                name = words[-1] if words else ''
+                if name == unit or name in SERVICES or name in found or not DEPENDENT.fullmatch(name):
+                    continue
+                # systemd named it, and the name is a unit name: that is the allow-list.
+                if self._service('is-active', name, dependents=(name,)):
+                    found.append(name)
+        return found
+
+    def _start_dependents(self, dependents):
+        """Start the dependents the stop took down. A unit still active is left alone; one that
+        will not start is reported, not fatal: the code is installed and the services are up,
+        and the alert evaluator watches the feeds."""
+        not_started = []
+        for unit in dependents:
+            if self._service('is-active', unit, dependents=dependents):
+                continue
+            if not self._service('start', unit, dependents=dependents):
+                not_started.append(unit)
+        return not_started
 
     def _restart(self, services):
         for unit in services:
@@ -342,6 +387,7 @@ class PatchManager:
         services = [unit for unit in SERVICES if self._service('is-active', unit)]
         if 'ffn-manager-v2.service' not in services:
             raise PatchError('The management service must be active before installation')
+        dependents = self._dependents(services)
         backup = uuid.uuid4().hex
         entries = []
         for item in package['files']:
@@ -354,7 +400,7 @@ class PatchManager:
                     raise PatchError('File changed while preparing backup: ' + item['path'])
                 atomic(confined(self.state / backup, item['path']), original)
             entries.append(entry)
-        journal = {'phase': 'prepared', 'backup': backup, 'files': entries, 'services': services,
+        journal = {'phase': 'prepared', 'backup': backup, 'files': entries, 'services': services, 'dependents': dependents,
                    'previous': read(self.state / 'state.json', {}).get('installed'), 'release': meta}
         save(self.state / 'journal.json', journal)
         try:
@@ -368,12 +414,14 @@ class PatchManager:
                 elif target.exists():
                     remove(target)
             self._restart(services)
-            self._state(installed={**meta, 'at': int(time.time())}, staged=None)
+            not_started = self._start_dependents(dependents)
+            self._state(installed={**meta, 'at': int(time.time())}, staged=None, dependents_not_started=not_started)
             journal['phase'] = 'committed'
             save(self.state / 'journal.json', journal)
         except Exception:
             self.restore(check_current=False)
             raise PatchError('Installation failed; previous files and services restored') from None
+        return not_started
 
     def restore(self, check_current=True):
         journal = read(self.state / 'journal.json')
@@ -394,7 +442,10 @@ class PatchManager:
                 if digest(content) != entry['before']:
                     raise PatchError('Rollback backup is damaged')
                 contents[entry['path']] = content
-        journal['phase'] = 'restoring'
+        # The dependents recorded before the installation's stop, plus any active now: after a
+        # failed installation the former are already down and would not be listed again.
+        dependents = list(dict.fromkeys(list(journal.get('dependents') or []) + self._dependents(journal['services'])))
+        journal.update(phase='restoring', dependents=dependents)
         save(self.state / 'journal.json', journal)
         for unit in reversed(journal['services']):
             if not self._service('stop', unit):
@@ -406,8 +457,10 @@ class PatchManager:
             elif target.exists():
                 remove(target)
         self._restart(journal['services'])
-        self._state(installed=journal['previous'], staged=None)
+        not_started = self._start_dependents(dependents)
+        self._state(installed=journal['previous'], staged=None, dependents_not_started=not_started)
         remove(self.state / 'journal.json')
+        return not_started
 
     def submit(self, action, actor, url='', expected=''):
         if action not in ('check', 'stage', 'install', 'rollback', 'recover'):
@@ -464,6 +517,7 @@ class PatchManager:
         save(self.state / 'job.json', job)
         try:
             action = job['action']
+            not_started = []
             if action == 'check':
                 _, release = self.check(job['url'])
                 job['version'] = release['version']
@@ -471,14 +525,15 @@ class PatchManager:
                 self.stage(job['url'], job['expected'])
                 job['version'] = read(self.state / 'state.json')['staged']['version']
             elif action == 'install':
-                self.install(job['expected'])
+                not_started = self.install(job['expected'])
             elif action == 'rollback':
                 if (read(self.state / 'state.json', {}).get('installed') or {}).get('sha256') != job['expected']:
                     raise PatchError('Installed patch changed; review rollback again')
-                self.restore()
+                not_started = self.restore()
             elif read(self.state / 'journal.json', {}).get('phase') not in (None, 'committed'):
-                self.restore(check_current=False)
-            job.update(status='succeeded', message=action.capitalize() + ' completed')
+                not_started = self.restore(check_current=False)
+            job.update(status='succeeded', message=action.capitalize() + ' completed' +
+                       ('; not started again: ' + ', '.join(not_started) if not_started else ''))
         except Exception as exc:
             job.update(status='failed', message=exc.public_message if isinstance(exc, PatchError) else 'Patch operation failed; inspect the worker journal')
         job['finished_at'] = int(time.time())

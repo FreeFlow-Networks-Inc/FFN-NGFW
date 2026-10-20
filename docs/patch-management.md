@@ -11,8 +11,15 @@ and content updater remains under **Full image / content updates**.
    replaced and deleted files and required dependencies.
 4. **Install staged patch** revalidates the signature, hashes, exact installed
    baseline, dependencies and space. It journals backups, stops management
-   services, applies files, and restarts previously active services. An independent
-   systemd worker survives the manager's restart; the page polls persisted status.
+   services, applies files, and restarts previously active services, then starts
+   the units systemd stopped with them (`PartOf=`, `Requires=`, `BindsTo=`; asked
+   with `systemctl list-dependencies --reverse` before the stop): a `Restart=`
+   does not apply to an explicit stop, and on 2026-10-20 the platform's
+   `ffn-route-link-feed.service` stayed down after an install until the dataplane
+   had withdrawn its default routes. A dependent that will not start is named in
+   the job message and `dependents_not_started`, not treated as a failed install.
+   An independent systemd worker survives the manager's restart; the page polls
+   persisted status.
 5. **Roll back latest patch** restores saved files and the previous patch version.
    Local changes block rollback. Failed installations attempt automatic restoration.
    After power loss or failed restoration, **Recover interrupted operation** resumes

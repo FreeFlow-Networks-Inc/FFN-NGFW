@@ -18,6 +18,18 @@ It is ephemeral and retryable after a transport failure, so it does not create
 a durable configuration transaction or block later commits. Actual configuration
 applies retain their journal and explicit reconciliation requirements.
 
+The lease has a second writer on the PA-5200: the dataplane port owner's
+`ffn-portd links` delivery (every three seconds, from the same faceplate rows)
+records the same observation, so the tracked routes no longer depend on the
+MP feed alone. On 2026-10-20 that feed was stopped with the control daemon by
+a patch install and not started again; after 60 s every tracked route was
+withdrawn with `hardware-link-observation-stale`, for fifteen minutes, and no
+check said so. Now the `tracked-routes` convergence subsystem (fed by the
+platform's `tracked-routes status` resource) reports each tracked route's
+installed/reason and is `failed` for a stale observation, ffn-alerts pages
+on it, the patch installer starts the units its stop propagated to, and the
+convergence page's reapply restarts the feed.
+
 A gateway outside the interface prefix is retained as configured but withheld
 with `gateway-outside-interface-prefix`. The explicit on-link option permits
 ISP-supplied /32 plus directly reachable gateway arrangements; it is never

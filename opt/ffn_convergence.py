@@ -20,7 +20,13 @@ subsystem, from the running configuration and live observations:
   dhcp-server            the dataplane daemon serves every committed DHCP server;
   management-access      the MP's interface-service tunnel is running and the
                          dataplane front end reports its channel ready, so the
-                         management profiles' listeners reach the manager.
+                         management profiles' listeners reach the manager;
+  tracked-routes         every link-tracked static route is installed on the
+                         dataplane, as the selected platform's `tracked-routes
+                         status` resource reports it (failed when a route is
+                         withdrawn because the hardware link observation went
+                         stale: 2026-10-20, both default routes, fifteen
+                         minutes, nothing said so).
 
 States per subsystem: converged, drift, failed, pending, unavailable. The
 overall state is the worst of them. Nothing here changes anything; `reapply`
@@ -357,6 +363,33 @@ def service_routes(root, status):
                      ['%s via %s as %s' % (s, r['device'], r['address']) for s, r in sorted(expected.items())])
 
 
+# ---------------------------------------------------------------- tracked routes
+TRACKED_ROUTES_KEY = ('tracked-routes', 'status')   # the selected platform's check, through the MP control daemon
+# The MP feed the dataplane's link observation came from alone until 2026-10-20; the platform's
+# port-owner delivery writes it too now, and `reapply` restarts this unit because a feed that
+# systemd stopped with the control daemon (PartOf=) is not started again by its Restart=.
+LINK_FEED_UNIT = 'ffn-route-link-feed.service'
+
+
+def tracked_routes(root, status):
+    """The dataplane's link-tracked routes as the selected platform reports them: each tracked
+    route's installed/reason, judged by the platform because it owns the observation and the
+    reasons (pa5200: management/daemon_backend.py tracked_routes_report). This subsystem only
+    refuses a report it cannot vouch for. `root` (the committed configuration) is not consulted:
+    the platform's dataplane journal is the committed intent for the tracker."""
+    del root
+    if not isinstance(status, dict) or 'error' in status:
+        reason = (status or {}).get('error') if isinstance(status, dict) else 'the selected platform offers no tracked-routes resource'
+        return subsystem('tracked-routes', 'dp', 'unavailable', 'Tracked-route state is not observable', [str(reason)[:200]])
+    state, details = status.get('state'), status.get('details')
+    if (state not in RANK or not isinstance(status.get('summary'), str) or not isinstance(details, list)
+            or not all(isinstance(d, str) for d in details)):
+        return subsystem('tracked-routes', 'dp', 'unavailable', 'Tracked-route report is malformed')
+    routes = status.get('routes') if isinstance(status.get('routes'), list) else []
+    return subsystem('tracked-routes', 'dp', state, status['summary'][:200], [d[:200] for d in details[:8]],
+                     routes=[r for r in routes if isinstance(r, dict)][:64], feed=status.get('feed') if isinstance(status.get('feed'), dict) else None)
+
+
 # ---------------------------------------------------------------- security runtime
 def parse_health(output):
     """(record, dp uptime seconds, dp boot id) from the HEALTH_COLLECT output; the record is None when absent."""
@@ -474,7 +507,7 @@ def assess(config_path=CONFIG, receipt_path=RECEIPT, lifecycle=(LIFECYCLE, LIFEC
         mp_boot = None
     boots = processor_boots(lifecycle)
     subsystems = [replay(read_json(receipt_path), mp_boot, boots, current)]
-    for check, key in ((faceplate, ('faceplate', 'status')), (aggregates, ('aggregates', 'status'))):
+    for check, key in ((faceplate, ('faceplate', 'status')), (aggregates, ('aggregates', 'status')), (tracked_routes, TRACKED_ROUTES_KEY)):
         try:
             subsystems.append(check(root, resources.get(key)))
         except Exception as error:
@@ -523,9 +556,26 @@ def assess(config_path=CONFIG, receipt_path=RECEIPT, lifecycle=(LIFECYCLE, LIFEC
                 subsystems=subsystems, actions=actions)
 
 
+def restart_feeds(run=subprocess.run, feeds=(LINK_FEED_UNIT,)):
+    """Restart the MP feeds the dataplane's tracked routes depend on; what happened, per unit."""
+    outcome = {}
+    for unit in feeds:
+        try:
+            result = run(['systemctl', 'restart', '--no-block', unit], capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.SubprocessError) as error:
+            outcome[unit] = str(error)[:200]
+            continue
+        outcome[unit] = 'restarted' if not result.returncode else (result.stderr or result.stdout or 'systemctl failed').strip()[:200]
+    return outcome
+
+
 def reapply(request_path=REQUEST, lifecycle=(LIFECYCLE, LIFECYCLE_JOURNAL), boot_id_path=BOOT_ID, unit=REPLAY_UNIT,
-            run=subprocess.run):
-    """Start the lifecycle's replay unit for the current boots; never fabricate a request."""
+            run=subprocess.run, feeds=(LINK_FEED_UNIT,)):
+    """Start the lifecycle's replay unit for the current boots; never fabricate a request.
+
+    First the feeds (restart_feeds): a replay does not touch them, and a stopped feed is what
+    withdrew the tracked default routes on 2026-10-20."""
+    restarted = restart_feeds(run, feeds)
     request = read_json(request_path)
     try:
         mp_boot = Path(boot_id_path).read_text().strip()
@@ -533,16 +583,16 @@ def reapply(request_path=REQUEST, lifecycle=(LIFECYCLE, LIFECYCLE_JOURNAL), boot
         mp_boot = None
     boots = processor_boots(lifecycle)
     if not isinstance(request, dict) or request.get('mp_boot_id') != mp_boot:
-        return dict(started=False, reason='no replay request for this MP boot; the lifecycle supervisor issues it after the planes boot')
+        return dict(started=False, reason='no replay request for this MP boot; the lifecycle supervisor issues it after the planes boot', feeds=restarted)
     if boots is not None and request.get('processor_boots') != boots:
-        return dict(started=False, reason='the replay request is for other CP/DP boots; wait for the supervisor')
+        return dict(started=False, reason='the replay request is for other CP/DP boots; wait for the supervisor', feeds=restarted)
     try:
         result = run(['systemctl', 'start', '--no-block', unit], capture_output=True, text=True, timeout=15)
     except (OSError, subprocess.SubprocessError) as error:
-        return dict(started=False, reason='could not start ' + unit + ': ' + str(error)[:200])
+        return dict(started=False, reason='could not start ' + unit + ': ' + str(error)[:200], feeds=restarted)
     if result.returncode:
-        return dict(started=False, reason=(result.stderr or result.stdout or 'systemctl failed').strip()[:300])
-    return dict(started=True, unit=unit, processor_boots=boots)
+        return dict(started=False, reason=(result.stderr or result.stdout or 'systemctl failed').strip()[:300], feeds=restarted)
+    return dict(started=True, unit=unit, processor_boots=boots, feeds=restarted)
 
 
 def live_report(no_planes=False):
@@ -555,11 +605,11 @@ def live_report(no_planes=False):
             from ffn_controld_client import get
             import uuid
             client = get()
-            for key in (('faceplate', 'status'), ('aggregates', 'status')):
+            for key in (('faceplate', 'status'), ('aggregates', 'status'), TRACKED_ROUTES_KEY):
                 answer = client.plane_request({'v': 1, 'id': str(uuid.uuid4()), 'resource': key[0], 'action': key[1], 'payload': {}})
                 resources[key] = answer.get('result') if isinstance(answer, dict) and answer.get('ok') else {'error': str((answer or {}).get('error'))}
         except Exception as error:
-            resources = {('faceplate', 'status'): {'error': str(error)}, ('aggregates', 'status'): {'error': str(error)}}
+            resources = {key: {'error': str(error)} for key in (('faceplate', 'status'), ('aggregates', 'status'), TRACKED_ROUTES_KEY)}
         try:
             import ffn_ifmgmt_audit as audit
             if Path('/etc/ffn-ngfw/ssh-cp.conf').exists():

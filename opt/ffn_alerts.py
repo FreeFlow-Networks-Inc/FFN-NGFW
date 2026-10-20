@@ -44,7 +44,8 @@ RECENT_SHOWN = 30
 RESTART_FLAP = 3
 WATCHED_UNITS = ('ffn-fe100-session-feed.service', 'ffn-aggregate@ae1.service', 'ffn-controld.service',
                  'ffn-managementd.service', 'ffn-manager-v2.service', 'ffn-plane@mp.service',
-                 'ffn-lifecycle-reconcile.service', 'ffn-interface-service-tunnel.service')
+                 'ffn-lifecycle-reconcile.service', 'ffn-interface-service-tunnel.service',
+                 'ffn-route-link-feed.service')
 RANK = {'critical': 2, 'warning': 1, 'info': 0}
 
 

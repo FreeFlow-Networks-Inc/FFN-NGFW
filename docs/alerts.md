@@ -26,6 +26,14 @@ evaluations (about four minutes), so a single slow plane request never
 pages anyone; it is cleared the first time it is absent, with the duration
 it stood. A processor reboot is reported once and never stands.
 
+`subsystem:tracked-routes` is the one that would have paged on 2026-10-20,
+when both default routes were withdrawn for fifteen minutes because the MP's
+route-link feed had been stopped with the control daemon by a patch install:
+the selected platform reports each link-tracked route's installed/reason from
+the dataplane, `failed` when a route is withdrawn for a stale link observation,
+and `ffn-route-link-feed.service` is a watched unit. The convergence page's
+reapply restarts that feed before it replays the configuration.
+
 ## Where an event goes
 
 * The journal, always: syslog identifier `ffn-alert`, priority `crit` or

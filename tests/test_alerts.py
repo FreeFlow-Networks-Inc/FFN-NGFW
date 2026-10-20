@@ -82,6 +82,20 @@ class Evaluation(unittest.TestCase):
         self.assertEqual([(a['id'], a['severity']) for a in view['active']],
                          [('subsystem:security-runtime', 'critical'), ('subsystem:aggregates', 'warning'), ('subsystem:faceplate', 'warning')])
 
+    def test_a_withdrawn_tracked_route_pages_and_the_route_link_feed_is_watched(self):
+        # 2026-10-20: both default routes withdrawn for fifteen minutes, and no page because no check said so.
+        out = Recorder()
+        bad = report(subsystem('tracked-routes', 'failed', '2 tracked route(s) withdrawn: hardware link observation stale on the dataplane',
+                               details=['0.0.0.0/0 via 184.187.55.65 dev p1: withdrawn (hardware-link-observation-stale)']))
+        self.run_once(bad, outputs=out)
+        view = self.run_once(bad, outputs=out)
+        self.assertEqual([(a['id'], a['severity'], a['plane']) for a in view['active']], [('subsystem:tracked-routes', 'critical', 'dp')])
+        self.assertIn('ffn-route-link-feed.service', alerts.WATCHED_UNITS)
+        down = {'ffn-route-link-feed.service': dict(restarts=0, active='failed', result='exit-code')}
+        self.run_once(report(), units=down, outputs=out)
+        view = self.run_once(report(), units=down, outputs=out)
+        self.assertEqual([a['id'] for a in view['active']], ['unit-failed:ffn-route-link-feed.service'])
+
     def test_unit_failure_and_flapping_are_conditions(self):
         out = Recorder()
         quiet = {'ffn-fe100-session-feed.service': dict(restarts=10, active='active', result='success')}

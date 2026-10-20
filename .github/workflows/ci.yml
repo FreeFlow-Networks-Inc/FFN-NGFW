@@ -153,6 +153,15 @@ jobs:
           python3 tests/test_patches.py
           node tests/test_patch_ui.cjs
 
+      # Neither suite was run by CI before the 2026-10-20 outage review; both are
+      # dependency-free. The convergence suite carries the tracked-routes subsystem
+      # and the reapply that restarts the route-link feed; the alerts suite proves a
+      # withdrawn tracked route pages.
+      - name: boot convergence, tracked routes and alerts
+        run: |
+          python3 -m unittest discover -s tests -p 'test_convergence.py'
+          python3 -m unittest discover -s tests -p 'test_alerts.py'
+
       # HARD GATE as of the commit that took actionable to zero.
       #
       # The audit separates borrowed feature brands in VISIBLE copy (actionable)
