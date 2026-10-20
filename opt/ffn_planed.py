@@ -44,6 +44,14 @@ INVENTORY = 'planes'
 # How many blocking request IDs a description lists per resource. A leaf holds
 # at most one -- it refuses the next write -- but a relay can accumulate them.
 BLOCKED_SHOWN = 32
+# A write bound to a plane's boot identity is superseded, not unknown, once
+# that plane has been rebooted on purpose: the restart owner leaves a reboot
+# flag naming the identity it replaced, and this node then accepts the new
+# identity by itself, reconciling the row against the live status. Without
+# the flag an identity change is a crash or an unknown hand, and the row keeps
+# blocking until someone looks.
+REBOOT_FLAGS = 'reboots'
+IDENTITY_KEYS = ('expected_boot_id', 'dp_boot_id', 'boot_id')
 
 
 def encode(value):
@@ -173,6 +181,7 @@ class Plane:
                 raise ValueError('controller argv must be a nonempty string array')
             if not Path(vector[0]).is_absolute():
                 raise ValueError('executables must have absolute paths')
+        self.journal = Path(journal)
         self.db = sqlite3.connect(str(journal))
         self.db.execute('PRAGMA synchronous=FULL')
         self.db.execute('CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, digest TEXT, resource TEXT, response TEXT, state TEXT, intent TEXT)')
@@ -254,6 +263,71 @@ class Plane:
 
     def stored(self, ident):
         return self.db.execute('SELECT digest, resource, response FROM requests WHERE id=?', (ident,)).fetchone()
+
+    @staticmethod
+    def bound_identity(payload):
+        """The plane boot identity a write was made against, if it named one."""
+        for key in IDENTITY_KEYS:
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return None
+
+    @staticmethod
+    def observed_identity(status):
+        """The plane boot identity a status reports, wherever its controller keeps it."""
+        attachment = status.get('attachment') if isinstance(status.get('attachment'), dict) else {}
+        for obj in (status, status.get('state'), attachment, attachment.get('attachment'), status.get('dp')):
+            if isinstance(obj, dict):
+                for key in ('dp_boot_id', 'boot_id'):
+                    value = obj.get(key)
+                    if isinstance(value, str) and value:
+                        return value
+        return None
+
+    def rebooted(self, before, after):
+        """The reboot flag that names `before` as the identity a sanctioned restart replaced."""
+        try:
+            for path in sorted((self.journal.parent / REBOOT_FLAGS).glob('*.json')):
+                flag = json.loads(path.read_text())
+                if isinstance(flag, dict) and flag.get('boot_id_before') == before and before != after:
+                    return path.name
+        except (OSError, ValueError):
+            pass
+        return None
+
+    async def supersede(self, resource):
+        """Reconcile the resource's unknown rows that a flagged plane reboot superseded.
+
+        Returns how many unknown rows remain. A row is superseded when its write
+        named a boot identity, the controller's status now reports another, and
+        a reboot flag names the old one as deliberately replaced. Rows that named
+        no identity, or whose plane simply changed under them, keep blocking.
+        """
+        rows = self.db.execute("SELECT id, intent FROM requests WHERE resource=? AND state='unknown' ORDER BY rowid",
+                               (resource,)).fetchall()
+        status = None
+        for ident, intent in rows:
+            try:
+                bound = self.bound_identity(decode(intent).get('payload') or {})
+            except (ValueError, AttributeError):
+                bound = None
+            if not bound:
+                continue
+            if status is None:
+                try:
+                    status = await self.command(resource, 'status', {})
+                except Exception:
+                    break
+            current = self.observed_identity(status) if isinstance(status, dict) else None
+            flag = self.rebooted(bound, current) if current else None
+            if not flag:
+                continue
+            config = status.get('config') if isinstance(status.get('config'), dict) else status
+            resolved = self.response({'id': ident}, 'reconciled',
+                                     {'observed_revision': config.get('revision'), 'superseded_by': current, 'reboot_flag': flag})
+            self.record(ident, resolved)
+        return self.db.execute("SELECT count(*) FROM requests WHERE resource=? AND state='unknown'", (resource,)).fetchone()[0]
 
     def record(self, ident, response):
         self.db.execute('UPDATE requests SET response=?,state=? WHERE id=?', (encode(response).decode(), response['state'], ident))
@@ -340,7 +414,8 @@ class Plane:
             if row:
                 if row[0] != digest: raise ValueError('request ID reused with different content')
                 return decode(row[2])
-            if self.db.execute("SELECT 1 FROM requests WHERE resource=? AND state='unknown' LIMIT 1", (resource,)).fetchone():
+            if (self.db.execute("SELECT 1 FROM requests WHERE resource=? AND state='unknown' LIMIT 1", (resource,)).fetchone()
+                    and await self.supersede(resource)):
                 raise ValueError('resource has an unknown outcome; reconcile before another apply')
             # Validation is side-effect-free and occurs before creating the durable intent.
             await self.command(resource, 'validate', payload)
