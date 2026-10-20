@@ -33,6 +33,20 @@ def port(number, enabled=True, speed='auto', media='sfp', link=True, module=None
 
 HEALTHY = {'pid': 769, 'process_start': '3230', 'boot_id': 'dp-boot', 'monotonic': 500.0, 'collector_ready': True,
            'forwarding_revision': 9, 'error': None, 'events': {'ready': True, 'error': None, 'recoveries': 1}}
+# What the pa5200 platform's `tracked-routes status` resource answers (management/daemon_backend.py).
+TRACKED = dict(state='converged', summary='2 tracked route(s) installed',
+               details=['0.0.0.0/0 via 184.187.55.65 dev p1: installed', '::/0 via fe80::1 dev p1: installed', 'link observation 2 s old',
+                        'MP feed ffn-route-link-feed.service active'],
+               routes=[dict(dst='0.0.0.0/0', dev='p1', via='184.187.55.65', metric=None, installed=True, reason='eligible'),
+                       dict(dst='::/0', dev='p1', via='fe80::1', metric=None, installed=True, reason='eligible')],
+               tracker=dict(reported=True, age_seconds=0.4, revision=12), observation=dict(present=True, age_seconds=2.0, boot_matches=True),
+               feed=dict(unit='ffn-route-link-feed.service', state='active'))
+WITHDRAWN = dict(TRACKED, state='failed', summary='2 tracked route(s) withdrawn: hardware link observation stale on the dataplane',
+                 details=['0.0.0.0/0 via 184.187.55.65 dev p1: withdrawn (hardware-link-observation-stale)',
+                          '::/0 via fe80::1 dev p1: withdrawn (hardware-link-observation-stale)',
+                          'link observation 912 s old (stale: tracked routes withdrawn)', 'MP feed ffn-route-link-feed.service inactive'],
+                 routes=[dict(r, installed=False, reason='hardware-link-observation-stale') for r in TRACKED['routes']],
+                 feed=dict(unit='ffn-route-link-feed.service', state='inactive'))
 
 
 class ConvergenceTests(unittest.TestCase):
@@ -53,7 +67,8 @@ class ConvergenceTests(unittest.TestCase):
         self.aggregates = {'aggregates': [dict(ae_name='ae1', applied=True, state='active', committed=True, blockers=[])]}
 
     def run_assess(self, **kw):
-        kw.setdefault('resources', {('faceplate', 'status'): self.faceplate, ('aggregates', 'status'): self.aggregates})
+        kw.setdefault('resources', {('faceplate', 'status'): self.faceplate, ('aggregates', 'status'): self.aggregates,
+                                    conv.TRACKED_ROUTES_KEY: TRACKED})
         kw.setdefault('dp_views', None)
         return conv.assess(self.config, self.receipt, (self.journal,), self.boot, kw.pop('dp_health', self.health), clock=lambda: 1010.0, **kw)
 
@@ -74,7 +89,7 @@ class ConvergenceTests(unittest.TestCase):
         # Without a dataplane relay the audit is unobservable, and that is the overall state.
         report = self.run_assess()
         self.assertEqual(self.states(report), {'committed-replay': 'converged', 'faceplate': 'converged', 'aggregates': 'converged',
-                                               'interface-management': 'unavailable', 'security-runtime': 'converged'})
+                                               'tracked-routes': 'converged', 'interface-management': 'unavailable', 'security-runtime': 'converged'})
         self.assertEqual(report['overall'], 'unavailable'); self.assertEqual(report['actions'], [])
         self.assertEqual(report['generation'], self.generation)
         self.assertEqual({s['id']: s for s in report['subsystems']}['faceplate']['summary'], '5 configured front port(s) match')
@@ -254,6 +269,33 @@ class ConvergenceTests(unittest.TestCase):
             raise OSError('no systemctl')
         self.assertIsNone(conv.unit_active(run=missing))
 
+    def test_tracked_routes_follow_the_platform_report(self):
+        # The platform judges; the core carries its verdict, its routes and its feed state, and refuses what it cannot vouch for.
+        ok = conv.tracked_routes(None, TRACKED)
+        self.assertEqual((ok['state'], ok['plane'], ok['summary']), ('converged', 'dp', '2 tracked route(s) installed'))
+        self.assertEqual([r['installed'] for r in ok['routes']], [True, True])
+        self.assertEqual(ok['feed'], dict(unit='ffn-route-link-feed.service', state='active'))
+        bad = conv.tracked_routes(None, WITHDRAWN)
+        self.assertEqual((bad['state'], bad['routes'][0]['reason']), ('failed', 'hardware-link-observation-stale'))
+        self.assertIn('link observation 912 s old (stale: tracked routes withdrawn)', bad['details'])
+        for status in (None, {'error': 'unknown resource tracked-routes'}, dict(TRACKED, state='bogus'), dict(TRACKED, details='x'),
+                       dict(TRACKED, summary=None), 'text'):
+            with self.subTest(status=status):
+                self.assertEqual(conv.tracked_routes(None, status)['state'], 'unavailable')
+        self.assertIn('offers no tracked-routes resource', conv.tracked_routes(None, None)['details'][0])
+        self.assertEqual(conv.tracked_routes(None, {'error': 'controld down'})['details'], ['controld down'])
+        # The 2026-10-20 picture, as the report and the alert evaluator see it: failed, reapply offered, critical.
+        report = self.run_assess(resources={('faceplate', 'status'): self.faceplate, ('aggregates', 'status'): self.aggregates,
+                                            conv.TRACKED_ROUTES_KEY: WITHDRAWN})
+        self.assertEqual((self.states(report)['tracked-routes'], report['overall'], report['actions']), ('failed', 'failed', ['reapply']))
+        import ffn_alerts
+        found = ffn_alerts.conditions(report, {}, {})
+        self.assertEqual(found['subsystem:tracked-routes']['severity'], 'critical')
+        self.assertIn(conv.LINK_FEED_UNIT, ffn_alerts.WATCHED_UNITS)
+        # No resource at all (another platform, or controld without the command): not observable, never failed.
+        report = self.run_assess(resources={('faceplate', 'status'): self.faceplate, ('aggregates', 'status'): self.aggregates})
+        self.assertEqual(self.states(report)['tracked-routes'], 'unavailable')
+
     def test_overall_rank_and_actions(self):
         self.receipt.write_text(json.dumps(dict(mp_boot_id=MP_BOOT, processor_boots=BOOTS, state='applied', config_sha256='1' * 64)))
         report = self.run_assess()
@@ -276,8 +318,17 @@ class ConvergenceTests(unittest.TestCase):
         result = conv.reapply(request, (self.journal,), self.boot, run=run)
         self.assertTrue(result['started']); self.assertEqual(calls[-1], ['systemctl', 'start', '--no-block', conv.REPLAY_UNIT])
         self.assertEqual(calls.count(calls[-1]), 1)
+        # The feed is restarted on every reapply, before the replay, whether or not the replay can start.
+        feed = ['systemctl', 'restart', '--no-block', conv.LINK_FEED_UNIT]
+        self.assertEqual(calls.count(feed), 4); self.assertEqual(calls[-2], feed)
+        self.assertEqual(result['feeds'], {conv.LINK_FEED_UNIT: 'restarted'})
         def failing(argv, **kw): return type('R', (), {'returncode': 1, 'stdout': '', 'stderr': 'Unit not found'})()
-        self.assertEqual(conv.reapply(request, (self.journal,), self.boot, run=failing)['reason'], 'Unit not found')
+        failed = conv.reapply(request, (self.journal,), self.boot, run=failing)
+        self.assertEqual((failed['reason'], failed['feeds']), ('Unit not found', {conv.LINK_FEED_UNIT: 'Unit not found'}))
+        def missing(argv, **kw):
+            raise OSError('no systemctl')
+        self.assertEqual(conv.restart_feeds(run=missing), {conv.LINK_FEED_UNIT: 'no systemctl'})
+        self.assertEqual(conv.reapply(request, (self.journal,), self.boot, run=run, feeds=())['feeds'], {})
 
 
 if __name__ == '__main__':

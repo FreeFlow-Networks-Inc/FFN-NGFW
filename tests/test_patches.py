@@ -14,6 +14,42 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'opt'))
 import ffn_patch as p
 
+# What `systemctl list-dependencies --reverse --plain --full` says for the control daemon on the
+# appliance: the feeds that are PartOf= it, a unit that merely Wants= it, and the targets.
+TREE = {'ffn-controld.service': 'ffn-controld.service\n  ffn-route-link-feed.service\n  ffn-fe100-session-feed.service\n'
+                                '  ffn-bystander.service\n  ffn-idle.service\n  multi-user.target\n    graphical.target\n'}
+PROPAGATED = {'ffn-controld.service': ('ffn-route-link-feed.service', 'ffn-fe100-session-feed.service')}
+
+
+class FakeSystemd:
+    """A systemd that stops a service's PartOf= dependents with it and starts nothing on its own."""
+    def __init__(self, inactive=(), refuse=(), refuse_once=()):
+        self.down, self.refuse, self.refuse_once, self.calls = set(inactive), set(refuse), set(refuse_once), []
+
+    def __call__(self, args, **kwargs):
+        if args[0] != 'systemctl':
+            return Mock(returncode=0)
+        self.calls.append(list(args))
+        verb, unit = args[1], args[-1]
+        if verb == 'list-dependencies':
+            return Mock(returncode=0, stdout=TREE.get(unit, unit + '\n'), stderr='')
+        if verb == 'is-active':
+            return Mock(returncode=3 if unit in self.down else 0)
+        if verb == 'stop':
+            self.down.add(unit)
+            self.down.update(PROPAGATED.get(unit, ()))
+            return Mock(returncode=0)
+        if verb == 'start':
+            if unit in self.refuse or unit in self.refuse_once:
+                self.refuse_once.discard(unit)
+                return Mock(returncode=1)
+            self.down.discard(unit)
+            return Mock(returncode=0)
+        return Mock(returncode=0)
+
+    def starts(self):
+        return [c[2] for c in self.calls if c[1] == 'start']
+
 
 class PatchTests(unittest.TestCase):
     def setUp(self):
@@ -110,6 +146,52 @@ class PatchTests(unittest.TestCase):
         self.assertEqual((self.root / 'app.py').read_text(), 'VALUE = 1\n')
         self.assertFalse((self.root / 'new.py').exists())
         self.assertFalse(self.manager.status()['recovery_required'])
+
+    def test_install_starts_the_units_its_stop_took_down(self):
+        # 2026-10-20: the route-link feed, PartOf= the control daemon, stayed stopped after an install.
+        self.stage()
+        systemd = FakeSystemd(inactive={'ffn-idle.service'})
+        self.run.side_effect = systemd
+        self.assertEqual(self.manager.install(self.meta['sha256']), [])
+        self.assertEqual(systemd.starts(), list(p.SERVICES) + ['ffn-route-link-feed.service', 'ffn-fe100-session-feed.service'])
+        self.assertEqual(systemd.down, {'ffn-idle.service'})   # inactive before: left alone; the bystander never stopped: left alone
+        first_stop = next(i for i, c in enumerate(systemd.calls) if c[1] == 'stop')
+        self.assertTrue(all(c[1] != 'list-dependencies' for c in systemd.calls[first_stop:]), 'dependencies must be asked for before the stop')
+        self.assertEqual(systemd.calls[next(i for i, c in enumerate(systemd.calls) if c[1] == 'list-dependencies')],
+                         ['systemctl', 'list-dependencies', '--reverse', '--plain', '--full', '--no-pager', '--no-legend', 'ffn-controld.service'])
+        self.assertEqual(self.manager.status()['dependents_not_started'], [])
+        # Every active reverse dependency is recorded (systemd does not say which relation it is);
+        # only the ones the stop actually took down get a start.
+        self.assertEqual(json.loads((self.manager.state / 'journal.json').read_text())['dependents'],
+                         ['ffn-route-link-feed.service', 'ffn-fe100-session-feed.service', 'ffn-bystander.service'])
+        # Rollback stops and starts the same way, and the dependents come back with it.
+        systemd.calls.clear()
+        self.assertEqual(self.manager.restore(), [])
+        self.assertEqual(systemd.starts(), list(p.SERVICES) + ['ffn-route-link-feed.service', 'ffn-fe100-session-feed.service'])
+        self.assertEqual((self.root / 'app.py').read_text(), 'VALUE = 1\n')
+
+    def test_a_dependent_that_will_not_start_is_reported_not_fatal(self):
+        self.stage()
+        systemd = FakeSystemd(refuse={'ffn-fe100-session-feed.service'})
+        self.run.side_effect = systemd
+        job = self.manager.submit('install', 'admin', '', self.meta['sha256'])
+        self.assertEqual(self.manager.worker(job['id']), 0)
+        self.assertEqual((self.root / 'app.py').read_text(), 'VALUE = 2\n')
+        self.assertEqual(self.manager.status()['dependents_not_started'], ['ffn-fe100-session-feed.service'])
+        self.assertEqual(self.manager.status()['job']['message'], 'Install completed; not started again: ffn-fe100-session-feed.service')
+        self.assertIn('ffn-route-link-feed.service', systemd.starts())
+
+    def test_a_failed_install_restores_the_dependents_it_stopped(self):
+        self.stage()
+        systemd = FakeSystemd(refuse_once={'ffn-configd.service'})   # the new code's configd does not start; the old one does
+        self.run.side_effect = systemd
+        with self.assertRaisesRegex(p.PatchError, 'previous files and services restored'):
+            self.manager.install(self.meta['sha256'])
+        self.assertEqual(self.root.joinpath('app.py').read_text(), 'VALUE = 1\n')
+        # The feeds were not started while the install was failing; the restoration started them once.
+        self.assertEqual(systemd.starts().count('ffn-route-link-feed.service'), 1)
+        self.assertNotIn('ffn-route-link-feed.service', systemd.down)
+        self.assertEqual(systemd.down, set())
 
     def test_power_loss_retains_journal_and_recovers(self):
         self.stage()
