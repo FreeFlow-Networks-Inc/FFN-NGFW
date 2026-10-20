@@ -35,11 +35,20 @@ ORIGINAL = ('192.0.2.10', '198.51.100.20', 42001, 443)
 REPLY = ('198.51.100.20', '203.0.113.30', 443, 52001)
 
 
-def tuple_wire(values):
+PROTOCOL = 17
+TCP_ESTABLISHED, TCP_FIN_WAIT, TCP_SYN_SENT = 3, 4, 1
+BE_LIBERAL = 0x08
+
+
+def tuple_wire(values, protocol=None):
     src, dst, sport, dport = values
     ip = attr(1, socket.inet_aton(src)) + attr(2, socket.inet_aton(dst))
-    proto = attr(1, b'\x11') + attr(2, S.pack('!H', sport)) + attr(3, S.pack('!H', dport))
+    proto = attr(1, bytes([PROTOCOL if protocol is None else protocol])) + attr(2, S.pack('!H', sport)) + attr(3, S.pack('!H', dport))
     return attr(0x8001, ip) + attr(0x8002, proto)
+
+
+def tcp_state(state):
+    return attr(0x8004, attr(0x8001, attr(1, bytes([state]))))
 
 
 def netlink(command, extra=b'', create=False):
@@ -63,11 +72,22 @@ def netlink(command, extra=b'', create=False):
                 raw = raw[(length + 3) & ~3:]
 
 
-def create(timeout=10, status=6):
+def create(timeout=10, status=6, state=TCP_ESTABLISHED):
     extra = attr(0x8002, tuple_wire(REPLY)) + attr(7, S.pack('!I', timeout))
     extra += attr(3, S.pack('!I', status | 8)) + attr(8, S.pack('!I', 27))
+    if PROTOCOL == 6: extra += tcp_state(state)
     netlink(0, extra, True)
     netlink(0, attr(22, b'\x01' + bytes(15)))
+
+
+def tcp_flags():
+    """(original, reply) conntrack TCP flag bytes as the kernel reports them."""
+    info = attrs(attrs(netlink(1)[0][4])[1])
+    return info[4][0], info[5][0]
+
+
+def tcp_state_of():
+    return attrs(attrs(netlink(1)[0][4])[1])[1][0]
 
 
 def snapshot():
@@ -82,7 +102,7 @@ def snapshot():
 def identity(timeout=60):
     value, _ = snapshot()
     bind = Bind(version=1, id=S.unpack('!I', value[12])[0], timeout=timeout,
-                protocol=17, mark=27, original=tuple_abi(ORIGINAL), reply=tuple_abi(REPLY))
+                protocol=PROTOCOL, mark=27, original=tuple_abi(ORIGINAL), reply=tuple_abi(REPLY))
     bind.labels[:] = value[22]
     bind.ethernet[:] = (14, 18)
     return bind
@@ -151,11 +171,19 @@ class LeaseTests(unittest.TestCase):
             else: setattr(bind, field, getattr(bind, field) ^ 1)
             self.error(errno.ESTALE, self.open(), 0, bind)
 
-    def test_unsupported_tcp_and_unassured(self):
-        bind = identity(); bind.protocol = 6
+    def test_unsupported_protocol_and_unassured(self):
+        bind = identity(); bind.protocol = 1
         self.error(errno.EOPNOTSUPP, self.open(), 0, bind)
+        bind = identity(); bind.protocol = 6 if PROTOCOL == 17 else 17
+        self.error(errno.ENOENT, self.open(), 0, bind)      # the other protocol's tuple does not exist
         netlink(2); create(status=0)
         self.error(errno.EOPNOTSUPP, self.open(), 0, identity())
+
+    def test_timeout_bound_by_protocol(self):
+        bind = identity(timeout=301 if PROTOCOL == 17 else 432001)
+        self.error(errno.EINVAL, self.open(), 0, bind)
+        bind = identity(timeout=300 if PROTOCOL == 17 else 432000)
+        ioctl(self.open(), 0, bind)
 
     def test_reason_without_activity_does_not_refresh(self):
         fd = self.bound()
@@ -270,6 +298,51 @@ class LeaseTests(unittest.TestCase):
         fd=self.bound()
         with self.assertRaises(OSError) as caught:fcntl.ioctl(fd,COMMANDS[2],1)
         self.assertEqual(caught.exception.errno,errno.EINVAL)
+
+
+class TcpLeaseTests(LeaseTests):
+    """TCP: liberal windows while leased, the long established timeout, a FIN or RST that reaches
+    the kernel invalidating the lease; and the whole UDP suite again on an established TCP object."""
+    def setUp(self):
+        global PROTOCOL
+        PROTOCOL = 6
+        self.addCleanup(self.udp_again)
+        super().setUp()
+
+    @staticmethod
+    def udp_again():
+        global PROTOCOL
+        PROTOCOL = 17
+
+    def test_bind_marks_both_directions_liberal_and_keeps_them_on_release(self):
+        self.assertEqual([f & BE_LIBERAL for f in tcp_flags()], [0, 0])
+        self.bound()
+        self.assertEqual([f & BE_LIBERAL for f in tcp_flags()], [BE_LIBERAL, BE_LIBERAL])
+        os.close(self.fds.pop())
+        self.assertEqual([f & BE_LIBERAL for f in tcp_flags()], [BE_LIBERAL, BE_LIBERAL])
+        self.assertEqual(tcp_state_of(), TCP_ESTABLISHED)
+
+    def test_only_established_flows_bind(self):
+        for state in (TCP_SYN_SENT, TCP_FIN_WAIT):
+            netlink(2); create(state=state)
+            self.error(errno.EOPNOTSUPP, self.open(), 0, identity())
+            self.assertEqual([f & BE_LIBERAL for f in tcp_flags()], [0, 0])
+
+    def test_refresh_accounts_with_the_established_timeout(self):
+        fd = self.open(); ioctl(fd, 0, identity(timeout=3600))
+        ioctl(fd, 1, Update(sequence=1, packets=(2, 1), octets=(3000, 1500), active=3))
+        value, counters = snapshot()
+        self.assertGreaterEqual(S.unpack('!I', value[7])[0], 3598)
+        self.assertEqual(counters, [(2, 3000 - 2 * 14), (1, 1500 - 18)])
+
+    def test_fin_or_rst_reaching_the_kernel_invalidates(self):
+        fd = self.bound()
+        netlink(0, tcp_state(TCP_FIN_WAIT))
+        with self.assertRaises(OSError) as caught: fcntl.ioctl(fd, COMMANDS[2], 0)
+        self.assertEqual(caught.exception.errno, errno.ESTALE)
+        self.error(errno.ESTALE, fd, 1, Update(sequence=1, packets=(1, 0), octets=(100, 0), active=1))
+        # the object itself is untouched: the owner withdraws the hardware flow and closes
+        self.assertEqual(tcp_state_of(), TCP_FIN_WAIT)
 
 
 if __name__ == '__main__':

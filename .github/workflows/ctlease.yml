@@ -33,5 +33,26 @@ jobs:
           cc -std=c11 -Wall -Wextra -Werror ctlease_abi.c -o ctlease-abi
           ./ctlease-abi
           python3 -m py_compile ffn_ctlease.py test_ctlease.py
-      # Loading needs the exact running kernel. The isolated netns integration
-      # suite is run on build hosts/appliances with matching prepared kernels.
+      # Loading needs the exact running kernel: the integration job below builds
+      # against the runner's own kernel; appliances run the same suite on theirs.
+
+  integration:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+          persist-credentials: false
+      - name: Build against the running kernel
+        working-directory: dataplanes/ctlease
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y "linux-headers-$(uname -r)" build-essential nftables iproute2 python3
+          make KDIR="/lib/modules/$(uname -r)/build" -j2
+          make client
+          cc -std=c11 -Wall -Wextra -Werror ctlease_abi.c -o ctlease-abi
+          sudo modprobe nf_conntrack
+      - name: Isolated netns lifecycle suite, UDP and TCP
+        working-directory: dataplanes/ctlease
+        run: sudo sh ./test-kernel.sh

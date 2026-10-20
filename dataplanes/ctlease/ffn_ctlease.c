@@ -1,7 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* Bind a file to one existing UDP conntrack object. No tuple-only refresh,
- * flow creation, NAT allocation, status change, or packet forwarding API.
- * This does not authorize FE100 admission or replace its withdrawal watchdog.
+/* Bind a file to one existing UDP or established TCP conntrack object. No
+ * tuple-only refresh, flow creation, NAT allocation, status change, or packet
+ * forwarding API. This does not authorize FE100 admission or replace its
+ * withdrawal watchdog.
+ *
+ * TCP: while the hardware carries the flow the kernel sees none of its
+ * segments, so its window tracking goes stale and would drop every segment
+ * as invalid on hand-back (PA-5220, 2026-10-19). Binding therefore marks both
+ * directions BE_LIBERAL, exactly as nf_flow_table does when it offloads a
+ * flow, and release zeroes both td_maxwin so the windows are re-learned from
+ * the next segments, as its teardown fixup does. A FIN or RST that reaches the
+ * kernel moves the state off ESTABLISHED and invalidates the lease; the owner
+ * must make such segments reach the kernel (hardware exception or acknowledged
+ * withdrawal). Sequence-adjusted and helper sessions are rejected.
  */
 #include <linux/module.h>
 #include <linux/miscdevice.h>
@@ -19,7 +30,13 @@
 #include <net/netfilter/nf_conntrack_labels.h>
 #include <net/netfilter/nf_conntrack_helper.h>
 #include <net/netfilter/nf_conntrack_zones.h>
+#include <linux/netfilter/nf_conntrack_tcp.h>
 #include "ffn_ctlease.h"
+
+#define FFN_CTLEASE_UDP_MAX_TIMEOUT 300U
+/* nf_conntrack_tcp_timeout_established's default: a leased established flow
+ * must not expire sooner than it would in software. */
+#define FFN_CTLEASE_TCP_MAX_TIMEOUT 432000U
 
 struct lease {
     struct list_head claim;
@@ -33,12 +50,16 @@ struct lease {
 /* A single accounting owner per object, even across separate file handles. */
 static LIST_HEAD(claims);
 static DEFINE_MUTEX(claims_lock);
-static void tuple_init(struct nf_conntrack_tuple *t, const struct ffn_ctlease_tuple *s, u8 direction)
+static void tuple_init(struct nf_conntrack_tuple *t, const struct ffn_ctlease_tuple *s, u8 direction, u8 protocol)
 {
     memset(t,0,sizeof(*t));
     t->src.l3num=NFPROTO_IPV4;t->src.u3.ip=s->source;t->dst.u3.ip=s->destination;
-    t->src.u.udp.port=s->source_port;t->dst.u.udp.port=s->destination_port;
-    t->dst.protonum=IPPROTO_UDP;t->dst.dir=direction;
+    t->src.u.all=s->source_port;t->dst.u.all=s->destination_port;
+    t->dst.protonum=protocol;t->dst.dir=direction;
+}
+static u32 max_timeout(u32 protocol)
+{
+    return protocol==IPPROTO_TCP?FFN_CTLEASE_TCP_MAX_TIMEOUT:FFN_CTLEASE_UDP_MAX_TIMEOUT;
 }
 static int usable(struct lease *l)
 {
@@ -47,7 +68,9 @@ static int usable(struct lease *l)
     unsigned long status=READ_ONCE(ct->status);
     if(nf_ct_is_dying(ct) || nf_ct_is_expired(ct))return -ESTALE;
     if((status&(IPS_CONFIRMED|IPS_SEEN_REPLY|IPS_ASSURED))!=(IPS_CONFIRMED|IPS_SEEN_REPLY|IPS_ASSURED) ||
-       status&(IPS_FIXED_TIMEOUT|IPS_TEMPLATE|IPS_OFFLOAD|IPS_HW_OFFLOAD) || nfct_help(ct))return -EOPNOTSUPP;
+       status&(IPS_FIXED_TIMEOUT|IPS_TEMPLATE|IPS_OFFLOAD|IPS_HW_OFFLOAD|IPS_SEQ_ADJUST) || nfct_help(ct))return -EOPNOTSUPP;
+    /* A FIN or RST reached the kernel: the hardware flow must be withdrawn. */
+    if(l->identity.protocol==IPPROTO_TCP && ct->proto.tcp.state!=TCP_CONNTRACK_ESTABLISHED)return -ESTALE;
     /* ctnetlink_dump_id casts the opaque hash to __be32 without htonl.
      * Match the numeric CTA_ID returned by a normal netlink decoder. */
     if(be32_to_cpu((__force __be32)nf_ct_get_id(ct))!=l->identity.conntrack_id ||
@@ -65,15 +88,13 @@ static int bind_lease(struct lease *l, const struct ffn_ctlease_bind *b)
     struct lease *other;
     int err;
     if(l->ct)return -EALREADY;
-    /* TCP needs sequence/window and FIN/RST synchronization, not just byte
-     * counters. Keep it unsupported until that separate path is qualified. */
-    if(b->protocol!=IPPROTO_UDP)return -EOPNOTSUPP;
+    if(b->protocol!=IPPROTO_UDP && b->protocol!=IPPROTO_TCP)return -EOPNOTSUPP;
     if(b->version!=1 || !b->conntrack_id || b->reserved || b->reserved2 ||
-       !b->timeout_seconds || b->timeout_seconds>300 ||
+       !b->timeout_seconds || b->timeout_seconds>max_timeout(b->protocol) ||
        !memchr_inv(b->labels,0,sizeof(b->labels)))return -EINVAL;
     for(unsigned i=0;i<2;i++)if(b->ethernet_bytes[i]!=14 && b->ethernet_bytes[i]!=18)return -EINVAL;
-    tuple_init(&orig,&b->original,IP_CT_DIR_ORIGINAL);
-    tuple_init(&reply,&b->reply,IP_CT_DIR_REPLY);
+    tuple_init(&orig,&b->original,IP_CT_DIR_ORIGINAL,b->protocol);
+    tuple_init(&reply,&b->reply,IP_CT_DIR_REPLY,b->protocol);
     nf_ct_zone_init(&zone,b->zone,NF_CT_DEFAULT_ZONE_DIR,0);
     found=nf_conntrack_find_get(l->net,&zone,&orig);
     if(!found)return -ENOENT;
@@ -89,8 +110,15 @@ static int bind_lease(struct lease *l, const struct ffn_ctlease_bind *b)
        !nf_ct_tuple_equal(&ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple,&orig) ||
        !nf_ct_tuple_equal(&ct->tuplehash[IP_CT_DIR_REPLY].tuple,&reply))err=-ESTALE;
     else {
-        l->ct=ct;l->identity=*b;err=usable(l);
+        l->ct=ct;l->identity=*b;
+        /* Only an established flow can be carried blind; anything else is
+         * unsupported at bind time rather than stale. */
+        err=b->protocol==IPPROTO_TCP && ct->proto.tcp.state!=TCP_CONNTRACK_ESTABLISHED?-EOPNOTSUPP:usable(l);
         if(err)l->ct=NULL;
+        else if(b->protocol==IPPROTO_TCP) {
+            ct->proto.tcp.seen[0].flags|=IP_CT_TCP_FLAG_BE_LIBERAL;
+            ct->proto.tcp.seen[1].flags|=IP_CT_TCP_FLAG_BE_LIBERAL;
+        }
     }
     spin_unlock_bh(&ct->lock);
     if(!err)list_add(&l->claim,&claims);
@@ -168,11 +196,26 @@ static int lease_open(struct inode *inode,struct file *file)
     mutex_init(&l->lock);l->net=get_net(current->nsproxy->net_ns);file->private_data=l;
     return nonseekable_open(inode,file);
 }
+static void handback(struct lease *l)
+{
+    struct nf_conn *ct=l->ct;
+    if(l->identity.protocol!=IPPROTO_TCP)return;
+    spin_lock_bh(&ct->lock);
+    /* The flow is back on the software path: re-learn both windows from the
+     * next segments (nf_flow_table's teardown fixup). BE_LIBERAL stays, as
+     * there too, so segments reordered across the hand-back are not invalid. */
+    if(!nf_ct_is_dying(ct) && ct->proto.tcp.state==TCP_CONNTRACK_ESTABLISHED) {
+        ct->proto.tcp.seen[0].td_maxwin=0;
+        ct->proto.tcp.seen[1].td_maxwin=0;
+    }
+    spin_unlock_bh(&ct->lock);
+}
 static int lease_release(struct inode *inode,struct file *file)
 {
     struct lease *l=file->private_data;
     if(l->ct) {
         mutex_lock(&claims_lock);list_del(&l->claim);mutex_unlock(&claims_lock);
+        handback(l);
         nf_ct_put(l->ct);
     }
     put_net(l->net);kfree(l);return 0;
@@ -189,4 +232,4 @@ static int __init lease_init(void)
 static void __exit lease_exit(void) {misc_deregister(&device);}
 module_init(lease_init);module_exit(lease_exit);
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("FFN identity-bound UDP hardware accounting lease");
+MODULE_DESCRIPTION("FFN identity-bound UDP/TCP hardware accounting lease");
