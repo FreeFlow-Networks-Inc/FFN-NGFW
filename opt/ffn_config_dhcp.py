@@ -8,7 +8,7 @@ PAN-OS shape, under the local device's network tree:
 
     network/dhcp/interface/entry[@name='ae1.69']/server/
         mode enabled|disabled, probe-ip yes|no
-        ip-pool/member            "10.1.0.100-10.1.0.199" (or one address)
+        ip-pool/member            "192.0.2.100-192.0.2.199" (or one address)
         reserved/entry[@name=IP]  mac, description
         option/lease/{timeout (minutes) | unlimited}, gateway, subnet-mask,
         option/dns/{primary,secondary}, ntp/{primary,secondary}, wins/{primary,secondary}, dns-suffix
