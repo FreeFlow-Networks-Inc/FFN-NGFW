@@ -172,7 +172,7 @@ window.ffnDhcp = {
     const lease = this.input(row.lease_minutes === null ? '' : String(row.lease_minutes), 'minutes; empty for unlimited');
     this.field(form, 'dhcp-lease', 'Lease (minutes, empty = unlimited)', lease);
     const pools = document.createElement('textarea');
-    pools.rows = 3; pools.value = (row.pools || []).join('\n'); pools.placeholder = '10.1.0.100-10.1.0.199\none range or address per line';
+    pools.rows = 3; pools.value = (row.pools || []).join('\n'); pools.placeholder = '192.0.2.100-192.0.2.199\none range or address per line';
     this.field(form, 'dhcp-pools', 'IP pools (within the interface subnet)', pools);
     const opts = row.options || {};
     this.field(form, 'dhcp-gateway', 'Gateway (empty = interface address)', this.input(opts.gateway, '10.1.0.2'));

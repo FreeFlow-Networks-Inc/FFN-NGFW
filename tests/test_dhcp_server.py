@@ -13,7 +13,7 @@ import ffn_dhcp_server as dhcp
 
 SERVER_MAC = bytes.fromhex('02aabbccdd01')
 CLIENT_MAC = bytes.fromhex('02112233440a')
-SPEC = dict(interface='ae1.69', address='10.1.0.2/22', pools=[['10.1.0.100', '10.1.0.103']],
+SPEC = dict(interface='ae1.69', address='10.1.0.2/22', pools=[['10.1.2.100', '10.1.2.103']],
             reserved={'02:11:22:33:44:99': '10.1.0.50'}, lease=3600, probe=False,
             options=dict(dns=['1.1.1.1', '8.8.8.8'], domain='lan'))
 
@@ -67,7 +67,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(len(replies), 1)
         offer = decode(replies[0])
         self.assertEqual((offer['type'], offer['yiaddr'], offer['dst_mac'], offer['dst_ip'], offer['src_ip'], offer['xid']),
-                         (dhcp.OFFER, '10.1.0.100', CLIENT_MAC, '10.1.0.100', '10.1.0.2', 0x1234))
+                         (dhcp.OFFER, '10.1.2.100', CLIENT_MAC, '10.1.2.100', '10.1.0.2', 0x1234))
         opts = offer['options']
         self.assertEqual(opts[54], ipaddress.IPv4Address('10.1.0.2').packed)
         self.assertEqual(struct.unpack('!I', opts[51])[0], 3600)
@@ -78,50 +78,50 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(opts[6], ipaddress.IPv4Address('1.1.1.1').packed + ipaddress.IPv4Address('8.8.8.8').packed)
         self.assertEqual(opts[15], b'lan')
         self.assertEqual(opts[61], b'\x01' + CLIENT_MAC)
-        self.assertEqual(self.server.leases.rows['10.1.0.100']['state'], 'offered')
-        self.assertEqual(self.server.leases.rows['10.1.0.100']['hostname'], 'laptop')
+        self.assertEqual(self.server.leases.rows['10.1.2.100']['state'], 'offered')
+        self.assertEqual(self.server.leases.rows['10.1.2.100']['hostname'], 'laptop')
         self.assertGreaterEqual(len(replies[0]), 14 + 20 + 8 + 300)
 
     def test_selecting_request_binds_and_persists_the_lease(self):
         self.server.handle(client_frame(dhcp.DISCOVER))
-        replies = self.server.handle(client_frame(dhcp.REQUEST, options=[(50, ipaddress.IPv4Address('10.1.0.100').packed),
+        replies = self.server.handle(client_frame(dhcp.REQUEST, options=[(50, ipaddress.IPv4Address('10.1.2.100').packed),
                                                                         (54, ipaddress.IPv4Address('10.1.0.2').packed)]))
         ack = decode(replies[0])
-        self.assertEqual((ack['type'], ack['yiaddr']), (dhcp.ACK, '10.1.0.100'))
-        row = json.loads(self.path.read_text())['rows']['10.1.0.100']
+        self.assertEqual((ack['type'], ack['yiaddr']), (dhcp.ACK, '10.1.2.100'))
+        row = json.loads(self.path.read_text())['rows']['10.1.2.100']
         self.assertEqual((row['state'], row['mac'], row['expires']), ('bound', '02:11:22:33:44:0a', self.now + 3600))
         again = self.make()   # a restart re-reads the file
-        self.assertEqual(again.leases.rows['10.1.0.100']['state'], 'bound')
+        self.assertEqual(again.leases.rows['10.1.2.100']['state'], 'bound')
         self.assertEqual(self.server.counters['ack'], 1)
 
     def test_request_for_another_server_drops_our_offer_silently(self):
         self.server.handle(client_frame(dhcp.DISCOVER))
-        replies = self.server.handle(client_frame(dhcp.REQUEST, options=[(50, ipaddress.IPv4Address('10.1.0.100').packed),
+        replies = self.server.handle(client_frame(dhcp.REQUEST, options=[(50, ipaddress.IPv4Address('10.1.2.100').packed),
                                                                         (54, ipaddress.IPv4Address('10.1.0.1').packed)]))
         self.assertEqual(replies, [])
-        self.assertNotIn('10.1.0.100', self.server.leases.rows)
+        self.assertNotIn('10.1.2.100', self.server.leases.rows)
         self.assertEqual(self.server.counters['other_server'], 1)
 
     def test_broadcast_flag_and_renewals_address_replies_as_rfc_2131_requires(self):
         offer = decode(self.server.handle(client_frame(dhcp.DISCOVER, flags=0x8000))[0])
         self.assertEqual((offer['dst_mac'], offer['dst_ip']), (dhcp.BROADCAST_MAC, '255.255.255.255'))
-        self.server.handle(client_frame(dhcp.REQUEST, options=[(50, ipaddress.IPv4Address('10.1.0.100').packed), (54, ipaddress.IPv4Address('10.1.0.2').packed)]))
+        self.server.handle(client_frame(dhcp.REQUEST, options=[(50, ipaddress.IPv4Address('10.1.2.100').packed), (54, ipaddress.IPv4Address('10.1.0.2').packed)]))
         self.now += 1800
-        renew = self.server.handle(client_frame(dhcp.REQUEST, ciaddr='10.1.0.100', src_ip='10.1.0.100', unicast_to='10.1.0.2'))
+        renew = self.server.handle(client_frame(dhcp.REQUEST, ciaddr='10.1.2.100', src_ip='10.1.2.100', unicast_to='10.1.0.2'))
         ack = decode(renew[0])
-        self.assertEqual((ack['type'], ack['dst_mac'], ack['dst_ip']), (dhcp.ACK, CLIENT_MAC, '10.1.0.100'))
-        self.assertEqual(self.server.leases.rows['10.1.0.100']['expires'], self.now + 3600)
+        self.assertEqual((ack['type'], ack['dst_mac'], ack['dst_ip']), (dhcp.ACK, CLIENT_MAC, '10.1.2.100'))
+        self.assertEqual(self.server.leases.rows['10.1.2.100']['expires'], self.now + 3600)
 
     def test_init_reboot_is_acknowledged_for_a_known_lease_and_refused_otherwise(self):
         self.server.handle(client_frame(dhcp.DISCOVER))
-        self.server.handle(client_frame(dhcp.REQUEST, options=[(50, ipaddress.IPv4Address('10.1.0.100').packed), (54, ipaddress.IPv4Address('10.1.0.2').packed)]))
-        ok = decode(self.server.handle(client_frame(dhcp.REQUEST, options=[(50, ipaddress.IPv4Address('10.1.0.100').packed)]))[0])
+        self.server.handle(client_frame(dhcp.REQUEST, options=[(50, ipaddress.IPv4Address('10.1.2.100').packed), (54, ipaddress.IPv4Address('10.1.0.2').packed)]))
+        ok = decode(self.server.handle(client_frame(dhcp.REQUEST, options=[(50, ipaddress.IPv4Address('10.1.2.100').packed)]))[0])
         self.assertEqual(ok['type'], dhcp.ACK)
         wrong = decode(self.server.handle(client_frame(dhcp.REQUEST, options=[(50, ipaddress.IPv4Address('192.168.9.9').packed)]))[0])
         self.assertEqual((wrong['type'], wrong['dst_mac'], wrong['dst_ip']), (dhcp.NAK, dhcp.BROADCAST_MAC, '255.255.255.255'))
         self.assertIn(b'wrong network', wrong['options'][56])
         other = decode(self.server.handle(client_frame(dhcp.REQUEST, mac=bytes.fromhex('021122334477'),
-                                                       options=[(50, ipaddress.IPv4Address('10.1.0.100').packed)]))[0])
+                                                       options=[(50, ipaddress.IPv4Address('10.1.2.100').packed)]))[0])
         self.assertEqual(other['type'], dhcp.NAK)
         self.assertEqual(self.server.counters['nak'], 2)
 
@@ -131,22 +131,22 @@ class ServerTests(unittest.TestCase):
         given = []
         for n in range(4):
             given.append(decode(self.server.handle(client_frame(dhcp.DISCOVER, mac=bytes([2, 0, 0, 0, 0, n])))[0])['yiaddr'])
-        self.assertEqual(given, ['10.1.0.100', '10.1.0.101', '10.1.0.102', '10.1.0.103'])
+        self.assertEqual(given, ['10.1.2.100', '10.1.2.101', '10.1.2.102', '10.1.2.103'])
         self.assertEqual(self.server.handle(client_frame(dhcp.DISCOVER, mac=bytes([2, 0, 0, 0, 0, 9]))), [])
         self.assertEqual(self.server.counters['exhausted'], 1)
         # the same client asking again keeps its offer; an offer nobody requested expires
-        self.assertEqual(decode(self.server.handle(client_frame(dhcp.DISCOVER, mac=bytes([2, 0, 0, 0, 0, 1])))[0])['yiaddr'], '10.1.0.101')
+        self.assertEqual(decode(self.server.handle(client_frame(dhcp.DISCOVER, mac=bytes([2, 0, 0, 0, 0, 1])))[0])['yiaddr'], '10.1.2.101')
         self.now += dhcp.OFFER_SECONDS + 1
-        self.assertEqual(decode(self.server.handle(client_frame(dhcp.DISCOVER, mac=bytes([2, 0, 0, 0, 0, 9])))[0])['yiaddr'], '10.1.0.100')
+        self.assertEqual(decode(self.server.handle(client_frame(dhcp.DISCOVER, mac=bytes([2, 0, 0, 0, 0, 9])))[0])['yiaddr'], '10.1.2.100')
 
     def test_release_decline_inform_and_relayed_requests(self):
         self.server.handle(client_frame(dhcp.DISCOVER))
-        self.server.handle(client_frame(dhcp.REQUEST, options=[(50, ipaddress.IPv4Address('10.1.0.100').packed), (54, ipaddress.IPv4Address('10.1.0.2').packed)]))
-        self.assertEqual(self.server.handle(client_frame(dhcp.RELEASE, ciaddr='10.1.0.100', src_ip='10.1.0.100', unicast_to='10.1.0.2')), [])
-        self.assertNotIn('10.1.0.100', self.server.leases.rows)
-        self.assertEqual(self.server.handle(client_frame(dhcp.DECLINE, options=[(50, ipaddress.IPv4Address('10.1.0.100').packed)])), [])
-        self.assertEqual(self.server.leases.rows['10.1.0.100']['state'], 'declined')
-        self.assertEqual(decode(self.server.handle(client_frame(dhcp.DISCOVER))[0])['yiaddr'], '10.1.0.101')
+        self.server.handle(client_frame(dhcp.REQUEST, options=[(50, ipaddress.IPv4Address('10.1.2.100').packed), (54, ipaddress.IPv4Address('10.1.0.2').packed)]))
+        self.assertEqual(self.server.handle(client_frame(dhcp.RELEASE, ciaddr='10.1.2.100', src_ip='10.1.2.100', unicast_to='10.1.0.2')), [])
+        self.assertNotIn('10.1.2.100', self.server.leases.rows)
+        self.assertEqual(self.server.handle(client_frame(dhcp.DECLINE, options=[(50, ipaddress.IPv4Address('10.1.2.100').packed)])), [])
+        self.assertEqual(self.server.leases.rows['10.1.2.100']['state'], 'declined')
+        self.assertEqual(decode(self.server.handle(client_frame(dhcp.DISCOVER))[0])['yiaddr'], '10.1.2.101')
         inform = decode(self.server.handle(client_frame(dhcp.INFORM, ciaddr='10.1.0.77', src_ip='10.1.0.77', unicast_to='10.1.0.2'))[0])
         self.assertEqual((inform['type'], inform['yiaddr'], inform['dst_ip']), (dhcp.ACK, '0.0.0.0', '10.1.0.77'))
         self.assertNotIn(51, inform['options']); self.assertIn(6, inform['options'])
@@ -154,10 +154,10 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.server.counters['relayed'], 1)
 
     def test_probe_skips_addresses_that_answer_and_records_the_conflict(self):
-        server = self.make(dict(SPEC, probe=True), probe=lambda ip: self.probed.append(ip) or ip == '10.1.0.100')
+        server = self.make(dict(SPEC, probe=True), probe=lambda ip: self.probed.append(ip) or ip == '10.1.2.100')
         offer = decode(server.handle(client_frame(dhcp.DISCOVER))[0])
-        self.assertEqual((offer['yiaddr'], self.probed), ('10.1.0.101', ['10.1.0.100', '10.1.0.101']))
-        self.assertEqual((server.leases.rows['10.1.0.100']['state'], server.counters['conflict']), ('declined', 1))
+        self.assertEqual((offer['yiaddr'], self.probed), ('10.1.2.101', ['10.1.2.100', '10.1.2.101']))
+        self.assertEqual((server.leases.rows['10.1.2.100']['state'], server.counters['conflict']), ('declined', 1))
 
     def test_unlimited_lease_and_non_dhcp_frames(self):
         server = self.make(dict(SPEC, lease=None))
@@ -173,7 +173,7 @@ class ServerTests(unittest.TestCase):
         summary = self.server.summary(self.now)
         self.assertEqual((summary['offered'], summary['bound'], summary['pool_size'], summary['reserved'], summary['interface']),
                          (1, 0, 4, 1, 'ae1.69'))
-        self.assertEqual(summary['leases'][0]['ip'], '10.1.0.100')
+        self.assertEqual(summary['leases'][0]['ip'], '10.1.2.100')
         self.assertEqual(summary['counters']['discover'], 1)
 
 
@@ -184,10 +184,10 @@ class IntentTests(unittest.TestCase):
         self.assertEqual(good['servers']['ae1.69']['options'], dict(dns=['1.1.1.1', '8.8.8.8'], domain='lan'))
         cases = [
             ({'eth0': SPEC}, 'device name'),
-            ({'ae1.69': dict(SPEC, pools=[['10.1.0.100', '10.1.0.90']])}, 'exceeds'),
+            ({'ae1.69': dict(SPEC, pools=[['10.1.2.100', '10.1.2.90']])}, 'exceeds'),
             ({'ae1.69': dict(SPEC, pools=[['10.1.0.1', '10.1.0.5']])}, 'interface address'),
             ({'ae1.69': dict(SPEC, pools=[['10.2.0.1', '10.2.0.5']])}, 'outside'),
-            ({'ae1.69': dict(SPEC, pools=[['10.1.0.100', '10.1.0.110'], ['10.1.0.105', '10.1.0.120']])}, 'overlap'),
+            ({'ae1.69': dict(SPEC, pools=[['10.1.2.100', '10.1.2.110'], ['10.1.2.105', '10.1.2.120']])}, 'overlap'),
             ({'ae1.69': dict(SPEC, pools=[], reserved={})}, 'pool or a reservation'),
             ({'ae1.69': dict(SPEC, reserved={'zz': '10.1.0.50'})}, 'MAC'),
             ({'ae1.69': dict(SPEC, reserved={'02:11:22:33:44:99': '10.1.0.2'})}, 'client address'),

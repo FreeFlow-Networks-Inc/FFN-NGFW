@@ -46,7 +46,7 @@ class ConfigDhcpTests(unittest.TestCase):
 
     def payload(self, **values):
         data = dict(revision=self.revision(), interface='ae1.69', mode='enabled', probe_ip=False, lease_minutes=1440,
-                    pools=['10.1.0.100-10.1.0.199', '10.1.1.10'], reserved=[dict(ip='10.1.0.50', mac='02:11:22:33:44:99', description='printer')],
+                    pools=['10.1.2.100-10.1.2.199', '10.1.1.10'], reserved=[dict(ip='10.1.0.50', mac='02:11:22:33:44:99', description='printer')],
                     options=dict(gateway='', subnet_mask='', dns=['1.1.1.1', '8.8.8.8'], ntp=[], wins=[], dns_suffix='lan'))
         data.update(values)
         return data
@@ -69,7 +69,7 @@ class ConfigDhcpTests(unittest.TestCase):
         root = ET.fromstring(self.manager.xml)
         entry = root.find(".//network/dhcp/interface/entry[@name='ae1.69']/server")
         self.assertEqual(entry.findtext('mode'), 'enabled'); self.assertEqual(entry.findtext('probe-ip'), 'no')
-        self.assertEqual([m.text for m in entry.findall('ip-pool/member')], ['10.1.0.100-10.1.0.199', '10.1.1.10'])
+        self.assertEqual([m.text for m in entry.findall('ip-pool/member')], ['10.1.2.100-10.1.2.199', '10.1.1.10'])
         self.assertEqual(entry.find("reserved/entry[@name='10.1.0.50']").findtext('mac'), '02:11:22:33:44:99')
         self.assertEqual(entry.findtext('option/lease/timeout'), '1440')
         self.assertEqual((entry.findtext('option/dns/primary'), entry.findtext('option/dns/secondary'), entry.findtext('option/dns-suffix')), ('1.1.1.1', '8.8.8.8', 'lan'))
@@ -80,7 +80,7 @@ class ConfigDhcpTests(unittest.TestCase):
         intent = cfg.compile_intent(root)
         spec = intent['servers']['ae1.69']
         self.assertEqual((spec['address'], spec['pools'], spec['reserved'], spec['lease'], spec['options']),
-                         ('10.1.0.2/22', [['10.1.0.100', '10.1.0.199'], ['10.1.1.10', '10.1.1.10']], {'02:11:22:33:44:99': '10.1.0.50'}, 86400,
+                         ('10.1.0.2/22', [['10.1.1.10', '10.1.1.10'], ['10.1.2.100', '10.1.2.199']], {'02:11:22:33:44:99': '10.1.0.50'}, 86400,
                           dict(dns=['1.1.1.1', '8.8.8.8'], domain='lan')))
         self.audit.assert_awaited()
 
@@ -123,7 +123,7 @@ class ConfigDhcpTests(unittest.TestCase):
         self.role = 'admin'
         self.assertEqual(self.client.put('/api/config/dhcp', json=self.payload()).status_code, 200)
         self.manager.xml = self.manager.xml.replace('<server>', '<server><custom>keep</custom>')
-        self.assertEqual(self.client.put('/api/config/dhcp', json=self.payload(pools=['10.1.0.100-10.1.0.110'])).json()['status'], 'updated')
+        self.assertEqual(self.client.put('/api/config/dhcp', json=self.payload(pools=['10.1.2.100-10.1.2.110'])).json()['status'], 'updated')
         self.assertIn('<custom>keep</custom>', self.manager.xml)
         self.assertEqual(len(ET.fromstring(self.manager.xml).findall('.//ip-pool/member')), 1)
         self.assertEqual(self.client.delete('/api/config/dhcp/ae1.69?revision=' + '0' * 64).status_code, 409)
@@ -140,7 +140,7 @@ class ConfigDhcpTests(unittest.TestCase):
         self.plane = lambda: dict(available=True, config=dict(revision=3, configuration='c' * 64, servers={'ae1.69': {}}), boot_id='b',
                                   running=dict(revision=3, time=1000.0, servers={'ae1.69': dict(state='serving', detail='', address='10.1.0.2/22', bound=2, offered=0, declined=0, pool_size=101,
                                                                                                 counters={'discover': 5}, last_event=999.0,
-                                                                                                leases=[dict(ip='10.1.0.100', mac='02:00:00:00:00:01', hostname='laptop', state='bound', since=900.0, expires=4500.0)])}))
+                                                                                                leases=[dict(ip='10.1.2.100', mac='02:00:00:00:00:01', hostname='laptop', state='bound', since=900.0, expires=4500.0)])}))
         view = self.client.get('/api/dhcp/status').json()
         row = view['servers'][0]
         self.assertEqual((view['available'], view['revision'], row['state'], row['bound'], row['pool_size'], row['device']), (True, 3, 'serving', 2, 101, 'ae1.69'))
