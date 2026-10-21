@@ -8,6 +8,7 @@ IDs and counters use network order. Labels written by nftables use its native
 import ipaddress
 import errno
 import json
+from pathlib import Path
 import socket
 import select
 import sqlite3
@@ -195,6 +196,9 @@ class Journal:
     """Archive immutable rule generations before admitting their first packet."""
     def __init__(self, path, boot):
         self.boot = boot
+        # The journal's directory may be a fresh tmpfs: every opener, not only the
+        # serving collector, makes it rather than failing on the first apply after a boot.
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path)
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.execute('PRAGMA synchronous=FULL')

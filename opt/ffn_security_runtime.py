@@ -27,7 +27,15 @@ from ffn_session_events import Journal, EventError, Collector
 
 STATE=Path('/etc/ffn/policy-runtime.json')
 HEALTH=Path('/run/ffn-security-health.json')
-DATABASE=Path('/var/lib/ffn/security-sessions.db')
+# The session journal lives in RAM. The collector commits every conntrack batch
+# synchronously and the main tick reads the journal before each lease renewal;
+# on the PA-5220 with the dataplane rooted over NFS (2026-10-21) NFS writes from
+# the dataplane stalled for 20-30 s every few minutes, the collector's heartbeat
+# aged past its limit, the gate's 8 s lease expired, and transit closed for as
+# long as the stall lasted: 12 outages in 52 minutes. A journal on tmpfs commits
+# in milliseconds; a dataplane reboot loses only the recent-events history, which
+# the kernel's conntrack would not have survived either.
+DATABASE=Path('/run/ffn/security-sessions.db')
 GATE='ffn_policy_gate'
 HOST_LINKS=Path('/run/ffn-service-routes/status.json')
 
