@@ -301,6 +301,8 @@ jobs:
           python tests/test_plane_sockets.py
           python tests/test_control_gateway.py
           python tests/test_linux_network.py
+          python tests/test_tap_identity.py
+          python tests/test_tap_multiqueue.py
           python tests/test_route_monitor.py
           python tests/test_vr_interfaces.py
           python tests/test_vr_route_api.py
@@ -308,6 +310,7 @@ jobs:
       - name: native L2 and L3 packet forwarding in disposable namespaces
         run: |
           sudo python3 tests/test_network_namespace.py
+          sudo python3 tests/test_tap_multiqueue_namespace.py
           sudo python3 tests/test_l3_namespace.py
 
       - name: candidate policy validation and supervised Security/NAT packets

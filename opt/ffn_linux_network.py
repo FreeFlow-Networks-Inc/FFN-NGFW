@@ -4,6 +4,18 @@
 
 All interfaces live in ffn-data, never in the management namespace. A revision
 check and flock serialize MP changes. Only changed ports are reconfigured.
+
+Physical TAPs are made with `multi_queue`, so the packet owner that attaches to
+one may run more than one lane (one queue of the TAP per lane). A TAP made
+without it (by an older engine, or by hand) is remade by this engine, once, by
+`reconcile` under the network lock: the device is deleted and created again
+with multi_queue, its remembered MAC, MTU, mode, addresses and management
+profile are applied as at boot, and the routes and global addresses that
+other owners had put on the old device are restored. The packet owner that
+held the old device sees its queues die and attaches to the new one; the
+Security runtime sees the interface index change and replays its policy.
+The dataplane port owner asks for this (`reconcile --port pN`) the first
+time it attaches to a plain TAP whose lane policy wants more than one lane.
 """
 import argparse
 import fcntl
@@ -363,7 +375,7 @@ def configure_port(name, settings, create=False):
         if PORT_BACKEND == 'native':
             ip('-j', 'link', 'show', 'dev', name)  # Must already be provisioned in the data namespace.
         else:
-            run('ip', 'netns', 'exec', NS, 'ip', 'tuntap', 'add', 'dev', name, 'mode', 'tap')
+            run('ip', 'netns', 'exec', NS, 'ip', 'tuntap', 'add', 'dev', name, 'mode', 'tap', 'multi_queue')
     current = json.loads(ip('-j', 'link', 'show', 'dev', name))[0]
     if PORT_BACKEND == 'tap':
         identity=remember_tap_mac(name,current['address'])
@@ -393,6 +405,121 @@ def configure_port(name, settings, create=False):
             ip('address', 'add', address, 'dev', name)
     if mode != 'disabled':
         ip('link', 'set', name, 'up')
+
+
+def tap_multiqueue(name):
+    """True/False for a TAP in the data namespace; None when the device is absent or not a TAP."""
+    try:
+        link = json.loads(ip('-d', '-j', 'link', 'show', 'dev', name))[0]
+    except RuntimeError:
+        return None
+    info = link.get('linkinfo', {})
+    if info.get('info_kind') != 'tun' or info.get('info_data', {}).get('type') != 'tap':
+        return None
+    return bool(info['info_data'].get('multi_queue'))
+
+
+def device_routes(name):
+    """Every route the kernel holds through `name` that an owner put there: any
+    table, both families, except what the kernel derives from the addresses
+    (proto kernel, the local table) and what expires on its own (RA)."""
+    rows = []
+    for family in ('-4', '-6'):
+        for row in json.loads(ip(family, '-j', 'route', 'show', 'table', 'all')):
+            if row.get('protocol') == 'kernel' or row.get('table') == 'local' or 'expires' in row:
+                continue
+            if row.get('dev') != name and not any(h.get('dev') == name for h in row.get('nexthops', [])):
+                continue
+            rows.append((family, row))
+    return rows
+
+
+def route_arguments(family, row):
+    """`ip route replace` arguments for a route as `ip -j route show` printed it."""
+    args = [family, 'route', 'replace']
+    if row.get('type') not in (None, 'unicast'):
+        args.append(row['type'])
+    args.append(row['dst'])
+    if row.get('nexthops'):
+        for hop in row['nexthops']:
+            args.append('nexthop')
+            if 'gateway' in hop: args += ['via', hop['gateway']]
+            if 'dev' in hop: args += ['dev', hop['dev']]
+            if 'weight' in hop: args += ['weight', str(hop['weight'])]
+            if 'onlink' in hop.get('flags', []): args.append('onlink')
+    else:
+        if 'gateway' in row: args += ['via', row['gateway']]
+        if 'dev' in row: args += ['dev', row['dev']]
+        if 'onlink' in row.get('flags', []): args.append('onlink')
+    if 'table' in row: args += ['table', str(row['table'])]
+    if 'metric' in row: args += ['metric', str(row['metric'])]
+    if 'protocol' in row: args += ['proto', str(row['protocol'])]
+    if 'scope' in row: args += ['scope', str(row['scope'])]
+    if 'prefsrc' in row: args += ['src', row['prefsrc']]
+    if 'pref' in row: args += ['pref', row['pref']]
+    return args
+
+
+def extra_addresses(name, settings):
+    """Global addresses on `name` beyond the port's own: another owner's (a lease, a service)."""
+    own = {str(ipaddress.ip_interface(a)) for a in settings.get('addresses', [])}
+    found = []
+    for row in json.loads(ip('-j', 'address', 'show', 'dev', name)):
+        for a in row.get('addr_info', []):
+            if a.get('scope') != 'global': continue
+            address = str(ipaddress.ip_interface(str(a['local']) + '/' + str(a['prefixlen'])))
+            if address not in own: found.append(address)
+    return found
+
+
+def remake_port(name, settings):
+    """Delete the port's plain TAP and make it again with multi_queue, keeping what was on it.
+
+    Under the network lock. The port's own configuration is applied exactly as
+    at boot (configure_port with create); the MAC is the remembered identity.
+    Routes through the device and global addresses other owners had added are
+    put back afterwards; the kernel removed them with the device. The packet
+    owner attached to the old device is expected to notice and attach again.
+    """
+    routes = device_routes(name)
+    addresses = extra_addresses(name, settings)
+    ip('link', 'delete', 'dev', name)
+    configure_port(name, settings, create=True)
+    for address in addresses:
+        ip('address', 'replace', address, 'dev', name)
+    for family, row in routes:
+        ip(*route_arguments(family, row))
+    return dict(remade=True, routes_restored=len(routes), addresses_restored=len(addresses))
+
+
+def reconcile_taps(cfg, only=None):
+    """Every configured physical port's TAP exists and takes queues; remake the ones that do not.
+
+    Returns a report per port: remade, kept (already multi_queue), created
+    (the device was missing) or skipped with its reason. A port whose device
+    is an overlay underlay is left alone, as a reconfiguration would be.
+    """
+    report = {}
+    if PORT_BACKEND != 'tap' or not exists():
+        return report
+    underlays = set()
+    if OVERLAY_STATE.exists():
+        underlays = {c['underlay'] for c in json.loads(OVERLAY_STATE.read_text())['links'].values()}
+    for name, settings in cfg['ports'].items():
+        if only and name not in only: continue
+        multiqueue = tap_multiqueue(name)
+        if multiqueue is True:
+            report[name] = dict(remade=False, reason='multi_queue')
+        elif multiqueue is None and any(x['ifname'] == name for x in json.loads(ip('-j', 'link'))):
+            report[name] = dict(remade=False, reason='not a TAP')
+        elif multiqueue is None:
+            configure_port(name, settings, create=True)
+            report[name] = dict(remade=False, created=True, reason='device was missing')
+        elif name in underlays:
+            report[name] = dict(remade=False, reason='overlay underlay; remove dependent overlays first')
+        else:
+            report[name] = remake_port(name, settings)
+    return report
 
 def start(cfg):
     if PORT_BACKEND == 'native':
@@ -642,9 +769,10 @@ def patch(cfg, request):
 def main():
     global PORT_BACKEND
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action', choices=('check', 'validate', 'apply', 'patch', 'stop', 'status', 'lookup', 'health'))
+    p.add_argument('action', choices=('check', 'validate', 'apply', 'patch', 'stop', 'status', 'lookup', 'health', 'reconcile'))
     p.add_argument('--config', type=Path, default=STATE)
     p.add_argument('--backend', choices=('tap','native'), default=PORT_BACKEND)
+    p.add_argument('--port', action='append', help='reconcile: only this port (repeatable); default every configured port')
     args = p.parse_args()
     PORT_BACKEND = args.backend
     global_state = args.config
@@ -668,6 +796,10 @@ def main():
         elif args.action == 'apply':
             start(cfg)
             result = {'started': True, 'config': cfg}
+        elif args.action == 'reconcile':
+            if args.port and any(not re.fullmatch(r'p[1-9][0-9]{0,3}', x) or x not in cfg['ports'] for x in args.port):
+                raise ValueError('reconcile names a port that is not configured')
+            result = {'reconciled': True, 'revision': cfg['revision'], 'ports': reconcile_taps(cfg, only=args.port)}
         elif args.action == 'validate':
             proposed, changed = prepare(cfg, json.load(sys.stdin))
             result = {'validated': True, 'config': proposed, 'changed_ports': changed}
