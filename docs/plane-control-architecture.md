@@ -125,7 +125,19 @@ initializing the engine with `ffn_linux_network.py apply --backend native`.
 This explicit initialization sets up the bridge, forwarding and configured
 interfaces. Existing namespaces/bridges must not be adopted blindly. Runtime
 patches cannot add unprovisioned native interfaces, and automatic native namespace
-teardown is refused. Boot-time namespace provisioning and replay must be ordered
+teardown is refused.
+
+With the TAP backend the engine makes every physical port's TAP with
+`multi_queue`, so the platform's packet owner can run one lane per queue.
+`ffn_linux_network.py reconcile [--port pN]` remakes, once and under the
+network lock, a TAP found without it (an older engine's, or one made by hand):
+the device is deleted and made again, the port's remembered MAC, MTU, mode,
+addresses and management profile are applied as at boot, and the routes and
+global addresses other owners had put on the old device are restored. The
+packet owner holding the old device attaches to the new one; the Security
+runtime replays its policy on the interface index change. The PA-5200 port
+daemon asks for this itself when it attaches to a plain TAP whose lane policy
+wants more than one lane. Boot-time namespace provisioning and replay must be ordered
 before the DP control service in the image's platform/host profile.
 
 Start the DP, then CP if present, then MP daemons with `ffn-plane@ROLE.service`.
